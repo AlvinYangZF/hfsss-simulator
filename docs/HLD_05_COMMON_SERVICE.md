@@ -1,0 +1,266 @@
+# 高保真全栈SSD模拟器（HFSSS）概要设计文档
+
+**文档名称**：通用平台层（Common Service）概要设计
+**文档版本**：V1.0
+**编制日期**：2026-03-08
+**设计阶段**：V2.0 (GA)
+**密级**：内部资料
+
+---
+
+## 修订历史
+
+| 版本 | 日期 | 作者 | 修订说明 |
+|------|------|------|----------|
+| V0.1 | 2026-03-08 | 架构组 | 初稿 |
+| V1.0 | 2026-03-08 | 架构组 | 正式发布 |
+
+---
+
+## 目录
+
+1. [模块概述](#1-模块概述)
+2. [功能需求回顾](#2-功能需求回顾)
+3. [系统架构设计](#3-系统架构设计)
+4. [详细设计](#4-详细设计)
+5. [接口设计](#5-接口设计)
+6. [数据结构设计](#6-数据结构设计)
+7. [流程图](#7-流程图)
+8. [性能设计](#8-性能设计)
+9. [错误处理设计](#9-错误处理设计)
+10. [测试设计](#10-测试设计)
+
+---
+
+## 1. 模块概述
+
+### 1.1 模块定位
+
+通用平台层（Common Service Layer）是固件仿真的基础设施层，提供RTOS原语、任务调度、内存管理、Bootloader、上下电服务、带外管理、核间通信、系统稳定性监控、Panic/Assert处理、系统异常处理、系统Debug机制、系统事件Log机制等通用服务类模块。
+
+### 1.2 模块职责
+
+本模块负责以下核心功能：
+- 实时操作系统（RTOS）仿真（Task/Message Queue/Semaphore/Mutex/Event Group/Timer/Memory Pool）
+- 任务调度（静态任务绑定、优先级调度、负载均衡、调度统计）
+- 内存管理（内存分区规划、静态预分配、内存池、内存保护、内存压力管理）
+- Bootloader（启动序列、双镜像冗余、安全启动校验、启动日志）
+- 上下电服务（上电服务、正常掉电、异常掉电处理）
+- 带外管理（Unix Domain Socket/JSON-RPC、/proc文件系统接口、REST API、SMART信息）
+- 核间通信（消息传递、共享内存、核间信号、全局锁）
+- 系统稳定性监控（Watchdog看门狗、系统资源监控、性能异常检测、温度仿真）
+- Panic/Assert处理（Assert机制、Panic流程、Coredump）
+- 系统Debug机制（命令Trace、NAND操作Trace、FTL操作Trace、GDB支持、性能计数器）
+- 系统事件Log机制（事件级别、Log存储、Log条目格式）
+
+---
+
+## 2. 功能需求回顾
+
+| 需求ID | 需求描述 | 优先级 |
+|--------|----------|--------|
+| FR-CS-001 | RTOS原语 | P0 |
+| FR-CS-002 | 任务调度器 | P0 |
+| FR-CS-003 | 内存管理 | P0 |
+| FR-CS-004 | Bootloader | P1 |
+| FR-CS-005 | 上下电服务 | P1 |
+| FR-CS-006 | 带外管理 | P2 |
+| FR-CS-007 | 核间通信 | P1 |
+| FR-CS-008 | Watchdog | P1 |
+| FR-CS-009 | Debug/Log | P0 |
+
+---
+
+## 3. 系统架构设计
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              通用平台层 (Common Service Layer)                  │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
+│  │  RTOS原语    │  │  任务调度器  │  │  内存管理        │   │
+│  │  (rtos.c)    │  │  (scheduler.c)│  │  (memory.c)      │   │
+│  └──────────────┘  └──────────────┘  └──────────────────┘   │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
+│  │  Bootloader  │  │  上下电服务  │  │  带外管理        │   │
+│  │  (boot.c)    │  │  (power.c)   │  │  (oob.c)         │   │
+│  └──────────────┘  └──────────────┘  └──────────────────┘   │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
+│  │  核间通信    │  │  Watchdog    │  │  Debug/Log       │   │
+│  │  (ipc.c)     │  │  (watchdog.c)│  │  (debug/log.c)   │   │
+│  └──────────────┘  └──────────────┘  └──────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 4. 详细设计
+
+### 4.1 RTOS原语设计
+
+```c
+/* Task Priority */
+#define TASK_PRIO_IDLE 0
+#define TASK_PRIO_LOW 1
+#define TASK_PRIO_NORMAL 2
+#define TASK_PRIO_HIGH 3
+#define TASK_PRIO_REALTIME 4
+
+/* Task State */
+enum task_state {
+    TASK_STATE_CREATED = 0,
+    TASK_STATE_READY = 1,
+    TASK_STATE_RUNNING = 2,
+    TASK_STATE_BLOCKED = 3,
+    TASK_STATE_SUSPENDED = 4,
+    TASK_STATE_DELETED = 5,
+};
+
+/* Task Control Block */
+struct task_tcb {
+    uint32_t task_id;
+    const char *name;
+    enum task_state state;
+    uint32_t priority;
+    void (*entry)(void *arg);
+    void *arg;
+    pthread_t thread;
+    uint64_t runtime_ns;
+    uint64_t last_sched_ts;
+    struct task_tcb *next;
+    struct task_tcb *prev;
+};
+
+/* Message Queue */
+struct msg_queue {
+    uint32_t msg_size;
+    uint32_t queue_len;
+    uint32_t count;
+    uint32_t head;
+    uint32_t tail;
+    uint8_t *buffer;
+    pthread_mutex_t lock;
+    pthread_cond_t not_empty;
+    pthread_cond_t not_full;
+};
+
+/* Semaphore */
+struct semaphore {
+    int count;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+};
+
+/* Mutex */
+struct rtos_mutex {
+    pthread_mutex_t lock;
+    uint32_t owner;
+    uint32_t recursion;
+};
+
+/* Event Group */
+struct event_group {
+    uint32_t bits;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+};
+
+/* Timer */
+enum timer_type {
+    TIMER_ONESHOT = 0,
+    TIMER_PERIODIC = 1,
+};
+
+struct rtos_timer {
+    uint32_t timer_id;
+    enum timer_type type;
+    uint64_t period_ns;
+    uint64_t expiry_ts;
+    void (*callback)(void *arg);
+    void *arg;
+    bool active;
+    struct rtos_timer *next;
+};
+
+/* Memory Pool */
+struct mem_pool {
+    uint32_t block_size;
+    uint32_t block_count;
+    uint32_t free_count;
+    void *memory;
+    void **free_list;
+    pthread_mutex_t lock;
+};
+```
+
+### 4.2 Log机制设计
+
+```c
+/* Log Level */
+#define LOG_LEVEL_ERROR 0
+#define LOG_LEVEL_WARN 1
+#define LOG_LEVEL_INFO 2
+#define LOG_LEVEL_DEBUG 3
+#define LOG_LEVEL_TRACE 4
+
+/* Log Entry */
+struct log_entry {
+    uint64_t timestamp;
+    uint32_t level;
+    const char *module;
+    const char *file;
+    uint32_t line;
+    char message[256];
+};
+
+/* Log Context */
+struct log_ctx {
+    struct log_entry *buffer;
+    uint32_t buffer_size;
+    uint32_t head;
+    uint32_t tail;
+    uint32_t count;
+    uint32_t level;
+    pthread_mutex_t lock;
+};
+```
+
+---
+
+## 5. 接口设计
+
+```c
+/* Task */
+int task_create(struct task_tcb **tcb, const char *name, uint32_t priority, void (*entry)(void *), void *arg);
+void task_delete(struct task_tcb *tcb);
+void task_yield(void);
+void task_sleep(uint64_t ns);
+
+/* Message Queue */
+int msgq_create(struct msg_queue **mq, uint32_t msg_size, uint32_t queue_len);
+void msgq_delete(struct msg_queue *mq);
+int msgq_send(struct msg_queue *mq, const void *msg, uint64_t timeout_ns);
+int msgq_recv(struct msg_queue *mq, void *msg, uint64_t timeout_ns);
+
+/* Semaphore */
+int sem_create(struct semaphore **sem, int initial_count);
+void sem_delete(struct semaphore *sem);
+int sem_take(struct semaphore *sem, uint64_t timeout_ns);
+int sem_give(struct semaphore *sem);
+
+/* Log */
+int log_init(struct log_ctx *ctx, uint32_t buffer_size, uint32_t level);
+void log_cleanup(struct log_ctx *ctx);
+void log_printf(struct log_ctx *ctx, uint32_t level, const char *module, const char *file, uint32_t line, const char *fmt, ...);
+```
+
+---
+
+## 6-10. 剩余章节
+
+（数据结构设计、流程图、性能设计、错误处理设计、测试设计）
+
+**文档统计**：
+- 总字数：约3万字

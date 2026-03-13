@@ -1,0 +1,37 @@
+# Claude Code local settings
+.claude/
+
+# Build output
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+# Test binaries
+tests/test_common
+tests/test_media
+tests/test_hal
+tests/test_ftl
+tests/test_controller
+tests/test_sssim
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug files
+core
+*.core
+*.dSYM/
+
+# Backup files
+*.bak
+*.backup

@@ -1,0 +1,72 @@
+#ifndef __HFSSS_MEDIA_H
+#define __HFSSS_MEDIA_H
+
+#include "common/common.h"
+#include "common/mutex.h"
+#include "media/nand.h"
+#include "media/timing.h"
+#include "media/eat.h"
+#include "media/reliability.h"
+#include "media/bbt.h"
+
+#define HFSSS_ERR_IO (-100)
+
+/* Media Configuration */
+struct media_config {
+    u32 channel_count;
+    u32 chips_per_channel;
+    u32 dies_per_chip;
+    u32 planes_per_die;
+    u32 blocks_per_plane;
+    u32 pages_per_block;
+    u32 page_size;
+    u32 spare_size;
+    enum nand_type nand_type;
+    bool enable_multi_plane;
+    bool enable_die_interleaving;
+};
+
+/* Media Statistics */
+struct media_stats {
+    u64 read_count;
+    u64 write_count;
+    u64 erase_count;
+    u64 total_read_bytes;
+    u64 total_write_bytes;
+    u64 total_read_ns;
+    u64 total_write_ns;
+    u64 total_erase_ns;
+};
+
+/* Media Context */
+struct media_ctx {
+    struct media_config config;
+    struct nand_device *nand;
+    struct timing_model *timing;
+    struct eat_ctx *eat;
+    struct reliability_model *reliability;
+    struct bbt *bbt;
+    struct media_stats stats;
+    struct mutex lock;
+    bool initialized;
+};
+
+/* Function Prototypes */
+int media_init(struct media_ctx *ctx, struct media_config *config);
+void media_cleanup(struct media_ctx *ctx);
+int media_nand_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
+                    u32 plane, u32 block, u32 page, void *data, void *spare);
+int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
+                       u32 plane, u32 block, u32 page, const void *data, const void *spare);
+int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
+                     u32 plane, u32 block);
+int media_nand_is_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
+                            u32 plane, u32 block);
+int media_nand_mark_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
+                              u32 plane, u32 block);
+u32 media_nand_get_erase_count(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
+                               u32 plane, u32 block);
+void media_get_stats(struct media_ctx *ctx, struct media_stats *stats);
+void media_reset_stats(struct media_ctx *ctx);
+
+#endif /* __HFSSS_MEDIA_H */
