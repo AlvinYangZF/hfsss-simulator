@@ -73,13 +73,13 @@ PCIe/NVMe设备仿真模块是HFSSS与主机Linux操作系统的接口层，以L
 
 | 需求ID | 需求描述 | 优先级 | 版本 | 实现状态 |
 |--------|----------|--------|------|----------|
-| FR-PCIE-001 | PCIe配置空间仿真 | P0 | V1.0 | 待实现 |
-| FR-NVME-001 | NVMe控制器寄存器仿真 | P0 | V1.0 | 待实现 |
-| FR-NVME-002 | NVMe队列管理 | P0 | V1.0 | 待实现 |
-| FR-NVME-003 | MSI-X中断仿真 | P0 | V1.0 | 待实现 |
-| FR-NVME-004 | NVMe Admin命令集 | P0 | V1.0 | 待实现 |
-| FR-NVME-005 | NVMe I/O命令集 | P0 | V1.0 | 待实现 |
-| FR-NVME-006 | NVMe DMA数据传输 | P0 | V1.0 | 待实现 |
+| FR-PCIE-001 | PCIe配置空间仿真 | P0 | V1.0 | ✅ 已实现 |
+| FR-NVME-001 | NVMe控制器寄存器仿真 | P0 | V1.0 | ✅ 已实现 |
+| FR-NVME-002 | NVMe队列管理 | P0 | V1.0 | ✅ 已实现 |
+| FR-NVME-003 | MSI-X中断仿真 | P0 | V1.0 | ✅ 已实现 |
+| FR-NVME-004 | NVMe Admin命令集 | P0 | V1.0 | ✅ 已实现 |
+| FR-NVME-005 | NVMe I/O命令集 | P0 | V1.0 | ✅ 已实现 |
+| FR-NVME-006 | NVMe DMA数据传输 | P0 | V1.0 | ✅ 已实现 |
 
 ### 2.2 关键性能需求
 

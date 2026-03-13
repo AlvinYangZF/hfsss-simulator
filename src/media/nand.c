@@ -171,7 +171,6 @@ void nand_device_cleanup(struct nand_device *dev)
     }
 
     nand_cleanup_hierarchy(dev);
-    memset(dev, 0, sizeof(*dev));
 }
 
 struct nand_page *nand_get_page(struct nand_device *dev, u32 ch, u32 chip, u32 die,

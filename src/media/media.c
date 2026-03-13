@@ -113,39 +113,39 @@ void media_cleanup(struct media_ctx *ctx)
         return;
     }
 
-    mutex_lock(&ctx->lock, 0);
-
     if (ctx->bbt) {
         bbt_cleanup(ctx->bbt);
         free(ctx->bbt);
+        ctx->bbt = NULL;
     }
 
     if (ctx->reliability) {
         reliability_model_cleanup(ctx->reliability);
         free(ctx->reliability);
+        ctx->reliability = NULL;
     }
 
     if (ctx->eat) {
         eat_ctx_cleanup(ctx->eat);
         free(ctx->eat);
+        ctx->eat = NULL;
     }
 
     if (ctx->timing) {
         timing_model_cleanup(ctx->timing);
         free(ctx->timing);
+        ctx->timing = NULL;
     }
 
     if (ctx->nand) {
         nand_device_cleanup(ctx->nand);
         free(ctx->nand);
+        ctx->nand = NULL;
     }
 
     ctx->initialized = false;
 
-    mutex_unlock(&ctx->lock);
     mutex_cleanup(&ctx->lock);
-
-    memset(ctx, 0, sizeof(*ctx));
 }
 
 static void media_wait_until_available(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane)

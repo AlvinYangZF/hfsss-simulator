@@ -1,4 +1,5 @@
 #include "media/bbt.h"
+#include <stdlib.h>
 #include <string.h>
 
 int bbt_init(struct bbt *bbt, u32 channel_count, u32 chips_per_channel,
@@ -19,13 +20,48 @@ int bbt_init(struct bbt *bbt, u32 channel_count, u32 chips_per_channel,
     }
 
     memset(bbt, 0, sizeof(*bbt));
+    bbt->channel_count = channel_count;
+    bbt->chips_per_channel = chips_per_channel;
+    bbt->dies_per_chip = dies_per_chip;
+    bbt->planes_per_die = planes_per_die;
+    bbt->blocks_per_plane = blocks_per_plane;
 
-    /* Initialize all entries as free */
-    for (ch = 0; ch < MAX_CHANNELS; ch++) {
-        for (chip = 0; chip < MAX_CHIPS_PER_CHANNEL; chip++) {
-            for (die = 0; die < MAX_DIES_PER_CHIP; die++) {
-                for (plane = 0; plane < MAX_PLANES_PER_DIE; plane++) {
-                    for (block = 0; block < MAX_BLOCKS_PER_PLANE; block++) {
+    /* Allocate 5D array dynamically */
+    bbt->entries = (struct bbt_entry *****)malloc(channel_count * sizeof(struct bbt_entry ****));
+    if (!bbt->entries) {
+        return HFSSS_ERR_NOMEM;
+    }
+
+    for (ch = 0; ch < channel_count; ch++) {
+        bbt->entries[ch] = (struct bbt_entry ****)malloc(chips_per_channel * sizeof(struct bbt_entry ***));
+        if (!bbt->entries[ch]) {
+            bbt_cleanup(bbt);
+            return HFSSS_ERR_NOMEM;
+        }
+
+        for (chip = 0; chip < chips_per_channel; chip++) {
+            bbt->entries[ch][chip] = (struct bbt_entry ***)malloc(dies_per_chip * sizeof(struct bbt_entry **));
+            if (!bbt->entries[ch][chip]) {
+                bbt_cleanup(bbt);
+                return HFSSS_ERR_NOMEM;
+            }
+
+            for (die = 0; die < dies_per_chip; die++) {
+                bbt->entries[ch][chip][die] = (struct bbt_entry **)malloc(planes_per_die * sizeof(struct bbt_entry *));
+                if (!bbt->entries[ch][chip][die]) {
+                    bbt_cleanup(bbt);
+                    return HFSSS_ERR_NOMEM;
+                }
+
+                for (plane = 0; plane < planes_per_die; plane++) {
+                    bbt->entries[ch][chip][die][plane] = (struct bbt_entry *)calloc(blocks_per_plane, sizeof(struct bbt_entry));
+                    if (!bbt->entries[ch][chip][die][plane]) {
+                        bbt_cleanup(bbt);
+                        return HFSSS_ERR_NOMEM;
+                    }
+
+                    /* Initialize entries */
+                    for (block = 0; block < blocks_per_plane; block++) {
                         bbt->entries[ch][chip][die][plane][block].state = BBT_ENTRY_FREE;
                         bbt->entries[ch][chip][die][plane][block].erase_count = 0;
                         bbt->total_blocks++;
@@ -58,8 +94,34 @@ int bbt_init(struct bbt *bbt, u32 channel_count, u32 chips_per_channel,
 
 void bbt_cleanup(struct bbt *bbt)
 {
+    u32 ch, chip, die, plane;
+
     if (!bbt) {
         return;
+    }
+
+    if (bbt->entries) {
+        for (ch = 0; ch < bbt->channel_count; ch++) {
+            if (!bbt->entries[ch]) continue;
+
+            for (chip = 0; chip < bbt->chips_per_channel; chip++) {
+                if (!bbt->entries[ch][chip]) continue;
+
+                for (die = 0; die < bbt->dies_per_chip; die++) {
+                    if (!bbt->entries[ch][chip][die]) continue;
+
+                    for (plane = 0; plane < bbt->planes_per_die; plane++) {
+                        if (bbt->entries[ch][chip][die][plane]) {
+                            free(bbt->entries[ch][chip][die][plane]);
+                        }
+                    }
+                    free(bbt->entries[ch][chip][die]);
+                }
+                free(bbt->entries[ch][chip]);
+            }
+            free(bbt->entries[ch]);
+        }
+        free(bbt->entries);
     }
 
     memset(bbt, 0, sizeof(*bbt));
@@ -67,13 +129,13 @@ void bbt_cleanup(struct bbt *bbt)
 
 int bbt_mark_bad(struct bbt *bbt, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 {
-    if (!bbt) {
+    if (!bbt || !bbt->entries) {
         return HFSSS_ERR_INVAL;
     }
 
-    if (ch >= MAX_CHANNELS || chip >= MAX_CHIPS_PER_CHANNEL ||
-        die >= MAX_DIES_PER_CHIP || plane >= MAX_PLANES_PER_DIE ||
-        block >= MAX_BLOCKS_PER_PLANE) {
+    if (ch >= bbt->channel_count || chip >= bbt->chips_per_channel ||
+        die >= bbt->dies_per_chip || plane >= bbt->planes_per_die ||
+        block >= bbt->blocks_per_plane) {
         return HFSSS_ERR_INVAL;
     }
 
@@ -87,13 +149,13 @@ int bbt_mark_bad(struct bbt *bbt, u32 ch, u32 chip, u32 die, u32 plane, u32 bloc
 
 int bbt_is_bad(struct bbt *bbt, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 {
-    if (!bbt) {
+    if (!bbt || !bbt->entries) {
         return -1;
     }
 
-    if (ch >= MAX_CHANNELS || chip >= MAX_CHIPS_PER_CHANNEL ||
-        die >= MAX_DIES_PER_CHIP || plane >= MAX_PLANES_PER_DIE ||
-        block >= MAX_BLOCKS_PER_PLANE) {
+    if (ch >= bbt->channel_count || chip >= bbt->chips_per_channel ||
+        die >= bbt->dies_per_chip || plane >= bbt->planes_per_die ||
+        block >= bbt->blocks_per_plane) {
         return -1;
     }
 
@@ -102,13 +164,13 @@ int bbt_is_bad(struct bbt *bbt, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 
 u32 bbt_get_erase_count(struct bbt *bbt, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 {
-    if (!bbt) {
+    if (!bbt || !bbt->entries) {
         return 0;
     }
 
-    if (ch >= MAX_CHANNELS || chip >= MAX_CHIPS_PER_CHANNEL ||
-        die >= MAX_DIES_PER_CHIP || plane >= MAX_PLANES_PER_DIE ||
-        block >= MAX_BLOCKS_PER_PLANE) {
+    if (ch >= bbt->channel_count || chip >= bbt->chips_per_channel ||
+        die >= bbt->dies_per_chip || plane >= bbt->planes_per_die ||
+        block >= bbt->blocks_per_plane) {
         return 0;
     }
 
@@ -117,13 +179,13 @@ u32 bbt_get_erase_count(struct bbt *bbt, u32 ch, u32 chip, u32 die, u32 plane, u
 
 int bbt_increment_erase_count(struct bbt *bbt, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 {
-    if (!bbt) {
+    if (!bbt || !bbt->entries) {
         return HFSSS_ERR_INVAL;
     }
 
-    if (ch >= MAX_CHANNELS || chip >= MAX_CHIPS_PER_CHANNEL ||
-        die >= MAX_DIES_PER_CHIP || plane >= MAX_PLANES_PER_DIE ||
-        block >= MAX_BLOCKS_PER_PLANE) {
+    if (ch >= bbt->channel_count || chip >= bbt->chips_per_channel ||
+        die >= bbt->dies_per_chip || plane >= bbt->planes_per_die ||
+        block >= bbt->blocks_per_plane) {
         return HFSSS_ERR_INVAL;
     }
 

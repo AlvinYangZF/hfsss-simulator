@@ -20,7 +20,12 @@ struct bbt_entry {
 
 /* BBT Table */
 struct bbt {
-    struct bbt_entry entries[MAX_CHANNELS][MAX_CHIPS_PER_CHANNEL][MAX_DIES_PER_CHIP][MAX_PLANES_PER_DIE][MAX_BLOCKS_PER_PLANE];
+    struct bbt_entry *****entries;  /* Dynamic 5D array */
+    u32 channel_count;
+    u32 chips_per_channel;
+    u32 dies_per_chip;
+    u32 planes_per_die;
+    u32 blocks_per_plane;
     u64 bad_block_count;
     u64 total_blocks;
 };
