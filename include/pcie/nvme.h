@@ -149,6 +149,16 @@
 #define NVME_NVM_COMPARE           0x05
 #define NVME_NVM_WRITE_ZEROES      0x08
 #define NVME_NVM_DATASET_MANAGEMENT 0x09
+#define NVME_CMD_DSM                0x09  /* Alias for Dataset Management */
+
+/* Dataset Management / Deallocate (Trim) */
+#define NVME_DSM_ATTR_DEALLOCATE    (1u << 2)
+
+struct nvme_dsm_range {
+    uint32_t attributes;   /* context attributes (ignored in simulation) */
+    uint32_t nlb;          /* number of logical blocks */
+    uint64_t slba;         /* starting LBA */
+} __attribute__((packed));
 #define NVME_NVM_VERIFY            0x0C
 #define NVME_NVM_COPY              0x19
 #define NVME_NVM_IO_SEND           0x79

@@ -52,6 +52,8 @@ int nvme_uspace_delete_io_sq(struct nvme_uspace_dev *dev, u16 qid);
 int nvme_uspace_read(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count, void *data);
 int nvme_uspace_write(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count, const void *data);
 int nvme_uspace_flush(struct nvme_uspace_dev *dev, u32 nsid);
+int nvme_uspace_trim(struct nvme_uspace_dev *dev, u32 nsid,
+                     struct nvme_dsm_range *ranges, u32 nr_ranges);
 
 /* Default Config Helper */
 void nvme_uspace_config_default(struct nvme_uspace_config *config);

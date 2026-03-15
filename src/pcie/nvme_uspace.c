@@ -355,3 +355,31 @@ int nvme_uspace_flush(struct nvme_uspace_dev *dev, u32 nsid)
 
     return sssim_flush(&dev->sssim);
 }
+
+int nvme_uspace_trim(struct nvme_uspace_dev *dev, u32 nsid,
+                     struct nvme_dsm_range *ranges, u32 nr_ranges)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    if (nsid != 1) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    if (!ranges || nr_ranges == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    for (u32 i = 0; i < nr_ranges; i++) {
+        if (ranges[i].nlb == 0) {
+            continue;
+        }
+        int ret = sssim_trim(&dev->sssim, ranges[i].slba, ranges[i].nlb);
+        if (ret != HFSSS_OK) {
+            return ret;
+        }
+    }
+
+    return HFSSS_OK;
+}
