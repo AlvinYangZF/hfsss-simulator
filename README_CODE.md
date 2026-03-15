@@ -1,5 +1,22 @@
 # HFSSS - High Fidelity Full-Stack SSD Simulator
 
+## Project Overview (English)
+
+HFSSS is a high-fidelity full-stack SSD simulator written in C. It provides a complete simulation stack from NAND flash media up to a simple host interface.
+
+**Key Features:**
+- NAND flash media simulation with timing models (TLC/SLC support)
+- Hardware Abstraction Layer (HAL)
+- Flash Translation Layer (FTL) with page-level mapping and garbage collection
+- Common services (logging, memory pools, message queues, semaphores, mutexes)
+- Top-level SSD simulator interface for easy integration
+
+**English Documentation:**
+- [Architecture Overview](docs/ARCHITECTURE.md) - Complete English architecture guide
+- [User Guide](docs/USER_GUIDE.md) - Practical usage examples
+
+---
+
 ## 项目概述
 
 高保真全栈SSD模拟器（HFSSS）是一个完整的SSD仿真项目，包含从PCIe/NVMe接口到NAND Flash介质的全栈仿真。
