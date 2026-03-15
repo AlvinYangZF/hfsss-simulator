@@ -44,7 +44,51 @@ static int test_log(void)
     log_warn(&ctx, "TEST", "This is a warning message");
     log_error(&ctx, "TEST", "This is an error message");
 
+    /* Test log persistence to file */
+    const char *test_log_file = "/tmp/hfsss_test.log";
+    remove(test_log_file); /* Remove if exists */
+    log_set_output_file(&ctx, test_log_file);
+    log_info(&ctx, "TEST", "This is a persisted info message");
+    log_error(&ctx, "TEST", "This is a persisted error message");
+    log_set_output_file(&ctx, NULL); /* Close file */
+
+    /* Verify file was created and has content */
+    FILE *f = fopen(test_log_file, "r");
+    TEST_ASSERT(f != NULL, "log file should be created");
+    if (f) {
+        char buf[512];
+        int found = 0;
+        while (fgets(buf, sizeof(buf), f)) {
+            if (strstr(buf, "persisted info message")) {
+                found++;
+            }
+            if (strstr(buf, "persisted error message")) {
+                found++;
+            }
+        }
+        fclose(f);
+        TEST_ASSERT(found == 2, "log file should contain both persisted messages");
+        remove(test_log_file);
+    }
+
     log_cleanup(&ctx);
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Assert/Panic Tests (basic compile check and macro test) */
+static int test_assert(void)
+{
+    printf("\n=== Assert Module Tests ===\n");
+
+    /* Test that HFSSS_ASSERT with true condition doesn't crash */
+    HFSSS_ASSERT(1 == 1);
+    TEST_ASSERT(1, "HFSSS_ASSERT(true) should not crash");
+
+    HFSSS_ASSERT_MSG(2 == 2, "Two should equal two");
+    TEST_ASSERT(1, "HFSSS_ASSERT_MSG(true) should not crash");
+
+    /* Note: Testing HFSSS_ASSERT(false) would crash, so we skip that in tests */
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
@@ -350,6 +394,7 @@ int main(void)
     (void)result; /* Suppress unused variable warning */
 
     test_log();
+    test_assert();
     test_mempool();
     test_msgqueue();
     test_semaphore();

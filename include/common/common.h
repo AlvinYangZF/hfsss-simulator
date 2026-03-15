@@ -71,4 +71,27 @@ static inline void sleep_ns(u64 ns) {
     nanosleep(&ts, NULL);
 }
 
+/* Panic and Assert Handling */
+void hfsss_panic(const char *file, int line, const char *fmt, ...);
+
+#define HFSSS_PANIC(...) hfsss_panic(__FILE__, __LINE__, __VA_ARGS__)
+
+#ifdef NDEBUG
+#define HFSSS_ASSERT(cond) ((void)0)
+#define HFSSS_ASSERT_MSG(cond, msg) ((void)0)
+#else
+#define HFSSS_ASSERT(cond) \
+    do { \
+        if (!(cond)) { \
+            HFSSS_PANIC("Assertion failed: %s", #cond); \
+        } \
+    } while(0)
+#define HFSSS_ASSERT_MSG(cond, msg) \
+    do { \
+        if (!(cond)) { \
+            HFSSS_PANIC("Assertion failed: %s - %s", #cond, msg); \
+        } \
+    } while(0)
+#endif
+
 #endif /* __HFSSS_COMMON_H */

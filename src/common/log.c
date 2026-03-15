@@ -1,6 +1,35 @@
 #include "common/log.h"
 #include <stdarg.h>
 #include <pthread.h>
+#include <execinfo.h>
+#include <unistd.h>
+
+#define BACKTRACE_SIZE 32
+
+void hfsss_panic(const char *file, int line, const char *fmt, ...)
+{
+    va_list args;
+    fprintf(stderr, "\n========================================\n");
+    fprintf(stderr, "HFSSS PANIC\n");
+    fprintf(stderr, "========================================\n");
+    fprintf(stderr, "File: %s\n", file);
+    fprintf(stderr, "Line: %d\n", line);
+    fprintf(stderr, "Message: ");
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    fprintf(stderr, "\n\n");
+
+    /* Print backtrace */
+    void *buffer[BACKTRACE_SIZE];
+    int nptrs = backtrace(buffer, BACKTRACE_SIZE);
+    fprintf(stderr, "Backtrace:\n");
+    backtrace_symbols_fd(buffer, nptrs, STDERR_FILENO);
+    fprintf(stderr, "\n========================================\n");
+
+    /* Abort */
+    abort();
+}
 
 struct log_lock {
     pthread_mutex_t mutex;
