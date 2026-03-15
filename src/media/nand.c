@@ -56,6 +56,7 @@ static int nand_init_hierarchy(struct nand_device *dev, u32 channel_count,
                         nand_block->block_id = block;
                         nand_block->state = BLOCK_FREE;
                         nand_block->pages_written = 0;
+                        nand_block->dirty = false;
                         nand_block->page_count = pages_per_block;
 
                         /* Allocate pages */
@@ -72,6 +73,7 @@ static int nand_init_hierarchy(struct nand_device *dev, u32 channel_count,
                             nand_page->erase_count = 0;
                             nand_page->bit_errors = 0;
                             nand_page->read_count = 0;
+                            nand_page->dirty = false;
 
                             /* Allocate data buffer */
                             nand_page->data = (u8 *)malloc(page_size);

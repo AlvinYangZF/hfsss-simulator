@@ -26,5 +26,7 @@ int hal_nor_write(struct hal_nor_dev *dev, u32 addr, const void *data, u32 len);
 int hal_nor_erase(struct hal_nor_dev *dev, u32 addr, u32 len);
 int hal_nor_erase_sector(struct hal_nor_dev *dev, u32 addr);
 int hal_nor_erase_block(struct hal_nor_dev *dev, u32 addr);
+int hal_nor_save(struct hal_nor_dev *dev, const char *filepath);
+int hal_nor_load(struct hal_nor_dev *dev, const char *filepath);
 
 #endif /* __HFSSS_HAL_NOR_H */

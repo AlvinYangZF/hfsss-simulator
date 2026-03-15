@@ -45,6 +45,7 @@ struct nand_page {
     u32 erase_count;
     u32 bit_errors;
     u32 read_count;
+    bool dirty;  /* Dirty flag for incremental checkpointing */
     u8 *data;
     u8 *spare;
 };
@@ -54,6 +55,7 @@ struct nand_block {
     u32 block_id;
     enum block_state state;
     u32 pages_written;
+    bool dirty;  /* Dirty flag for incremental checkpointing */
     struct nand_page *pages;
     u32 page_count;
 };

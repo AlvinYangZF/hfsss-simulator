@@ -71,8 +71,12 @@ void media_reset_stats(struct media_ctx *ctx);
 
 /* Persistence functions */
 int media_save(struct media_ctx *ctx, const char *filepath);
+int media_save_incremental(struct media_ctx *ctx, const char *filepath);
 int media_load(struct media_ctx *ctx, const char *filepath);
 int media_create_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir);
+int media_create_incremental_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir);
 int media_restore_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir);
+int media_has_dirty_data(struct media_ctx *ctx);
+void media_mark_all_clean(struct media_ctx *ctx);
 
 #endif /* __HFSSS_MEDIA_H */

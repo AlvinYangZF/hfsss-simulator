@@ -1,6 +1,19 @@
 #include "hal/hal_nor.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+
+/* NOR file magic and version */
+#define HAL_NOR_FILE_MAGIC 0x48464E52  /* "HFNR" */
+#define HAL_NOR_FILE_VERSION 1
+
+struct hal_nor_file_header {
+    u32 magic;
+    u32 version;
+    u32 size;
+    u32 sector_size;
+    u32 block_size;
+};
 
 int hal_nor_dev_init(struct hal_nor_dev *dev, u32 size, void *media_ctx)
 {
