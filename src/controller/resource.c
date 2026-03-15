@@ -4,6 +4,9 @@
 
 #define RESOURCE_POOL_SIZE 4096
 #define RESOURCE_SLOT_SIZE 64
+#define DEFAULT_IDLE_BLOCKS 1024
+#define DEFAULT_LOW_WATERMARK 128
+#define DEFAULT_HIGH_WATERMARK 512
 
 int resource_mgr_init(struct resource_mgr *mgr)
 {
@@ -73,6 +76,19 @@ int resource_mgr_init(struct resource_mgr *mgr)
         }
     }
 
+    /* Initialize idle block pool */
+    ret = idle_block_pool_init(&mgr->idle_blocks, DEFAULT_IDLE_BLOCKS,
+                                DEFAULT_LOW_WATERMARK, DEFAULT_HIGH_WATERMARK);
+    if (ret != HFSSS_OK) {
+        for (j = 0; j < RESOURCE_MAX; j++) {
+            free(mgr->pools[j].data_pool);
+            free(mgr->pools[j].free_list);
+            mutex_cleanup(&mgr->pools[j].lock);
+        }
+        mutex_cleanup(&mgr->lock);
+        return ret;
+    }
+
     return HFSSS_OK;
 }
 
@@ -86,6 +102,10 @@ void resource_mgr_cleanup(struct resource_mgr *mgr)
 
     mutex_lock(&mgr->lock, 0);
 
+    /* Cleanup idle block pool */
+    idle_block_pool_cleanup(&mgr->idle_blocks);
+
+    /* Cleanup resource pools */
     for (i = 0; i < RESOURCE_MAX; i++) {
         free(mgr->pools[i].data_pool);
         free(mgr->pools[i].free_list);
@@ -145,4 +165,180 @@ void resource_free(struct resource_mgr *mgr, enum resource_type type, void *ptr)
     }
 
     mutex_unlock(&pool->lock);
+}
+
+/* Idle Block Pool Functions */
+int idle_block_pool_init(struct idle_block_pool *pool, u32 total_blocks,
+                          u32 low_watermark, u32 high_watermark)
+{
+    u32 i;
+    struct idle_block_entry *entry;
+
+    if (!pool) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    memset(pool, 0, sizeof(*pool));
+
+    pool->total = total_blocks;
+    pool->free = total_blocks;
+    pool->used = 0;
+    pool->low_watermark = low_watermark;
+    pool->high_watermark = high_watermark;
+
+    int ret = mutex_init(&pool->lock);
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+
+    /* Allocate all entries */
+    pool->free_list = NULL;
+    for (i = 0; i < total_blocks; i++) {
+        entry = (struct idle_block_entry *)malloc(sizeof(struct idle_block_entry));
+        if (!entry) {
+            /* Cleanup */
+            idle_block_pool_cleanup(pool);
+            return HFSSS_ERR_NOMEM;
+        }
+        memset(entry, 0, sizeof(*entry));
+        entry->next = pool->free_list;
+        pool->free_list = entry;
+    }
+
+    pool->used_list = NULL;
+
+    return HFSSS_OK;
+}
+
+void idle_block_pool_cleanup(struct idle_block_pool *pool)
+{
+    struct idle_block_entry *entry, *next;
+
+    if (!pool) {
+        return;
+    }
+
+    mutex_lock(&pool->lock, 0);
+
+    /* Free free list */
+    entry = pool->free_list;
+    while (entry) {
+        next = entry->next;
+        free(entry);
+        entry = next;
+    }
+
+    /* Free used list */
+    entry = pool->used_list;
+    while (entry) {
+        next = entry->next;
+        free(entry);
+        entry = next;
+    }
+
+    mutex_unlock(&pool->lock);
+    mutex_cleanup(&pool->lock);
+
+    memset(pool, 0, sizeof(*pool));
+}
+
+struct idle_block_entry *idle_block_alloc(struct resource_mgr *mgr)
+{
+    struct idle_block_entry *entry = NULL;
+    struct idle_block_pool *pool;
+
+    if (!mgr) {
+        return NULL;
+    }
+
+    pool = &mgr->idle_blocks;
+
+    mutex_lock(&pool->lock, 0);
+
+    if (pool->free > 0) {
+        /* Take from head of free list */
+        entry = pool->free_list;
+        pool->free_list = entry->next;
+        entry->next = pool->used_list;
+        pool->used_list = entry;
+        pool->free--;
+        pool->used++;
+    }
+
+    mutex_unlock(&pool->lock);
+
+    return entry;
+}
+
+void idle_block_free(struct resource_mgr *mgr, struct idle_block_entry *block)
+{
+    struct idle_block_pool *pool;
+    struct idle_block_entry **prev;
+    struct idle_block_entry *curr;
+
+    if (!mgr || !block) {
+        return;
+    }
+
+    pool = &mgr->idle_blocks;
+
+    mutex_lock(&pool->lock, 0);
+
+    /* Remove from used list */
+    prev = &pool->used_list;
+    curr = pool->used_list;
+    while (curr) {
+        if (curr == block) {
+            *prev = curr->next;
+            break;
+        }
+        prev = &curr->next;
+        curr = curr->next;
+    }
+
+    if (curr == block) {
+        /* Add to free list */
+        block->next = pool->free_list;
+        pool->free_list = block;
+        pool->used--;
+        pool->free++;
+    }
+
+    mutex_unlock(&pool->lock);
+}
+
+u32 idle_block_get_free_count(struct resource_mgr *mgr)
+{
+    u32 count;
+    struct idle_block_pool *pool;
+
+    if (!mgr) {
+        return 0;
+    }
+
+    pool = &mgr->idle_blocks;
+
+    mutex_lock(&pool->lock, 0);
+    count = pool->free;
+    mutex_unlock(&pool->lock);
+
+    return count;
+}
+
+bool idle_block_needs_gc(struct resource_mgr *mgr)
+{
+    bool needs_gc;
+    struct idle_block_pool *pool;
+
+    if (!mgr) {
+        return false;
+    }
+
+    pool = &mgr->idle_blocks;
+
+    mutex_lock(&pool->lock, 0);
+    needs_gc = (pool->free <= pool->low_watermark);
+    mutex_unlock(&pool->lock);
+
+    return needs_gc;
 }

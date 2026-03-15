@@ -24,7 +24,11 @@ enum cmd_state {
     CMD_STATE_IN_FLIGHT = 4,
     CMD_STATE_COMPLETED = 5,
     CMD_STATE_ERROR = 6,
+    CMD_STATE_TIMEOUT = 7,
 };
+
+/* Timeout Configuration */
+#define DEFAULT_CMD_TIMEOUT_MS 30000  /* 30 seconds default timeout */
 
 /* Command Context */
 struct cmd_context {
@@ -32,8 +36,9 @@ struct cmd_context {
     enum cmd_type type;
     enum cmd_priority priority;
     enum cmd_state state;
-    u64 timestamp;
-    u64 deadline;
+    u64 timestamp;          /* Time when command was received */
+    u64 deadline;           /* Time when command should complete */
+    u64 in_flight_ts;       /* Time when command was marked in-flight */
     struct nvme_cmd_from_kern kern_cmd;
     void *user_data;
     struct cmd_context *next;
@@ -47,13 +52,24 @@ struct priority_queue {
     u32 count;
 };
 
+/* Timeout Statistics */
+struct timeout_stats {
+    u64 total_timeouts;
+    u64 admin_timeouts;
+    u64 io_timeouts;
+    u64 last_timeout_ts;
+};
+
 /* Arbiter Context */
 struct arbiter_ctx {
     struct priority_queue queues[HFSSS_PRIO_MAX];
+    struct priority_queue in_flight_queue;  /* Commands currently in flight */
     u32 total_cmds;
     u32 max_cmds;
     struct cmd_context *cmd_pool;
     u32 pool_size;
+    u64 cmd_timeout_ns;
+    struct timeout_stats stats;
     struct mutex lock;
 };
 
@@ -64,5 +80,12 @@ struct cmd_context *arbiter_alloc_cmd(struct arbiter_ctx *ctx);
 void arbiter_free_cmd(struct arbiter_ctx *ctx, struct cmd_context *cmd);
 int arbiter_enqueue(struct arbiter_ctx *ctx, struct cmd_context *cmd);
 struct cmd_context *arbiter_dequeue(struct arbiter_ctx *ctx);
+
+/* Command Timeout Functions */
+void arbiter_set_timeout(struct arbiter_ctx *ctx, u32 timeout_ms);
+void arbiter_mark_in_flight(struct arbiter_ctx *ctx, struct cmd_context *cmd);
+void arbiter_mark_completed(struct arbiter_ctx *ctx, struct cmd_context *cmd);
+u32 arbiter_check_timeouts(struct arbiter_ctx *ctx);
+struct cmd_context *arbiter_get_next_timeout(struct arbiter_ctx *ctx);
 
 #endif /* __HFSSS_ARBITER_H */

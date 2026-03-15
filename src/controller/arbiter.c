@@ -84,6 +84,7 @@ int arbiter_init(struct arbiter_ctx *ctx, u32 max_cmds)
     }
 
     ctx->max_cmds = max_cmds;
+    ctx->cmd_timeout_ns = (u64)DEFAULT_CMD_TIMEOUT_MS * 1000000ULL;
 
     ctx->cmd_pool = (struct cmd_context *)calloc(max_cmds, sizeof(struct cmd_context));
     if (!ctx->cmd_pool) {
@@ -131,6 +132,8 @@ struct cmd_context *arbiter_alloc_cmd(struct arbiter_ctx *ctx)
             cmd = &ctx->cmd_pool[i];
             memset(cmd, 0, sizeof(*cmd));
             cmd->state = CMD_STATE_RECEIVED;
+            cmd->timestamp = get_time_ns();
+            cmd->deadline = cmd->timestamp + ctx->cmd_timeout_ns;
             ctx->total_cmds++;
             break;
         }
@@ -155,6 +158,10 @@ void arbiter_free_cmd(struct arbiter_ctx *ctx, struct cmd_context *cmd)
         if (prio < HFSSS_PRIO_MAX) {
             cmd_list_remove(&ctx->queues[prio].head, cmd);
             ctx->queues[prio].count--;
+        } else {
+            /* Check in-flight queue */
+            cmd_list_remove(&ctx->in_flight_queue.head, cmd);
+            ctx->in_flight_queue.count--;
         }
     }
 
@@ -212,4 +219,117 @@ struct cmd_context *arbiter_dequeue(struct arbiter_ctx *ctx)
     mutex_unlock(&ctx->lock);
 
     return cmd;
+}
+
+/* Command Timeout Functions */
+void arbiter_set_timeout(struct arbiter_ctx *ctx, u32 timeout_ms)
+{
+    if (!ctx) {
+        return;
+    }
+
+    mutex_lock(&ctx->lock, 0);
+    ctx->cmd_timeout_ns = (u64)timeout_ms * 1000000ULL;
+    mutex_unlock(&ctx->lock);
+}
+
+void arbiter_mark_in_flight(struct arbiter_ctx *ctx, struct cmd_context *cmd)
+{
+    if (!ctx || !cmd) {
+        return;
+    }
+
+    mutex_lock(&ctx->lock, 0);
+
+    cmd->state = CMD_STATE_IN_FLIGHT;
+    cmd->in_flight_ts = get_time_ns();
+    cmd_list_add_tail(&ctx->in_flight_queue.head, cmd);
+    ctx->in_flight_queue.count++;
+
+    mutex_unlock(&ctx->lock);
+}
+
+void arbiter_mark_completed(struct arbiter_ctx *ctx, struct cmd_context *cmd)
+{
+    if (!ctx || !cmd) {
+        return;
+    }
+
+    mutex_lock(&ctx->lock, 0);
+
+    /* Remove from in-flight queue */
+    cmd_list_remove(&ctx->in_flight_queue.head, cmd);
+    ctx->in_flight_queue.count--;
+
+    if (cmd->state != CMD_STATE_TIMEOUT) {
+        cmd->state = CMD_STATE_COMPLETED;
+    }
+
+    mutex_unlock(&ctx->lock);
+}
+
+u32 arbiter_check_timeouts(struct arbiter_ctx *ctx)
+{
+    u32 timeout_count = 0;
+    u64 now;
+    struct cmd_context *cmd, *next;
+
+    if (!ctx) {
+        return 0;
+    }
+
+    now = get_time_ns();
+
+    mutex_lock(&ctx->lock, 0);
+
+    cmd = ctx->in_flight_queue.head;
+    while (cmd) {
+        next = cmd->next;
+        if (now > cmd->deadline) {
+            /* Command timed out */
+            cmd->state = CMD_STATE_TIMEOUT;
+            ctx->stats.total_timeouts++;
+            if (cmd->priority == PRIO_ADMIN_HIGH) {
+                ctx->stats.admin_timeouts++;
+            } else {
+                ctx->stats.io_timeouts++;
+            }
+            ctx->stats.last_timeout_ts = now;
+            timeout_count++;
+        }
+        cmd = next;
+    }
+
+    mutex_unlock(&ctx->lock);
+
+    return timeout_count;
+}
+
+struct cmd_context *arbiter_get_next_timeout(struct arbiter_ctx *ctx)
+{
+    struct cmd_context *cmd = NULL;
+    struct cmd_context *oldest = NULL;
+    u64 oldest_deadline = U64_MAX;
+    u64 now;
+
+    if (!ctx) {
+        return NULL;
+    }
+
+    now = get_time_ns();
+
+    mutex_lock(&ctx->lock, 0);
+
+    cmd = ctx->in_flight_queue.head;
+    while (cmd) {
+        if (cmd->state == CMD_STATE_IN_FLIGHT && cmd->deadline < oldest_deadline) {
+            oldest_deadline = cmd->deadline;
+            oldest = cmd;
+        }
+        cmd = cmd->next;
+    }
+
+    mutex_unlock(&ctx->lock);
+
+    return oldest;
 }
