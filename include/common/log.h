@@ -53,6 +53,14 @@ void log_printf(struct log_ctx *ctx, u32 level, const char *module,
 #define log_trace(ctx, module, ...) \
     log_printf(ctx, LOG_LEVEL_TRACE, module, __FILE__, __LINE__, __VA_ARGS__)
 
+/* Context-free convenience macros for modules without a log_ctx */
+#define HFSSS_LOG_INFO(mod, fmt, ...)  \
+    fprintf(stderr, "[INFO ][%s] " fmt "\n", (mod), ##__VA_ARGS__)
+#define HFSSS_LOG_WARN(mod, fmt, ...)  \
+    fprintf(stderr, "[WARN ][%s] " fmt "\n", (mod), ##__VA_ARGS__)
+#define HFSSS_LOG_ERROR(mod, fmt, ...) \
+    fprintf(stderr, "[ERROR][%s] " fmt "\n", (mod), ##__VA_ARGS__)
+
 #ifdef __cplusplus
 }
 #endif

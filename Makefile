@@ -4,6 +4,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -O2 -std=gnu11 -fPIC
 CFLAGS += -Iinclude -Iinclude/common -Iinclude/media -Iinclude/hal -Iinclude/ftl -Iinclude/controller -Iinclude/pcie
+CFLAGS += -MMD -MP
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
     LDFLAGS = -lpthread -lrt
@@ -43,6 +44,12 @@ CTRL_OBJS = $(CTRL_SRCS:$(SRC_DIR)/controller/%.c=$(BUILD_DIR)/controller/%.o)
 PCIE_OBJS = $(PCIE_SRCS:$(SRC_DIR)/pcie/%.c=$(BUILD_DIR)/pcie/%.o)
 SSSIM_OBJS = $(SSSIM_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 
+# Auto-generated header dependency files
+DEP_FILES = $(COMMON_OBJS:.o=.d) $(MEDIA_OBJS:.o=.d) $(HAL_OBJS:.o=.d) \
+            $(FTL_OBJS:.o=.d) $(CTRL_OBJS:.o=.d) $(PCIE_OBJS:.o=.d) \
+            $(SSSIM_OBJS:.o=.d)
+-include $(DEP_FILES)
+
 # Libraries
 LIBHFSSS_COMMON = $(LIB_DIR)/libhfsss-common.a
 LIBHFSSS_MEDIA = $(LIB_DIR)/libhfsss-media.a
@@ -61,11 +68,18 @@ TEST_CTRL = $(BIN_DIR)/test_controller
 TEST_PCIE = $(BIN_DIR)/test_pcie_nvme
 TEST_SSSIM = $(BIN_DIR)/test_sssim
 TEST_NVME_USPACE = $(BIN_DIR)/test_nvme_uspace
+TEST_BOOT = $(BIN_DIR)/test_boot
+TEST_NOR = $(BIN_DIR)/test_nor_flash
+TEST_FTL_REL = $(BIN_DIR)/test_ftl_reliability
+TEST_RT = $(BIN_DIR)/test_rt_services
+TEST_OOB = $(BIN_DIR)/test_oob
+TEST_CONFIG = $(BIN_DIR)/test_config
+HFSSS_CTRL = $(BIN_DIR)/hfsss-ctrl
 
 # Targets
 .PHONY: all clean directories test help
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(HFSSS_CTRL)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -177,6 +191,34 @@ $(TEST_NVME_USPACE): $(TEST_DIR)/test_nvme_uspace.c $(LIBHFSSS_PCIE) $(LIBHFSSS_
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common $(LDFLAGS)
 
+$(TEST_BOOT): $(TEST_DIR)/test_boot.c $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common $(LDFLAGS)
+
+$(TEST_NOR): $(TEST_DIR)/test_nor_flash.c $(SRC_DIR)/media/nor_flash.c $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) -DHFSSS_NOR_TEST_MODE $(TEST_DIR)/test_nor_flash.c $(SRC_DIR)/media/nor_flash.c -o $@ -L$(LIB_DIR) -lhfsss-common $(LDFLAGS)
+
+$(TEST_FTL_REL): $(TEST_DIR)/test_ftl_reliability.c $(LIBHFSSS_FTL) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-common $(LDFLAGS)
+
+$(TEST_RT): $(TEST_DIR)/test_rt_services.c $(SRC_DIR)/common/rt_services.c $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) -DHFSSS_TRACE_TEST_MODE $(TEST_DIR)/test_rt_services.c $(SRC_DIR)/common/rt_services.c -o $@ -L$(LIB_DIR) -lhfsss-common $(LDFLAGS)
+
+$(TEST_OOB): $(TEST_DIR)/test_oob.c $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common -lm $(LDFLAGS)
+
+$(TEST_CONFIG): $(TEST_DIR)/test_config.c $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common $(LDFLAGS)
+
+$(HFSSS_CTRL): $(SRC_DIR)/tools/hfsss_ctrl.c
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
+
 # Test
 test: all
 	@echo "========================================"
@@ -197,6 +239,18 @@ test: all
 	@$(TEST_SSSIM)
 	@echo ""
 	@$(TEST_NVME_USPACE)
+	@echo ""
+	@$(TEST_BOOT)
+	@echo ""
+	@$(TEST_NOR)
+	@echo ""
+	@$(TEST_FTL_REL)
+	@echo ""
+	@$(TEST_RT)
+	@echo ""
+	@$(TEST_OOB)
+	@echo ""
+	@$(TEST_CONFIG)
 
 # Clean
 clean:

@@ -35,9 +35,17 @@ static int test_nvme_uspace_dev(void)
     struct nvme_uspace_config config;
     int ret;
 
-    /* Test config default with smaller SSD */
+    /* Test config default with smaller SSD - must set full NAND geometry */
     nvme_uspace_config_default(&config);
-    config.sssim_cfg.total_lbas = 1024 * 1024 / 4096; /* 1MB total */
+    config.sssim_cfg.page_size        = 4096;
+    config.sssim_cfg.spare_size       = 64;
+    config.sssim_cfg.channel_count    = 2;
+    config.sssim_cfg.chips_per_channel = 2;
+    config.sssim_cfg.dies_per_chip    = 1;
+    config.sssim_cfg.planes_per_die   = 1;
+    config.sssim_cfg.blocks_per_plane = 64;
+    config.sssim_cfg.pages_per_block  = 64;
+    config.sssim_cfg.total_lbas       = 1024;
     TEST_ASSERT(true, "nvme_uspace_config_default should succeed");
 
     /* Test init */

@@ -86,6 +86,9 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
     union ppn old_ppn;
     u32 ch, plane;
     int ret;
+    int write_retry;
+    const int max_write_retries = 3;
+    u8 *verify_buf = NULL;
 
     /* Select channel and plane (simple round-robin) */
     ch = lba % ctx->config.channel_count;
@@ -106,9 +109,36 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
     /* Encode PPN */
     ppn = ftl_encode_ppn(ch, 0, 0, plane, cwb->block->block_id, cwb->current_page);
 
-    /* Write through HAL */
-    ret = hal_nand_program_sync(ctx->hal, ch, 0, 0, plane,
-                                 cwb->block->block_id, cwb->current_page, data, NULL);
+    /* Write with retry logic */
+    for (write_retry = 0; write_retry < max_write_retries; write_retry++) {
+        /* Write through HAL */
+        ret = hal_nand_program_sync(ctx->hal, ch, 0, 0, plane,
+                                     cwb->block->block_id, cwb->current_page, data, NULL);
+
+        if (ret != HFSSS_OK) {
+            ctx->error.write_error_count++;
+            continue;
+        }
+
+        /* Write Verify - read back and verify */
+        error_write_verify_attempt(&ctx->error);
+        verify_buf = (u8 *)malloc(ctx->config.page_size);
+        if (verify_buf) {
+            ret = hal_nand_read_sync(ctx->hal, ch, 0, 0, plane,
+                                      cwb->block->block_id, cwb->current_page, verify_buf, NULL);
+            if (ret == HFSSS_OK && memcmp(data, verify_buf, ctx->config.page_size) == 0) {
+                free(verify_buf);
+                verify_buf = NULL;
+                break; /* Verify passed */
+            }
+
+            /* Verify failed */
+            error_write_verify_failure(&ctx->error);
+            free(verify_buf);
+            verify_buf = NULL;
+        }
+    }
+
     if (ret != HFSSS_OK) {
         return ret;
     }
@@ -155,6 +185,9 @@ static int ftl_read_page(struct ftl_ctx *ctx, u64 lba, void *data)
     union ppn ppn;
     u32 ch, chip, die, plane, block, page;
     int ret;
+    int retry_count;
+    const int voltage_offsets[] = READ_RETRY_VOLTAGE_OFFSETS;
+    const int max_retries = READ_RETRY_MAX_ATTEMPTS;
 
     /* Look up L2P mapping */
     ret = mapping_l2p(&ctx->mapping, lba, &ppn);
@@ -165,9 +198,27 @@ static int ftl_read_page(struct ftl_ctx *ctx, u64 lba, void *data)
     /* Decode PPN */
     ftl_decode_ppn(ppn, &ch, &chip, &die, &plane, &block, &page);
 
-    /* Read through HAL */
-    ret = hal_nand_read_sync(ctx->hal, ch, chip, die, plane, block, page, data, NULL);
+    /* Try reading with different voltage offsets */
+    for (retry_count = 0; retry_count < max_retries; retry_count++) {
+        /* Read through HAL - for retry, use voltage offset */
+        ret = hal_nand_read_sync(ctx->hal, ch, chip, die, plane, block, page, data, NULL);
 
+        if (ret == HFSSS_OK) {
+            /* If it's a retry that succeeded, track statistics */
+            if (retry_count > 0) {
+                error_read_retry_success(&ctx->error);
+            }
+            return HFSSS_OK;
+        }
+
+        /* Track retry attempt */
+        if (retry_count > 0) {
+            error_read_retry_attempt(&ctx->error);
+        }
+    }
+
+    /* All retry attempts failed */
+    ctx->error.uncorrectable_count++;
     return ret;
 }
 

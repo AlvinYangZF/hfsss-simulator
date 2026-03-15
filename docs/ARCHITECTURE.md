@@ -166,23 +166,51 @@ make test
 make clean
 ```
 
-Test output shows 362 test cases all passing.
+Test output shows 431+ test cases all passing (as of Phase 3 completion).
 
 ---
 
-## Differences from Original Design Documents
+## Architecture Decision: User-Space vs. Kernel Module
 
-The original Chinese design documents (HLD/LLD) describe a more ambitious system:
+### Decision
 
-| Aspect | Original Design | Actual Implementation |
-|--------|-----------------|----------------------|
-| Host Interface | Linux kernel module + real NVMe driver | User-space library only |
-| PCIe/NVMe Emulation | Full PCIe config space, BARs, MSI-X | Simplified user-space structures |
-| Controller Thread | Full multi-threaded controller | Simplified synchronous interface |
-| Write Buffer | Full write buffer with background flush | No write buffer (writes go directly) |
-| Read Cache | LRU read cache | No read cache |
+The project uses a **phased architecture** that starts as a pure user-space library and optionally grows into a kernel module:
 
-The current implementation focuses on the core SSD components (FTL, HAL, Media) that are most useful for SSD research.
+- **Phases 0–6 (current path)**: User-space library. Simulates the full SSD internal stack (FTL, HAL, Media, Controller) without requiring any kernel changes. Accessible from test programs and benchmarks via `sssim.h`.
+- **Phase 7 (optional, future)**: Linux kernel module (`hfsss_nvme.ko`) that presents a real `/dev/nvme0n1` block device to the host OS, enabling nvme-cli and fio integration.
+
+### Rationale
+
+| Concern | User-Space Choice |
+|---------|------------------|
+| Development velocity | No kernel build cycle; iterate with `make test` in seconds |
+| Portability | Runs on macOS (development) and Linux (CI) without a kernel |
+| Safety | Bugs cannot panic the host OS |
+| Scope | Research use cases (FTL algorithms, GC, WL, fault injection) are fully satisfied without a real block device |
+
+### Comparison Table
+
+| Aspect | PRD / HLD / LLD Spec | Current Implementation (Phases 0–6) | Phase 7 (optional) |
+|--------|----------------------|--------------------------------------|---------------------|
+| Host interface | Linux kernel NVMe driver | `sssim.h` user-space API | Real `/dev/nvme0n1` |
+| PCIe/NVMe emulation | Full config space, BARs, MSI-X via kernel | User-space NVMe command structures | Full kernel PCI driver |
+| Command reception | Shared memory Ring Buffer from kernel | Direct function-call API | Ring Buffer via mmap |
+| DMA | `dma_map_page` / IOMMU | Buffer pointer passing | Real kernel DMA |
+| Interrupt delivery | `apic->send_IPI` | Synchronous return value | Real MSI-X |
+| Thread model | 26+ threads, CPU-pinned, SCHED_FIFO | Configurable threads, no affinity | Full multi-core simulation |
+| Compatibility | nvme-cli, fio, kernel NVMe driver | Test programs only | Full compatibility |
+
+### Impact on Open Requirements
+
+Requirements REQ-120 through REQ-122 (block device, nvme-cli, fio) remain ❌ until Phase 7. All other requirements are addressable within the user-space architecture.
+
+### Phase 7 Scope (for planning purposes)
+
+- Implement `hfsss_nvme.ko` as a Linux PCI endpoint function driver
+- Map BAR0 MMIO to simulated NVMe registers
+- Deliver MSI-X interrupts via `pci_irq_send_affinity_hint`
+- Bridge kernel-space command reception to user-space simulator via shared memory
+- Estimated effort: 4–6 weeks; gated on Phases 1–6 stability
 
 ---
 
