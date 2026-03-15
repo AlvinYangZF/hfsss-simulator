@@ -2,7 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-int hal_init(struct hal_ctx *ctx, struct hal_nand_dev *nand_dev)
+int hal_init_full(struct hal_ctx *ctx, struct hal_nand_dev *nand_dev,
+                  struct hal_nor_dev *nor_dev, struct hal_pci_ctx *pci_ctx,
+                  struct hal_power_ctx *power_ctx)
 {
     int ret;
 
@@ -18,16 +20,20 @@ int hal_init(struct hal_ctx *ctx, struct hal_nand_dev *nand_dev)
         return ret;
     }
 
-    /* Set NAND device */
+    /* Set devices */
     ctx->nand = nand_dev;
-
-    /* Initialize other devices as placeholders */
-    ctx->nor = NULL;
-    ctx->pci = NULL;
-    ctx->power = NULL;
+    ctx->nor = nor_dev;
+    ctx->pci = pci_ctx;
+    ctx->power = power_ctx;
 
     ctx->initialized = true;
     return HFSSS_OK;
+}
+
+int hal_init(struct hal_ctx *ctx, struct hal_nand_dev *nand_dev)
+{
+    /* Backward-compatible init: only NAND device, others NULL */
+    return hal_init_full(ctx, nand_dev, NULL, NULL, NULL);
 }
 
 void hal_cleanup(struct hal_ctx *ctx)
@@ -188,6 +194,129 @@ u32 hal_ctx_nand_get_erase_count(struct hal_ctx *ctx, u32 ch, u32 chip,
     }
 
     return hal_nand_get_erase_count(ctx->nand, ch, chip, die, plane, block);
+}
+
+/* NOR wrapper functions */
+int hal_nor_read_sync(struct hal_ctx *ctx, u32 addr, void *data, u32 len)
+{
+    int ret;
+
+    if (!ctx || !ctx->initialized || !ctx->nor || !data) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    ret = hal_nor_read(ctx->nor, addr, data, len);
+
+    mutex_lock(&ctx->lock, 0);
+    if (ret == HFSSS_OK) {
+        ctx->stats.nor_read_count++;
+    }
+    mutex_unlock(&ctx->lock);
+
+    return ret;
+}
+
+int hal_nor_write_sync(struct hal_ctx *ctx, u32 addr, const void *data, u32 len)
+{
+    int ret;
+
+    if (!ctx || !ctx->initialized || !ctx->nor || !data) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    ret = hal_nor_write(ctx->nor, addr, data, len);
+
+    mutex_lock(&ctx->lock, 0);
+    if (ret == HFSSS_OK) {
+        ctx->stats.nor_write_count++;
+    }
+    mutex_unlock(&ctx->lock);
+
+    return ret;
+}
+
+int hal_nor_erase_sync(struct hal_ctx *ctx, u32 addr, u32 len)
+{
+    int ret;
+
+    if (!ctx || !ctx->initialized || !ctx->nor) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    ret = hal_nor_erase(ctx->nor, addr, len);
+
+    mutex_lock(&ctx->lock, 0);
+    if (ret == HFSSS_OK) {
+        ctx->stats.nor_erase_count++;
+    }
+    mutex_unlock(&ctx->lock);
+
+    return ret;
+}
+
+/* PCI wrapper functions */
+int hal_pci_submit_completion_sync(struct hal_ctx *ctx, const struct hal_pci_completion *comp)
+{
+    if (!ctx || !ctx->initialized || !ctx->pci || !comp) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    return hal_pci_submit_completion(ctx->pci, comp);
+}
+
+int hal_pci_poll_completion_sync(struct hal_ctx *ctx, struct hal_pci_completion *comp)
+{
+    if (!ctx || !ctx->initialized || !ctx->pci || !comp) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    return hal_pci_poll_completion(ctx->pci, comp);
+}
+
+int hal_pci_ns_attach_sync(struct hal_ctx *ctx, u32 nsid, u64 size, u32 lba_size)
+{
+    if (!ctx || !ctx->initialized || !ctx->pci) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    return hal_pci_ns_attach(ctx->pci, nsid, size, lba_size);
+}
+
+int hal_pci_ns_detach_sync(struct hal_ctx *ctx, u32 nsid)
+{
+    if (!ctx || !ctx->initialized || !ctx->pci) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    return hal_pci_ns_detach(ctx->pci, nsid);
+}
+
+int hal_pci_ns_get_info_sync(struct hal_ctx *ctx, u32 nsid, struct hal_pci_namespace *info)
+{
+    if (!ctx || !ctx->initialized || !ctx->pci || !info) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    return hal_pci_ns_get_info(ctx->pci, nsid, info);
+}
+
+/* Power wrapper functions */
+int hal_power_set_state_sync(struct hal_ctx *ctx, enum hal_nvme_power_state state)
+{
+    if (!ctx || !ctx->initialized || !ctx->power) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    return hal_power_set_state(ctx->power, state);
+}
+
+enum hal_nvme_power_state hal_power_get_state_sync(struct hal_ctx *ctx)
+{
+    if (!ctx || !ctx->initialized || !ctx->power) {
+        return HAL_POWER_PS4;
+    }
+
+    return hal_power_get_state(ctx->power);
 }
 
 void hal_get_stats(struct hal_ctx *ctx, struct hal_stats *stats)
