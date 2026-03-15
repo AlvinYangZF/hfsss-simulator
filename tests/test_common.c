@@ -7,6 +7,8 @@
 #include "common/msgqueue.h"
 #include "common/semaphore.h"
 #include "common/mutex.h"
+#include "common/memory.h"
+#include "common/watchdog.h"
 
 #define TEST_PASS 0
 #define TEST_FAIL 1
@@ -382,6 +384,139 @@ static int test_mutex(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Memory Tests */
+static int test_memory(void)
+{
+    printf("\n=== Memory Module Tests ===\n");
+
+    struct mem_region region;
+    int ret;
+
+    /* Test basic allocation */
+    ret = mem_region_alloc(&region, 1024 * 1024, MEM_ALLOC_ZERO | MEM_ALLOC_POPULATE);
+    TEST_ASSERT(ret == HFSSS_OK, "mem_region_alloc should succeed");
+    TEST_ASSERT(region.addr != NULL, "region.addr should not be NULL");
+    TEST_ASSERT(region.size >= 1024 * 1024, "region.size should be at least 1MB");
+
+    /* Test bump allocator */
+    void *ptr1 = mem_region_bump_alloc(&region, 256);
+    TEST_ASSERT(ptr1 != NULL, "first bump alloc should succeed");
+
+    void *ptr2 = mem_region_bump_alloc(&region, 512);
+    TEST_ASSERT(ptr2 != NULL, "second bump alloc should succeed");
+    TEST_ASSERT(ptr2 > ptr1, "second alloc should be after first");
+
+    /* Test that memory is zero-initialized */
+    if (ptr1) {
+        int all_zero = 1;
+        for (int i = 0; i < 256; i++) {
+            if (((char *)ptr1)[i] != 0) {
+                all_zero = 0;
+                break;
+            }
+        }
+        TEST_ASSERT(all_zero, "memory should be zero-initialized");
+    }
+
+    /* Test bump reset */
+    mem_region_bump_reset(&region);
+    TEST_ASSERT(region.allocated == 0, "allocated should be 0 after reset");
+
+    void *ptr3 = mem_region_bump_alloc(&region, 1024);
+    TEST_ASSERT(ptr3 == ptr1, "alloc after reset should reuse memory");
+
+    /* Free the region */
+    mem_region_free(&region);
+    TEST_ASSERT(region.addr == NULL, "region.addr should be NULL after free");
+
+    /* Test huge page availability check */
+    bool hugetlb_available = mem_hugetlb_available();
+    /* Just check that the function returns a value without crashing */
+    TEST_ASSERT(1, "mem_hugetlb_available should execute");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Watchdog Tests */
+static int timeout_occurred = 0;
+static int timeout_task_id = -1;
+
+static void watchdog_test_timeout_cb(int task_id, const char *task_name, void *user_data)
+{
+    (void)task_name;
+    (void)user_data;
+    timeout_occurred = 1;
+    timeout_task_id = task_id;
+}
+
+static int test_watchdog(void)
+{
+    printf("\n=== Watchdog Module Tests ===\n");
+
+    struct watchdog_ctx ctx;
+    int ret;
+    int task_id1, task_id2;
+
+    /* Test init */
+    ret = watchdog_init(&ctx, 100 * 1000 * 1000ULL, /* 100ms check interval */
+                     watchdog_test_timeout_cb, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "watchdog_init should succeed");
+
+    /* Test register tasks */
+    task_id1 = watchdog_register_task(&ctx, "task1", 500 * 1000 * 1000ULL, NULL); /* 500ms timeout */
+    TEST_ASSERT(task_id1 >= 0, "register task1 should succeed");
+
+    task_id2 = watchdog_register_task(&ctx, "task2", 2000 * 1000 * 1000ULL, NULL); /* 2s timeout */
+    TEST_ASSERT(task_id2 >= 0, "register task2 should succeed");
+    TEST_ASSERT(task_id2 != task_id1, "task IDs should be different");
+
+    /* Test stats */
+    u64 timeout_count;
+    int active_tasks;
+    watchdog_stats(&ctx, &timeout_count, &active_tasks);
+    TEST_ASSERT(active_tasks == 2, "should have 2 active tasks");
+    TEST_ASSERT(timeout_count == 0, "timeout_count should be 0");
+
+    /* Test feeding */
+    ret = watchdog_feed(&ctx, task_id1);
+    TEST_ASSERT(ret == HFSSS_OK, "feed task1 should succeed");
+
+    /* Test disable/enable */
+    ret = watchdog_disable_task(&ctx, task_id2);
+    TEST_ASSERT(ret == HFSSS_OK, "disable task2 should succeed");
+
+    watchdog_stats(&ctx, &timeout_count, &active_tasks);
+    TEST_ASSERT(active_tasks == 1, "should have 1 active task after disable");
+
+    ret = watchdog_enable_task(&ctx, task_id2);
+    TEST_ASSERT(ret == HFSSS_OK, "enable task2 should succeed");
+
+    /* Test unregister */
+    ret = watchdog_unregister_task(&ctx, task_id2);
+    TEST_ASSERT(ret == HFSSS_OK, "unregister task2 should succeed");
+
+    /* Test starting the watchdog (without expecting a timeout) */
+    timeout_occurred = 0;
+    ret = watchdog_start(&ctx);
+    TEST_ASSERT(ret == HFSSS_OK, "watchdog_start should succeed");
+
+    /* Feed task1 a few times */
+    for (int i = 0; i < 5; i++) {
+        watchdog_feed(&ctx, task_id1);
+        sleep_ns(50 * 1000 * 1000ULL); /* 50ms */
+    }
+
+    TEST_ASSERT(timeout_occurred == 0, "no timeout should have occurred yet");
+
+    /* Stop the watchdog */
+    watchdog_stop(&ctx);
+
+    /* Cleanup */
+    watchdog_cleanup(&ctx);
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -399,6 +534,8 @@ int main(void)
     test_msgqueue();
     test_semaphore();
     test_mutex();
+    test_memory();
+    test_watchdog();
 
     printf("\n========================================\n");
     printf("Test Summary\n");
