@@ -106,13 +106,27 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
         return ret;
     }
 
+    /*
+     * Use the block descriptor's physical coordinates for all NAND I/O and
+     * PPN encoding.  block_alloc() returns blocks from a shared free pool
+     * without regard for channel, so cwb->block->channel may differ from the
+     * logical channel derived from the LBA.  Encoding the PPN from the block
+     * descriptor keeps L2P consistent with what GC sees when it scans the
+     * victim block.
+     */
+    u32 phys_ch    = cwb->block->channel;
+    u32 phys_chip  = cwb->block->chip;
+    u32 phys_die   = cwb->block->die;
+    u32 phys_plane = cwb->block->plane;
+
     /* Encode PPN */
-    ppn = ftl_encode_ppn(ch, 0, 0, plane, cwb->block->block_id, cwb->current_page);
+    ppn = ftl_encode_ppn(phys_ch, phys_chip, phys_die, phys_plane,
+                          cwb->block->block_id, cwb->current_page);
 
     /* Write with retry logic */
     for (write_retry = 0; write_retry < max_write_retries; write_retry++) {
         /* Write through HAL */
-        ret = hal_nand_program_sync(ctx->hal, ch, 0, 0, plane,
+        ret = hal_nand_program_sync(ctx->hal, phys_ch, phys_chip, phys_die, phys_plane,
                                      cwb->block->block_id, cwb->current_page, data, NULL);
 
         if (ret != HFSSS_OK) {
@@ -124,7 +138,7 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
         error_write_verify_attempt(&ctx->error);
         verify_buf = (u8 *)malloc(ctx->config.page_size);
         if (verify_buf) {
-            ret = hal_nand_read_sync(ctx->hal, ch, 0, 0, plane,
+            ret = hal_nand_read_sync(ctx->hal, phys_ch, phys_chip, phys_die, phys_plane,
                                       cwb->block->block_id, cwb->current_page, verify_buf, NULL);
             if (ret == HFSSS_OK && memcmp(data, verify_buf, ctx->config.page_size) == 0) {
                 free(verify_buf);

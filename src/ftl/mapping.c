@@ -2,6 +2,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * p2l_idx — compute the P2L table index for a given PPN.
+ *
+ * The PPN raw value encodes page bits at positions 27-36, which lie above
+ * the 2^24 boundary.  A plain modulo by P2L_TABLE_SIZE (2^24) would mask
+ * out the page field entirely, causing every page in the same block to
+ * collide in the P2L table.  The XOR fold brings bits 24 and above back
+ * into the lower 24 bits before taking the modulo, ensuring that distinct
+ * pages within the same block produce distinct table indices.
+ */
+static inline u64 p2l_idx(union ppn ppn, u64 table_size)
+{
+    return (ppn.raw ^ (ppn.raw >> 24)) % table_size;
+}
+
 int mapping_init(struct mapping_ctx *ctx, u64 l2p_size, u64 p2l_size)
 {
     int ret;
@@ -96,7 +111,7 @@ int mapping_p2l(struct mapping_ctx *ctx, union ppn ppn, u64 *lba)
         return HFSSS_ERR_INVAL;
     }
 
-    u64 idx = ppn.raw % ctx->p2l_size;
+    u64 idx = p2l_idx(ppn, ctx->p2l_size);
 
     mutex_lock(&ctx->lock, 0);
 
@@ -129,7 +144,7 @@ int mapping_insert(struct mapping_ctx *ctx, u64 lba, union ppn ppn)
     ctx->l2p_table[lba].valid = true;
 
     /* Insert into P2L (simple hash) */
-    u64 idx = ppn.raw % ctx->p2l_size;
+    u64 idx = p2l_idx(ppn, ctx->p2l_size);
     ctx->p2l_table[idx].lba = lba;
     ctx->p2l_table[idx].valid = true;
 
@@ -165,7 +180,7 @@ int mapping_remove(struct mapping_ctx *ctx, u64 lba)
     memset(&ctx->l2p_table[lba].ppn, 0, sizeof(ppn));
 
     /* Remove from P2L */
-    u64 idx = ppn.raw % ctx->p2l_size;
+    u64 idx = p2l_idx(ppn, ctx->p2l_size);
     ctx->p2l_table[idx].valid = false;
     ctx->p2l_table[idx].lba = 0;
 
@@ -196,7 +211,7 @@ int mapping_update(struct mapping_ctx *ctx, u64 lba, union ppn new_ppn, union pp
     /* If there was an old mapping, remove from P2L first */
     if (ctx->l2p_table[lba].valid) {
         union ppn old = ctx->l2p_table[lba].ppn;
-        u64 old_idx = old.raw % ctx->p2l_size;
+        u64 old_idx = p2l_idx(old, ctx->p2l_size);
         ctx->p2l_table[old_idx].valid = false;
         ctx->valid_count--;
     }
@@ -205,7 +220,7 @@ int mapping_update(struct mapping_ctx *ctx, u64 lba, union ppn new_ppn, union pp
     ctx->l2p_table[lba].ppn = new_ppn;
     ctx->l2p_table[lba].valid = true;
 
-    u64 new_idx = new_ppn.raw % ctx->p2l_size;
+    u64 new_idx = p2l_idx(new_ppn, ctx->p2l_size);
     ctx->p2l_table[new_idx].lba = lba;
     ctx->p2l_table[new_idx].valid = true;
     ctx->valid_count++;
