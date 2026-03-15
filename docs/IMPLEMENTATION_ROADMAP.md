@@ -30,9 +30,9 @@ based on dependency depth, user-visible impact, and version target.
 | Phase 1 – Core FTL | 60/134 | 44.8% | 362+ | ✅ Complete |
 | Phase 2 – HAL & Controller | 74/134 | 55.2% | 437+ | ✅ Complete |
 | Phase 3 – User-Space NVMe | **87/134** | **64.9%** | **431+** | ✅ Complete |
-| Phase 4 – Boot & Reliability | 101/134 | 75.4% | 550+ | 🔲 Next |
-| Phase 5 – OOB & Tools | 114/134 | 85.1% | 600+ | 🔲 Queued |
-| Phase 6 – Perf & Fault Inj. | 127/134 | 94.8% | 650+ | 🔲 Queued |
+| Phase 4 – Boot & Reliability | 101/134 | 75.4% | 550+ | ✅ Complete |
+| Phase 5 – OOB & Tools | 114/134 | 85.1% | 770+ | ✅ Complete |
+| Phase 6 – Perf & Fault Inj. | 127/134 | 94.8% | 850+ | 🔲 Next |
 | Phase 7 – Kernel Module | 134/134 | 100% | 700+ | 🔲 Optional |
 
 > **Note**: Coverage counts the subset of requirements whose implementations are verified by at least one passing test. Partial implementations (⚠️) count as 0.5 toward the total for planning purposes but are listed as ❌ until fully verified.

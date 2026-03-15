@@ -74,12 +74,21 @@ TEST_FTL_REL = $(BIN_DIR)/test_ftl_reliability
 TEST_RT = $(BIN_DIR)/test_rt_services
 TEST_OOB = $(BIN_DIR)/test_oob
 TEST_CONFIG = $(BIN_DIR)/test_config
+TEST_FAULT = $(BIN_DIR)/test_fault_inject
+TEST_RELIABILITY = $(BIN_DIR)/test_reliability
 HFSSS_CTRL = $(BIN_DIR)/hfsss-ctrl
+
+# Perf validation library and test
+TEST_PERF = $(BIN_DIR)/test_perf_validation
+LIBHFSSS_PERF = $(LIB_DIR)/libhfsss-perf.a
+PERF_SRC = $(SRC_DIR)/perf
+PERF_SRCS = $(wildcard $(PERF_SRC)/*.c)
+PERF_OBJS = $(PERF_SRCS:$(SRC_DIR)/perf/%.c=$(BUILD_DIR)/perf/%.o)
 
 # Targets
 .PHONY: all clean directories test help
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(HFSSS_CTRL)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(HFSSS_CTRL)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -91,6 +100,7 @@ directories:
 	@mkdir -p $(BUILD_DIR)/ftl
 	@mkdir -p $(BUILD_DIR)/controller
 	@mkdir -p $(BUILD_DIR)/pcie
+	@mkdir -p $(BUILD_DIR)/perf
 	@mkdir -p $(BUILD_DIR)
 	@mkdir -p $(LIB_DIR)
 	@mkdir -p $(BIN_DIR)
@@ -158,6 +168,15 @@ $(LIBHFSSS_SSSIM): $(SSSIM_OBJS)
 	@echo "  AR      $@"
 	@ar rcs $@ $(SSSIM_OBJS)
 
+# Perf validation library
+$(BUILD_DIR)/perf/%.o: $(SRC_DIR)/perf/%.c
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) -c $< -o $@
+
+$(LIBHFSSS_PERF): $(PERF_OBJS)
+	@echo "  AR      $@"
+	@ar rcs $@ $(PERF_OBJS)
+
 # Test programs
 $(TEST_COMMON): $(TEST_DIR)/test_common.c $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
@@ -215,6 +234,18 @@ $(TEST_CONFIG): $(TEST_DIR)/test_config.c $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common $(LDFLAGS)
 
+$(TEST_FAULT): $(TEST_DIR)/test_fault_inject.c $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common -lm $(LDFLAGS)
+
+$(TEST_RELIABILITY): $(TEST_DIR)/test_reliability.c $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common -lm $(LDFLAGS)
+
+$(TEST_PERF): $(TEST_DIR)/test_perf_validation.c $(LIBHFSSS_PERF) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-perf -lhfsss-common -lm $(LDFLAGS)
+
 $(HFSSS_CTRL): $(SRC_DIR)/tools/hfsss_ctrl.c
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
@@ -251,6 +282,12 @@ test: all
 	@$(TEST_OOB)
 	@echo ""
 	@$(TEST_CONFIG)
+	@echo ""
+	@$(TEST_FAULT)
+	@echo ""
+	@$(TEST_RELIABILITY)
+	@echo ""
+	@$(TEST_PERF)
 
 # Clean
 clean:
