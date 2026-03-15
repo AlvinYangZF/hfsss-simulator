@@ -259,8 +259,7 @@ struct block_desc *block_find_victim(struct block_mgr *mgr, int policy)
 {
     struct block_desc *block;
     struct block_desc *victim = NULL;
-    u64 max_cost = 0;
-    (void)policy;
+    u64 best_score = 0;
 
     if (!mgr) {
         return NULL;
@@ -268,8 +267,51 @@ struct block_desc *block_find_victim(struct block_mgr *mgr, int policy)
 
     mutex_lock(&mgr->lock, 0);
 
-    /* For testing: just return the first closed block */
-    victim = mgr->closed_list;
+    switch (policy) {
+    case GC_POLICY_GREEDY:
+        /* Greedy: pick block with most invalid pages */
+        for (block = mgr->closed_list; block != NULL; block = block->next) {
+            u64 invalid = block->invalid_page_count;
+            if (!victim || invalid > best_score) {
+                victim = block;
+                best_score = invalid;
+            }
+        }
+        break;
+
+    case GC_POLICY_COST_BENEFIT:
+        /* Cost-Benefit: (1 - u) * 2^(-age / T) or similar heuristic
+         * We'll use (invalid_pages) / (erase_count + 1) as a simple heuristic
+         * Higher invalid pages and lower erase count = better victim
+         */
+        best_score = U64_MAX;
+        for (block = mgr->closed_list; block != NULL; block = block->next) {
+            u64 valid = block->valid_page_count;
+            u64 erase = block->erase_count + 1; /* Avoid division by zero */
+            u64 score = (valid + 1) * erase; /* Lower is better */
+            if (!victim || score < best_score) {
+                victim = block;
+                best_score = score;
+            }
+        }
+        break;
+
+    case GC_POLICY_FIFO:
+        /* FIFO: pick oldest closed block (by last_write_ts) */
+        best_score = U64_MAX;
+        for (block = mgr->closed_list; block != NULL; block = block->next) {
+            if (!victim || block->last_write_ts < best_score) {
+                victim = block;
+                best_score = block->last_write_ts;
+            }
+        }
+        break;
+
+    default:
+        /* Default to first closed block */
+        victim = mgr->closed_list;
+        break;
+    }
 
     mutex_unlock(&mgr->lock);
 

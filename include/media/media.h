@@ -69,4 +69,10 @@ u32 media_nand_get_erase_count(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
 void media_get_stats(struct media_ctx *ctx, struct media_stats *stats);
 void media_reset_stats(struct media_ctx *ctx);
 
+/* Persistence functions */
+int media_save(struct media_ctx *ctx, const char *filepath);
+int media_load(struct media_ctx *ctx, const char *filepath);
+int media_create_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir);
+int media_restore_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir);
+
 #endif /* __HFSSS_MEDIA_H */

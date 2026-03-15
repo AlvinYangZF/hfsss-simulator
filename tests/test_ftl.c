@@ -145,8 +145,8 @@ static int test_gc(void)
     TEST_ASSERT(ret == HFSSS_OK, "gc_init should succeed");
 
     /* Test initial stats */
-    u64 gc_count, moved_pages, reclaimed_blocks;
-    gc_get_stats(&ctx, &gc_count, &moved_pages, &reclaimed_blocks);
+    u64 gc_count, moved_pages, reclaimed_blocks, gc_write_pages;
+    gc_get_stats(&ctx, &gc_count, &moved_pages, &reclaimed_blocks, &gc_write_pages);
     TEST_ASSERT(gc_count == 0, "initial gc_count should be 0");
     TEST_ASSERT(moved_pages == 0, "initial moved_pages should be 0");
     TEST_ASSERT(reclaimed_blocks == 0, "initial reclaimed_blocks should be 0");
@@ -161,7 +161,7 @@ static int test_gc(void)
     TEST_ASSERT(gc_init(NULL, GC_POLICY_GREEDY, 5, 10, 2) == HFSSS_ERR_INVAL,
                 "gc_init with NULL should fail");
     gc_cleanup(NULL);
-    gc_get_stats(NULL, NULL, NULL, NULL);
+    gc_get_stats(NULL, NULL, NULL, NULL, NULL);
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }

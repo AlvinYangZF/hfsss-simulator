@@ -6,6 +6,15 @@
 static void media_wait_until_available(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane);
 static void media_inject_bit_errors(struct media_ctx *ctx, struct nand_page *page, void *data, void *spare, u32 page_size, u32 spare_size);
 
+/* Page metadata structure for persistence */
+struct page_metadata {
+    enum page_state state;
+    u64 program_ts;
+    u32 erase_count;
+    u32 bit_errors;
+    u32 read_count;
+};
+
 int media_init(struct media_ctx *ctx, struct media_config *config)
 {
     int ret;
@@ -468,4 +477,288 @@ void media_reset_stats(struct media_ctx *ctx)
     mutex_lock(&ctx->lock, 0);
     memset(&ctx->stats, 0, sizeof(ctx->stats));
     mutex_unlock(&ctx->lock);
+}
+
+/* Persistence implementation */
+
+/* Magic number for file format validation */
+#define MEDIA_FILE_MAGIC 0x48465353  /* "HFSS" */
+#define MEDIA_FILE_VERSION 1
+
+/* File header structure */
+struct media_file_header {
+    u32 magic;
+    u32 version;
+    struct media_config config;
+    struct media_stats stats;
+    u64 nand_data_offset;
+    u64 bbt_offset;
+};
+
+static int write_file_header(FILE *f, struct media_ctx *ctx)
+{
+    struct media_file_header hdr;
+    memset(&hdr, 0, sizeof(hdr));
+
+    hdr.magic = MEDIA_FILE_MAGIC;
+    hdr.version = MEDIA_FILE_VERSION;
+    hdr.config = ctx->config;
+    hdr.stats = ctx->stats;
+
+    /* Calculate offsets - header comes first */
+    hdr.nand_data_offset = sizeof(hdr);
+
+    /* Calculate NAND data size including metadata */
+    u32 total_blocks = ctx->config.channel_count *
+                       ctx->config.chips_per_channel *
+                       ctx->config.dies_per_chip *
+                       ctx->config.planes_per_die *
+                       ctx->config.blocks_per_plane;
+    u32 total_pages = total_blocks * ctx->config.pages_per_block;
+    u64 block_metadata_size = total_blocks * (sizeof(enum block_state) + sizeof(u32));
+    u64 page_metadata_size = total_pages * sizeof(struct page_metadata);
+    u64 page_data_size = total_pages * (ctx->config.page_size + ctx->config.spare_size);
+    u64 nand_data_size = block_metadata_size + page_metadata_size + page_data_size;
+
+    hdr.bbt_offset = hdr.nand_data_offset + nand_data_size;
+
+    if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) {
+        return HFSSS_ERR_IO;
+    }
+
+    return HFSSS_OK;
+}
+
+static int read_file_header(FILE *f, struct media_file_header *hdr)
+{
+    if (fread(hdr, sizeof(*hdr), 1, f) != 1) {
+        return HFSSS_ERR_IO;
+    }
+
+    if (hdr->magic != MEDIA_FILE_MAGIC) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    if (hdr->version != MEDIA_FILE_VERSION) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    return HFSSS_OK;
+}
+
+/* Page metadata structure for persistence */
+static int write_nand_data(FILE *f, struct media_ctx *ctx)
+{
+    u32 ch, chip, die, plane, block, page;
+
+    for (ch = 0; ch < ctx->config.channel_count; ch++) {
+        for (chip = 0; chip < ctx->config.chips_per_channel; chip++) {
+            for (die = 0; die < ctx->config.dies_per_chip; die++) {
+                for (plane = 0; plane < ctx->config.planes_per_die; plane++) {
+                    for (block = 0; block < ctx->config.blocks_per_plane; block++) {
+                        struct nand_block *blk = nand_get_block(ctx->nand, ch, chip, die, plane, block);
+                        if (!blk) continue;
+
+                        /* Write block state and pages_written */
+                        if (fwrite(&blk->state, sizeof(blk->state), 1, f) != 1) return HFSSS_ERR_IO;
+                        if (fwrite(&blk->pages_written, sizeof(blk->pages_written), 1, f) != 1) return HFSSS_ERR_IO;
+
+                        for (page = 0; page < ctx->config.pages_per_block; page++) {
+                            struct nand_page *pg = &blk->pages[page];
+                            if (!pg) continue;
+
+                            /* Write page metadata */
+                            struct page_metadata meta;
+                            meta.state = pg->state;
+                            meta.program_ts = pg->program_ts;
+                            meta.erase_count = pg->erase_count;
+                            meta.bit_errors = pg->bit_errors;
+                            meta.read_count = pg->read_count;
+                            if (fwrite(&meta, sizeof(meta), 1, f) != 1) {
+                                return HFSSS_ERR_IO;
+                            }
+
+                            /* Write page data */
+                            if (fwrite(pg->data, ctx->config.page_size, 1, f) != 1) {
+                                return HFSSS_ERR_IO;
+                            }
+
+                            /* Write page spare */
+                            if (fwrite(pg->spare, ctx->config.spare_size, 1, f) != 1) {
+                                return HFSSS_ERR_IO;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return HFSSS_OK;
+}
+
+static int read_nand_data(FILE *f, struct media_ctx *ctx)
+{
+    u32 ch, chip, die, plane, block, page;
+
+    for (ch = 0; ch < ctx->config.channel_count; ch++) {
+        for (chip = 0; chip < ctx->config.chips_per_channel; chip++) {
+            for (die = 0; die < ctx->config.dies_per_chip; die++) {
+                for (plane = 0; plane < ctx->config.planes_per_die; plane++) {
+                    for (block = 0; block < ctx->config.blocks_per_plane; block++) {
+                        struct nand_block *blk = nand_get_block(ctx->nand, ch, chip, die, plane, block);
+                        if (!blk) continue;
+
+                        /* Read block state and pages_written */
+                        if (fread(&blk->state, sizeof(blk->state), 1, f) != 1) return HFSSS_ERR_IO;
+                        if (fread(&blk->pages_written, sizeof(blk->pages_written), 1, f) != 1) return HFSSS_ERR_IO;
+
+                        for (page = 0; page < ctx->config.pages_per_block; page++) {
+                            struct nand_page *pg = &blk->pages[page];
+                            if (!pg) continue;
+
+                            /* Read page metadata */
+                            struct page_metadata meta;
+                            if (fread(&meta, sizeof(meta), 1, f) != 1) {
+                                return HFSSS_ERR_IO;
+                            }
+                            pg->state = meta.state;
+                            pg->program_ts = meta.program_ts;
+                            pg->erase_count = meta.erase_count;
+                            pg->bit_errors = meta.bit_errors;
+                            pg->read_count = meta.read_count;
+
+                            /* Read page data */
+                            if (fread(pg->data, ctx->config.page_size, 1, f) != 1) {
+                                return HFSSS_ERR_IO;
+                            }
+
+                            /* Read page spare */
+                            if (fread(pg->spare, ctx->config.spare_size, 1, f) != 1) {
+                                return HFSSS_ERR_IO;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return HFSSS_OK;
+}
+
+int media_save(struct media_ctx *ctx, const char *filepath)
+{
+    if (!ctx || !ctx->initialized || !filepath) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    FILE *f = fopen(filepath, "wb");
+    if (!f) {
+        return HFSSS_ERR_IO;
+    }
+
+    int ret = HFSSS_OK;
+
+    /* Write header */
+    ret = write_file_header(f, ctx);
+    if (ret != HFSSS_OK) {
+        fclose(f);
+        return ret;
+    }
+
+    /* Write NAND data */
+    ret = write_nand_data(f, ctx);
+    if (ret != HFSSS_OK) {
+        fclose(f);
+        return ret;
+    }
+
+    /* Write BBT */
+    ret = bbt_save(ctx->bbt, f);
+    if (ret != HFSSS_OK) {
+        fclose(f);
+        return ret;
+    }
+
+    fclose(f);
+    return HFSSS_OK;
+}
+
+int media_load(struct media_ctx *ctx, const char *filepath)
+{
+    if (!ctx || !filepath) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    FILE *f = fopen(filepath, "rb");
+    if (!f) {
+        return HFSSS_ERR_IO;
+    }
+
+    struct media_file_header hdr;
+    int ret = read_file_header(f, &hdr);
+    if (ret != HFSSS_OK) {
+        fclose(f);
+        return ret;
+    }
+
+    /* If ctx is already initialized, check if config matches */
+    if (ctx->initialized) {
+        if (memcmp(&ctx->config, &hdr.config, sizeof(hdr.config)) != 0) {
+            fclose(f);
+            return HFSSS_ERR_INVAL;
+        }
+    } else {
+        /* Initialize media with the config from file */
+        ret = media_init(ctx, &hdr.config);
+        if (ret != HFSSS_OK) {
+            fclose(f);
+            return ret;
+        }
+    }
+
+    /* Seek to NAND data offset */
+    if (fseek(f, hdr.nand_data_offset, SEEK_SET) != 0) {
+        fclose(f);
+        return HFSSS_ERR_IO;
+    }
+
+    /* Read NAND data */
+    ret = read_nand_data(f, ctx);
+    if (ret != HFSSS_OK) {
+        fclose(f);
+        return ret;
+    }
+
+    /* Seek to BBT offset */
+    if (fseek(f, hdr.bbt_offset, SEEK_SET) != 0) {
+        fclose(f);
+        return HFSSS_ERR_IO;
+    }
+
+    /* Load BBT */
+    ret = bbt_load(ctx->bbt, f);
+    if (ret != HFSSS_OK) {
+        fclose(f);
+        return ret;
+    }
+
+    /* Restore stats */
+    ctx->stats = hdr.stats;
+
+    fclose(f);
+    return HFSSS_OK;
+}
+
+int media_create_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir)
+{
+    (void)checkpoint_dir; /* TODO: Implement directory-based checkpointing */
+    return media_save(ctx, "checkpoint.bin");
+}
+
+int media_restore_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir)
+{
+    (void)checkpoint_dir; /* TODO: Implement directory-based checkpointing */
+    return media_load(ctx, "checkpoint.bin");
 }

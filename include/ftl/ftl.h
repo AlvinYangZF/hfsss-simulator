@@ -38,6 +38,9 @@ struct ftl_stats {
     u64 gc_count;
     u64 moved_pages;
     u64 reclaimed_blocks;
+    u64 host_write_pages;     /* Pages written by host */
+    u64 gc_write_pages;       /* Pages written by GC */
+    double waf;              /* Write Amplification Factor */
 };
 
 /* FTL Context */

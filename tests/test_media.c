@@ -332,6 +332,96 @@ static int test_nand_hierarchy(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Persistence Tests */
+static int test_persistence(void)
+{
+    printf("\n=== Persistence Tests ===\n");
+
+    struct media_ctx ctx1, ctx2;
+    struct media_config config;
+    int ret;
+    const char *test_file = "test_media_save.bin";
+
+    /* Configure for a small NAND device */
+    memset(&config, 0, sizeof(config));
+    config.channel_count = 1;
+    config.chips_per_channel = 1;
+    config.dies_per_chip = 1;
+    config.planes_per_die = 1;
+    config.blocks_per_plane = 5;
+    config.pages_per_block = 4;
+    config.page_size = 4096;
+    config.spare_size = 64;
+    config.nand_type = NAND_TYPE_TLC;
+    config.enable_multi_plane = false;
+    config.enable_die_interleaving = false;
+
+    /* Initialize first media context */
+    ret = media_init(&ctx1, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "media_init ctx1 should succeed");
+
+    /* Write some data */
+    u8 write_data[4096];
+    u8 write_spare[64];
+    memset(write_data, 0xAA, sizeof(write_data));
+    memset(write_spare, 0x55, sizeof(write_spare));
+
+    ret = media_nand_program(&ctx1, 0, 0, 0, 0, 0, 0, write_data, write_spare);
+    TEST_ASSERT(ret == HFSSS_OK, "media_nand_program should succeed");
+
+    /* Write a different pattern to another page */
+    memset(write_data, 0xBB, sizeof(write_data));
+    ret = media_nand_program(&ctx1, 0, 0, 0, 0, 0, 1, write_data, write_spare);
+    TEST_ASSERT(ret == HFSSS_OK, "media_nand_program page 1 should succeed");
+
+    /* Erase another block to test erase count */
+    ret = media_nand_erase(&ctx1, 0, 0, 0, 0, 1);
+    TEST_ASSERT(ret == HFSSS_OK, "media_nand_erase block 1 should succeed");
+
+    /* Save to file */
+    ret = media_save(&ctx1, test_file);
+    TEST_ASSERT(ret == HFSSS_OK, "media_save should succeed");
+
+    /* Load into second media context */
+    memset(&ctx2, 0, sizeof(ctx2));
+    ret = media_load(&ctx2, test_file);
+    TEST_ASSERT(ret == HFSSS_OK, "media_load should succeed");
+
+    /* Read back and verify first page */
+    u8 read_data[4096];
+    u8 read_spare[64];
+    memset(read_data, 0, sizeof(read_data));
+    memset(read_spare, 0, sizeof(read_spare));
+    memset(write_data, 0xAA, sizeof(write_data)); /* Restore original pattern */
+
+    ret = media_nand_read(&ctx2, 0, 0, 0, 0, 0, 0, read_data, read_spare);
+    TEST_ASSERT(ret == HFSSS_OK, "media_nand_read page 0 should succeed after load");
+    TEST_ASSERT(memcmp(read_data, write_data, sizeof(read_data)) == 0,
+                "read data should match written data for page 0");
+
+    /* Read back and verify second page */
+    memset(read_data, 0, sizeof(read_data));
+    memset(write_data, 0xBB, sizeof(write_data));
+
+    ret = media_nand_read(&ctx2, 0, 0, 0, 0, 0, 1, read_data, read_spare);
+    TEST_ASSERT(ret == HFSSS_OK, "media_nand_read page 1 should succeed after load");
+    TEST_ASSERT(memcmp(read_data, write_data, sizeof(read_data)) == 0,
+                "read data should match written data for page 1");
+
+    /* Verify erase count */
+    u32 ec = media_nand_get_erase_count(&ctx2, 0, 0, 0, 0, 1);
+    TEST_ASSERT(ec == 1, "erase count should be 1 after load");
+
+    /* Cleanup */
+    media_cleanup(&ctx1);
+    media_cleanup(&ctx2);
+
+    /* Delete test file */
+    remove(test_file);
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -349,6 +439,7 @@ int main(void)
     test_reliability();
     test_nand_hierarchy();
     test_media();
+    test_persistence();
 
     printf("\n========================================\n");
     printf("Test Summary\n");

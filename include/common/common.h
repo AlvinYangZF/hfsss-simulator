@@ -48,6 +48,7 @@ typedef int64_t  s64;
 #define HFSSS_ERR_NOSPC    (-8)
 #define HFSSS_ERR_NOTSUPP  (-9)
 #define HFSSS_ERR_AGAIN    (-10)
+#define HFSSS_ERR_IO       (-100)
 
 /* Log Levels */
 #define LOG_LEVEL_ERROR    0

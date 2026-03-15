@@ -1,4 +1,5 @@
 #include "media/bbt.h"
+#include "common/common.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -201,4 +202,99 @@ u64 bbt_get_bad_block_count(struct bbt *bbt)
     }
 
     return bbt->bad_block_count;
+}
+
+int bbt_save(struct bbt *bbt, FILE *f)
+{
+    u32 ch, chip, die, plane, block;
+
+    if (!bbt || !f) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Write BBT configuration */
+    if (fwrite(&bbt->channel_count, sizeof(bbt->channel_count), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fwrite(&bbt->chips_per_channel, sizeof(bbt->chips_per_channel), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fwrite(&bbt->dies_per_chip, sizeof(bbt->dies_per_chip), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fwrite(&bbt->planes_per_die, sizeof(bbt->planes_per_die), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fwrite(&bbt->blocks_per_plane, sizeof(bbt->blocks_per_plane), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fwrite(&bbt->bad_block_count, sizeof(bbt->bad_block_count), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fwrite(&bbt->total_blocks, sizeof(bbt->total_blocks), 1, f) != 1) return HFSSS_ERR_IO;
+
+    /* Write all BBT entries */
+    for (ch = 0; ch < bbt->channel_count; ch++) {
+        for (chip = 0; chip < bbt->chips_per_channel; chip++) {
+            for (die = 0; die < bbt->dies_per_chip; die++) {
+                for (plane = 0; plane < bbt->planes_per_die; plane++) {
+                    for (block = 0; block < bbt->blocks_per_plane; block++) {
+                        struct bbt_entry *entry = &bbt->entries[ch][chip][die][plane][block];
+                        if (fwrite(entry, sizeof(*entry), 1, f) != 1) {
+                            return HFSSS_ERR_IO;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return HFSSS_OK;
+}
+
+int bbt_load(struct bbt *bbt, FILE *f)
+{
+    u32 ch, chip, die, plane, block;
+    u32 channel_count, chips_per_channel, dies_per_chip, planes_per_die, blocks_per_plane;
+    u64 bad_block_count, total_blocks;
+
+    if (!bbt || !f) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Read BBT configuration */
+    if (fread(&channel_count, sizeof(channel_count), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fread(&chips_per_channel, sizeof(chips_per_channel), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fread(&dies_per_chip, sizeof(dies_per_chip), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fread(&planes_per_die, sizeof(planes_per_die), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fread(&blocks_per_plane, sizeof(blocks_per_plane), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fread(&bad_block_count, sizeof(bad_block_count), 1, f) != 1) return HFSSS_ERR_IO;
+    if (fread(&total_blocks, sizeof(total_blocks), 1, f) != 1) return HFSSS_ERR_IO;
+
+    /* If bbt is already initialized, verify config matches */
+    if (bbt->entries) {
+        if (bbt->channel_count != channel_count ||
+            bbt->chips_per_channel != chips_per_channel ||
+            bbt->dies_per_chip != dies_per_chip ||
+            bbt->planes_per_die != planes_per_die ||
+            bbt->blocks_per_plane != blocks_per_plane) {
+            return HFSSS_ERR_INVAL;
+        }
+    } else {
+        /* Initialize BBT with the loaded config */
+        int ret = bbt_init(bbt, channel_count, chips_per_channel, dies_per_chip, planes_per_die, blocks_per_plane);
+        if (ret != HFSSS_OK) {
+            return ret;
+        }
+    }
+
+    /* Override bad block count and total blocks */
+    bbt->bad_block_count = bad_block_count;
+    bbt->total_blocks = total_blocks;
+
+    /* Read all BBT entries */
+    for (ch = 0; ch < bbt->channel_count; ch++) {
+        for (chip = 0; chip < bbt->chips_per_channel; chip++) {
+            for (die = 0; die < bbt->dies_per_chip; die++) {
+                for (plane = 0; plane < bbt->planes_per_die; plane++) {
+                    for (block = 0; block < bbt->blocks_per_plane; block++) {
+                        struct bbt_entry *entry = &bbt->entries[ch][chip][die][plane][block];
+                        if (fread(entry, sizeof(*entry), 1, f) != 1) {
+                            return HFSSS_ERR_IO;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return HFSSS_OK;
 }

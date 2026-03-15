@@ -26,6 +26,7 @@ int gc_init(struct gc_ctx *ctx, enum gc_policy policy, u32 threshold, u32 hiwate
     ctx->gc_count = 0;
     ctx->moved_pages = 0;
     ctx->reclaimed_blocks = 0;
+    ctx->gc_write_pages = 0;
 
     return HFSSS_OK;
 }
@@ -116,6 +117,9 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
     victim->valid_page_count = 0;
     victim->invalid_page_count = 0;
 
+    /* Track GC write pages for WAF */
+    ctx->gc_write_pages += moved;
+
     /* Free the victim block */
     ret = block_free(block_mgr, victim);
     if (ret == HFSSS_OK) {
@@ -133,7 +137,7 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
     return HFSSS_OK;
 }
 
-void gc_get_stats(struct gc_ctx *ctx, u64 *gc_count, u64 *moved_pages, u64 *reclaimed_blocks)
+void gc_get_stats(struct gc_ctx *ctx, u64 *gc_count, u64 *moved_pages, u64 *reclaimed_blocks, u64 *gc_write_pages)
 {
     if (!ctx) {
         return;
@@ -144,6 +148,7 @@ void gc_get_stats(struct gc_ctx *ctx, u64 *gc_count, u64 *moved_pages, u64 *recl
     if (gc_count) *gc_count = ctx->gc_count;
     if (moved_pages) *moved_pages = ctx->moved_pages;
     if (reclaimed_blocks) *reclaimed_blocks = ctx->reclaimed_blocks;
+    if (gc_write_pages) *gc_write_pages = ctx->gc_write_pages;
 
     mutex_unlock(&ctx->lock);
 }

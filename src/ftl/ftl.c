@@ -131,6 +131,9 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
     cwb->block->valid_page_count++;
     cwb->block->last_write_ts = get_time_ns();
 
+    /* Track host write pages for WAF */
+    ctx->stats.host_write_pages++;
+
     /* Check if block is full */
     if (cwb->current_page >= ctx->config.pages_per_block) {
         block_mark_closed(&ctx->block_mgr, cwb->block);
@@ -449,11 +452,19 @@ void ftl_get_stats(struct ftl_ctx *ctx, struct ftl_stats *stats)
     memcpy(stats, &ctx->stats, sizeof(*stats));
 
     /* Add GC stats */
-    u64 gc_count, moved_pages, reclaimed_blocks;
-    gc_get_stats(&ctx->gc, &gc_count, &moved_pages, &reclaimed_blocks);
+    u64 gc_count, moved_pages, reclaimed_blocks, gc_write_pages;
+    gc_get_stats(&ctx->gc, &gc_count, &moved_pages, &reclaimed_blocks, &gc_write_pages);
     stats->gc_count = gc_count;
     stats->moved_pages = moved_pages;
     stats->reclaimed_blocks = reclaimed_blocks;
+    stats->gc_write_pages = gc_write_pages;
+
+    /* Calculate Write Amplification Factor (WAF) */
+    if (stats->host_write_pages > 0) {
+        stats->waf = (double)(stats->host_write_pages + stats->gc_write_pages) / stats->host_write_pages;
+    } else {
+        stats->waf = 0.0;
+    }
 
     mutex_unlock(&ctx->lock);
 }

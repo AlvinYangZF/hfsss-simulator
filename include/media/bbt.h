@@ -39,5 +39,7 @@ int bbt_is_bad(struct bbt *bbt, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 u32 bbt_get_erase_count(struct bbt *bbt, u32 ch, u32 chip, u32 die, u32 plane, u32 block);
 int bbt_increment_erase_count(struct bbt *bbt, u32 ch, u32 chip, u32 die, u32 plane, u32 block);
 u64 bbt_get_bad_block_count(struct bbt *bbt);
+int bbt_save(struct bbt *bbt, FILE *f);
+int bbt_load(struct bbt *bbt, FILE *f);
 
 #endif /* __HFSSS_BBT_H */
