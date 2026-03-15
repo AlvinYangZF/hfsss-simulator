@@ -443,6 +443,7 @@ int nvme_ctrl_reg_read(struct nvme_ctrl_ctx *ctrl, u64 offset, u64 *value, u32 s
 int nvme_ctrl_reg_write(struct nvme_ctrl_ctx *ctrl, u64 offset, u64 value, u32 size);
 int nvme_ctrl_process_admin_cmd(struct nvme_ctrl_ctx *ctrl, struct nvme_sq_entry *cmd, struct nvme_cq_entry *cpl);
 int nvme_ctrl_process_io_cmd(struct nvme_ctrl_ctx *ctrl, struct nvme_sq_entry *cmd, struct nvme_cq_entry *cpl);
+int nvme_ctrl_process_identify(struct nvme_sq_entry *cmd, void *data, size_t data_len);
 void nvme_build_identify_ctrl(struct nvme_identify_ctrl *id);
 void nvme_build_identify_ns(struct nvme_identify_ns *id, u32 nsid);
 

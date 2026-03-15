@@ -380,6 +380,40 @@ void nvme_build_identify_ns(struct nvme_identify_ns *id, u32 nsid)
     }
 }
 
+/* Helper to process Identify command with data buffer */
+int nvme_ctrl_process_identify(struct nvme_sq_entry *cmd, void *data, size_t data_len)
+{
+    if (!cmd || !data || data_len < 4096) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    u32 cns = cmd->cdw10 & 0xFF;
+
+    switch (cns) {
+    case 0x00: /* Identify Namespace */
+    {
+        u32 nsid = cmd->nsid;
+        if (nsid != 1) {
+            return NVME_SC_INVALID_NAMESPACE;
+        }
+        nvme_build_identify_ns((struct nvme_identify_ns *)data, nsid);
+        break;
+    }
+    case 0x01: /* Identify Controller */
+        nvme_build_identify_ctrl((struct nvme_identify_ctrl *)data);
+        break;
+    case 0x02: /* Active Namespace List */
+        memset(data, 0, data_len);
+        ((u32 *)data)[0] = 1;
+        break;
+    case 0x10: /* I/O Command Set Specific */
+    default:
+        return NVME_SC_INVALID_FIELD;
+    }
+
+    return NVME_SC_SUCCESS;
+}
+
 int nvme_ctrl_process_admin_cmd(struct nvme_ctrl_ctx *ctrl, struct nvme_sq_entry *cmd, struct nvme_cq_entry *cpl)
 {
     u16 status = 0;
@@ -391,7 +425,6 @@ int nvme_ctrl_process_admin_cmd(struct nvme_ctrl_ctx *ctrl, struct nvme_sq_entry
 
     switch (cmd->opcode) {
     case NVME_ADMIN_IDENTIFY:
-        /* Identify command */
         status = NVME_SC_SUCCESS;
         break;
 
@@ -400,8 +433,12 @@ int nvme_ctrl_process_admin_cmd(struct nvme_ctrl_ctx *ctrl, struct nvme_sq_entry
         break;
 
     case NVME_ADMIN_GET_FEATURES:
+    {
+        u32 fid = cmd->cdw10 & 0xFF;
+        cpl->cdw0 = 0; /* Default value */
         status = NVME_SC_SUCCESS;
         break;
+    }
 
     case NVME_ADMIN_CREATE_IO_SQ:
         status = NVME_SC_SUCCESS;

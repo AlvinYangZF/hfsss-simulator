@@ -60,11 +60,12 @@ TEST_FTL = $(BIN_DIR)/test_ftl
 TEST_CTRL = $(BIN_DIR)/test_controller
 TEST_PCIE = $(BIN_DIR)/test_pcie_nvme
 TEST_SSSIM = $(BIN_DIR)/test_sssim
+TEST_NVME_USPACE = $(BIN_DIR)/test_nvme_uspace
 
 # Targets
 .PHONY: all clean directories test help
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -172,6 +173,10 @@ $(TEST_PCIE): $(TEST_DIR)/test_pcie_nvme.c $(LIBHFSSS_PCIE) $(LIBHFSSS_CTRL) $(L
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common $(LDFLAGS)
 
+$(TEST_NVME_USPACE): $(TEST_DIR)/test_nvme_uspace.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common $(LDFLAGS)
+
 # Test
 test: all
 	@echo "========================================"
@@ -190,6 +195,8 @@ test: all
 	@$(TEST_PCIE)
 	@echo ""
 	@$(TEST_SSSIM)
+	@echo ""
+	@$(TEST_NVME_USPACE)
 
 # Clean
 clean:
