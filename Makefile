@@ -81,6 +81,7 @@ TEST_DSM = $(BIN_DIR)/test_dsm
 TEST_PRP = $(BIN_DIR)/test_prp
 STRESS_RW = $(BIN_DIR)/stress_rw
 STRESS_MIXED = $(BIN_DIR)/stress_mixed
+STRESS_MIXED_TRIM = $(BIN_DIR)/stress_mixed_trim
 TEST_FTL_INT = $(BIN_DIR)/test_ftl_integrity
 
 # Perf validation library and test
@@ -93,7 +94,7 @@ PERF_OBJS = $(PERF_SRCS:$(SRC_DIR)/perf/%.c=$(BUILD_DIR)/perf/%.o)
 # Targets
 .PHONY: all clean directories test help
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(HFSSS_CTRL) $(TEST_FTL_INT)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -266,6 +267,10 @@ $(TEST_DSM): $(TEST_DIR)/test_dsm.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSS
 $(TEST_PRP): $(TEST_DIR)/test_prp.c $(LIBHFSSS_PCIE) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-common $(LDFLAGS)
+
+$(STRESS_MIXED_TRIM): $(TEST_DIR)/stress_mixed_trim.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
 
 $(STRESS_MIXED): $(TEST_DIR)/stress_mixed.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"

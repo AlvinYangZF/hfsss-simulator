@@ -505,8 +505,15 @@ int ftl_trim(struct ftl_ctx *ctx, u64 lba, u32 len)
 
     mutex_lock(&ctx->lock, 0);
 
-    /* Unmap each page */
+    /* Unmap each page, marking the superseded physical page as invalid
+     * so GC victim selection has accurate invalid-page counts. */
     for (i = 0; i < pages; i++) {
+        union ppn ppn;
+        if (mapping_l2p(&ctx->mapping, lba + i, &ppn) == HFSSS_OK) {
+            u32 ch, chip, die, plane, block_id, page;
+            ftl_decode_ppn(ppn, &ch, &chip, &die, &plane, &block_id, &page);
+            block_mark_page_invalid(&ctx->block_mgr, ch, chip, die, plane, block_id);
+        }
         ret = mapping_remove(&ctx->mapping, lba + i);
         /* Ignore error - page may not be mapped */
         (void)ret;
