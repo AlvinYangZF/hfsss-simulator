@@ -133,6 +133,275 @@ static int test_block_mgr(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/*
+ * test_block_mark_bad_from_free — verify that block_mark_bad removes a block
+ * from the free list and permanently marks it FTL_BLOCK_BAD.
+ *
+ * Steps:
+ *   1. Init a 10-block manager.
+ *   2. Alloc one block (moves it to open list, free_count = 9).
+ *   3. Return that block to the free list via block_free (free_count = 10).
+ *   4. Confirm the descriptor is FREE.
+ *   5. Call block_mark_bad on that descriptor.
+ *   6. Assert: state == FTL_BLOCK_BAD, free_count == 9.
+ *   7. Assert: block_alloc never returns that descriptor again.
+ */
+static void test_block_mark_bad_from_free(void)
+{
+    printf("\n=== block_mark_bad removes block from free list ===\n");
+
+    struct block_mgr mgr;
+    int ret;
+
+    ret = block_mgr_init(&mgr, 1, 1, 1, 1, 10);
+    TEST_ASSERT(ret == HFSSS_OK, "block_mgr_init should succeed");
+
+    /* Alloc and immediately return to free list. */
+    struct block_desc *target = block_alloc(&mgr);
+    TEST_ASSERT(target != NULL, "block_alloc must return a descriptor");
+    if (!target) { block_mgr_cleanup(&mgr); return; }
+
+    TEST_ASSERT(target->state == FTL_BLOCK_OPEN, "allocated block state should be OPEN");
+
+    ret = block_free(&mgr, target);
+    TEST_ASSERT(ret == HFSSS_OK, "block_free should succeed");
+    TEST_ASSERT(target->state == FTL_BLOCK_FREE, "block state after free should be FREE");
+    TEST_ASSERT(block_get_free_count(&mgr) == 10, "free count should be 10 after returning block");
+
+    /* Now retire it permanently via block_mark_bad. */
+    ret = block_mark_bad(&mgr, target);
+    TEST_ASSERT(ret == HFSSS_OK, "block_mark_bad should succeed");
+    TEST_ASSERT(target->state == FTL_BLOCK_BAD, "block state must be BAD after block_mark_bad");
+
+    u64 free_after_bad = block_get_free_count(&mgr);
+    TEST_ASSERT(free_after_bad == 9,
+                "free count must decrease by 1 after block_mark_bad on free block");
+
+    /*
+     * Drain all remaining allocatable blocks.  The retired block must never
+     * appear among them.
+     */
+    bool target_reallocated = false;
+    for (int i = 0; i < 9; i++) {
+        struct block_desc *b = block_alloc(&mgr);
+        if (b == target) {
+            target_reallocated = true;
+        }
+        /* Put each block back so subsequent allocs keep working. */
+        if (b) {
+            block_free(&mgr, b);
+        }
+    }
+    TEST_ASSERT(!target_reallocated,
+                "bad block must never be returned by block_alloc");
+
+    /*
+     * Calling block_mark_bad on an already-BAD block must be idempotent and
+     * must not change the free count.
+     */
+    ret = block_mark_bad(&mgr, target);
+    TEST_ASSERT(ret == HFSSS_OK, "second block_mark_bad on BAD block should be idempotent");
+    TEST_ASSERT(block_get_free_count(&mgr) == 9,
+                "free count must be unchanged after idempotent block_mark_bad");
+
+    block_mgr_cleanup(&mgr);
+}
+
+/*
+ * test_gc_flush_dst_closes_block — verify that gc_flush_dst closes the
+ * persistent GC destination block (ctx->dst_block becomes NULL) and moves
+ * the block from the open list to the closed list.
+ *
+ * The test exercises gc_flush_dst at the FTL level: after running enough
+ * writes to trigger at least one GC cycle, call ftl_flush (which internally
+ * calls gc_flush_dst) and check that the gc_ctx's dst_block pointer is NULL
+ * and the block_mgr's closed_blocks count increased.
+ */
+static void test_gc_flush_dst_closes_block(void)
+{
+    printf("\n=== gc_flush_dst closes persistent GC destination block ===\n");
+
+    /*
+     * Geometry: 1ch × 1chip × 1die × 1plane × 16blk × 4pg.
+     * No factory-bad blocks (16 blocks, blocks_per_plane-10=6, range 11..5
+     * is empty so the bad-block formula never fires).
+     * gc_threshold=3 so GC fires when free_blocks <= 3.
+     */
+#define GFDT_CH    1
+#define GFDT_CHIP  1
+#define GFDT_DIE   1
+#define GFDT_PLANE 1
+#define GFDT_BLKS  16
+#define GFDT_PGS   4
+#define GFDT_PGSZ  4096
+
+    struct media_ctx    media;
+    struct hal_nand_dev nand;
+    struct hal_ctx      hal;
+    struct ftl_ctx      ftl;
+    u8 wbuf[GFDT_PGSZ];
+    int ret;
+
+    struct media_config mcfg;
+    struct ftl_config   fcfg;
+
+    memset(&mcfg, 0, sizeof(mcfg));
+    mcfg.channel_count      = GFDT_CH;
+    mcfg.chips_per_channel  = GFDT_CHIP;
+    mcfg.dies_per_chip      = GFDT_DIE;
+    mcfg.planes_per_die     = GFDT_PLANE;
+    mcfg.blocks_per_plane   = GFDT_BLKS;
+    mcfg.pages_per_block    = GFDT_PGS;
+    mcfg.page_size          = GFDT_PGSZ;
+    mcfg.spare_size         = 64;
+    mcfg.nand_type          = NAND_TYPE_TLC;
+
+    ret = media_init(&media, &mcfg);
+    TEST_ASSERT(ret == HFSSS_OK, "gc-flush-dst: media_init should succeed");
+    if (ret != HFSSS_OK) return;
+
+    ret = hal_nand_dev_init(&nand, GFDT_CH, GFDT_CHIP, GFDT_DIE, GFDT_PLANE,
+                             GFDT_BLKS, GFDT_PGS, GFDT_PGSZ, 64, &media);
+    TEST_ASSERT(ret == HFSSS_OK, "gc-flush-dst: hal_nand_dev_init should succeed");
+    if (ret != HFSSS_OK) { media_cleanup(&media); return; }
+
+    ret = hal_init(&hal, &nand);
+    TEST_ASSERT(ret == HFSSS_OK, "gc-flush-dst: hal_init should succeed");
+    if (ret != HFSSS_OK) { hal_nand_dev_cleanup(&nand); media_cleanup(&media); return; }
+
+    memset(&fcfg, 0, sizeof(fcfg));
+    fcfg.total_lbas         = (u64)(GFDT_CH * GFDT_CHIP * GFDT_DIE * GFDT_PLANE *
+                                    GFDT_BLKS * GFDT_PGS);
+    fcfg.page_size          = GFDT_PGSZ;
+    fcfg.pages_per_block    = GFDT_PGS;
+    fcfg.blocks_per_plane   = GFDT_BLKS;
+    fcfg.planes_per_die     = GFDT_PLANE;
+    fcfg.dies_per_chip      = GFDT_DIE;
+    fcfg.chips_per_channel  = GFDT_CHIP;
+    fcfg.channel_count      = GFDT_CH;
+    fcfg.op_ratio           = 0;
+    fcfg.gc_policy          = GC_POLICY_GREEDY;
+    fcfg.gc_threshold       = 3;
+    fcfg.gc_hiwater         = 6;
+    fcfg.gc_lowater         = 1;
+
+    ret = ftl_init(&ftl, &fcfg, &hal);
+    TEST_ASSERT(ret == HFSSS_OK, "gc-flush-dst: ftl_init should succeed");
+    if (ret != HFSSS_OK) {
+        hal_cleanup(&hal);
+        hal_nand_dev_cleanup(&nand);
+        media_cleanup(&media);
+        return;
+    }
+
+    /*
+     * Flood the device with two passes of writes so GC is forced to run and
+     * allocate a persistent destination block (ctx->gc.dst_block).
+     */
+    u64 total_lbas = fcfg.total_lbas;
+    for (int pass = 0; pass < 2; pass++) {
+        for (u64 lba = 0; lba < total_lbas; lba++) {
+            memset(wbuf, (int)(lba + pass), sizeof(wbuf));
+            ftl_write(&ftl, lba, GFDT_PGSZ, wbuf); /* ignore NOSPC */
+        }
+    }
+
+    /*
+     * After writing, check how many GC cycles occurred.  If GC ran, it
+     * likely left dst_block open.  We verify by inspecting the gc_ctx
+     * directly before and after ftl_flush.
+     */
+    struct ftl_stats stats_before;
+    ftl_get_stats(&ftl, &stats_before);
+    printf("  [INFO] gc_cycles before flush: %llu\n",
+           (unsigned long long)stats_before.gc_count);
+
+    bool dst_was_open_before_flush = (ftl.gc.dst_block != NULL);
+    u64 closed_before = ftl.block_mgr.closed_blocks;
+
+    /*
+     * ftl_flush calls gc_flush_dst internally.  After the call:
+     *   - ftl.gc.dst_block must be NULL.
+     *   - If a destination block was open, closed_blocks must increase by 1.
+     */
+    ret = ftl_flush(&ftl);
+    TEST_ASSERT(ret == HFSSS_OK, "gc-flush-dst: ftl_flush should succeed");
+
+    TEST_ASSERT(ftl.gc.dst_block == NULL,
+                "gc-flush-dst: gc_ctx.dst_block must be NULL after ftl_flush");
+
+    if (dst_was_open_before_flush) {
+        u64 closed_after = ftl.block_mgr.closed_blocks;
+        printf("  [INFO] closed_blocks before=%llu after=%llu\n",
+               (unsigned long long)closed_before,
+               (unsigned long long)closed_after);
+        TEST_ASSERT(closed_after == closed_before + 1,
+                    "gc-flush-dst: closed_blocks must increase by 1 when dst_block is flushed");
+    } else {
+        printf("  [INFO] no open dst_block before flush "
+               "(GC may not have run or already filled it); "
+               "testing gc_flush_dst via gc_ctx directly\n");
+
+        /*
+         * If no destination block was left open after the write phase,
+         * verify gc_flush_dst's contract directly on a fresh manager/gc_ctx
+         * pair without going through the full FTL stack.
+         */
+        struct block_mgr mgr2;
+        struct gc_ctx    gc2;
+
+        ret = block_mgr_init(&mgr2, 1, 1, 1, 1, 8);
+        TEST_ASSERT(ret == HFSSS_OK, "gc-flush-dst-direct: block_mgr_init should succeed");
+
+        ret = gc_init(&gc2, GC_POLICY_GREEDY, 2, 6, 1);
+        TEST_ASSERT(ret == HFSSS_OK, "gc-flush-dst-direct: gc_init should succeed");
+
+        /* Simulate GC having allocated an open destination block. */
+        struct block_desc *dst = block_alloc(&mgr2);
+        TEST_ASSERT(dst != NULL, "gc-flush-dst-direct: block_alloc for simulated dst should succeed");
+
+        if (dst) {
+            gc2.dst_block = dst;
+            gc2.dst_page  = 2;
+
+            u64 closed_before2 = mgr2.closed_blocks;
+
+            gc_flush_dst(&gc2, &mgr2);
+
+            TEST_ASSERT(gc2.dst_block == NULL,
+                        "gc-flush-dst-direct: dst_block must be NULL after gc_flush_dst");
+            TEST_ASSERT(gc2.dst_page == 0,
+                        "gc-flush-dst-direct: dst_page must be 0 after gc_flush_dst");
+            TEST_ASSERT(dst->state == FTL_BLOCK_CLOSED,
+                        "gc-flush-dst-direct: flushed dst block state must be FTL_BLOCK_CLOSED");
+            TEST_ASSERT(mgr2.closed_blocks == closed_before2 + 1,
+                        "gc-flush-dst-direct: closed_blocks must increase by 1 after flush");
+        }
+
+        /* Second call with no open dst must be a no-op. */
+        u64 closed_noop = mgr2.closed_blocks;
+        gc_flush_dst(&gc2, &mgr2);
+        TEST_ASSERT(mgr2.closed_blocks == closed_noop,
+                    "gc-flush-dst-direct: second gc_flush_dst call must be a no-op");
+
+        gc_cleanup(&gc2);
+        block_mgr_cleanup(&mgr2);
+    }
+
+    ftl_cleanup(&ftl);
+    hal_cleanup(&hal);
+    hal_nand_dev_cleanup(&nand);
+    media_cleanup(&media);
+
+#undef GFDT_CH
+#undef GFDT_CHIP
+#undef GFDT_DIE
+#undef GFDT_PLANE
+#undef GFDT_BLKS
+#undef GFDT_PGS
+#undef GFDT_PGSZ
+}
+
 /* GC Tests */
 static int test_gc(void)
 {
@@ -299,6 +568,8 @@ int main(void)
     test_block_mgr();
     test_gc();
     test_ftl();
+    test_block_mark_bad_from_free();
+    test_gc_flush_dst_closes_block();
 
     printf("\n========================================\n");
     printf("Test Summary\n");
