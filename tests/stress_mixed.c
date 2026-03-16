@@ -23,7 +23,6 @@
  * ------------------------------------------------------------- */
 #define RUN_SECONDS        (10 * 60)   /* 10 minutes */
 #define LBA_SIZE           4096
-#define READ_WRITE_RATIO   50          /* % of IOs that are reads (0-100) */
 #define IOS_PER_BATCH      64
 #define PROGRESS_INTERVAL  30          /* print progress every N seconds */
 #define SEED               0xCAFEBABEu
@@ -74,8 +73,16 @@ static void handle_sigint(int sig) { (void)sig; g_stop = true; }
 /* ---------------------------------------------------------------
  * main
  * ------------------------------------------------------------- */
-int main(void) {
+int main(int argc, char *argv[]) {
     signal(SIGINT, handle_sigint);
+
+    /* Optional first argument: read percentage (0-100, default 50). */
+    int read_ratio = 50;
+    if (argc >= 2) {
+        read_ratio = atoi(argv[1]);
+        if (read_ratio < 0)   read_ratio = 0;
+        if (read_ratio > 100) read_ratio = 100;
+    }
 
     printf("========================================\n");
     printf("HFSSS 10-Minute Mixed Read/Write Stress Test\n");
@@ -83,7 +90,7 @@ int main(void) {
     printf("Started  : %s\n", now_ts());
     printf("Duration : %d minutes\n", RUN_SECONDS / 60);
     printf("Mix      : %d%% reads / %d%% writes\n",
-           READ_WRITE_RATIO, 100 - READ_WRITE_RATIO);
+           read_ratio, 100 - read_ratio);
     printf("LBA size : %d bytes\n", LBA_SIZE);
     printf("Batch    : %d IOs\n", IOS_PER_BATCH);
     printf("----------------------------------------\n\n");
@@ -198,7 +205,7 @@ int main(void) {
             /* Decide read or write based on ratio and whether LBA is written. */
             rng = lcg(rng);
             bool do_read = (written_lbas > 0) &&
-                           ((rng % 100) < (uint32_t)READ_WRITE_RATIO) &&
+                           ((rng % 100) < (uint32_t)read_ratio) &&
                            (lba_gen[lba] > 0);
 
             if (do_read) {
