@@ -1,6 +1,27 @@
 #include "pcie/nvme_uspace.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+
+/* SMART/Health log page (LID=2) layout used by get_log_page */
+typedef struct {
+    uint8_t  critical_warning;
+    uint16_t temperature;
+    uint8_t  avail_spare;
+    uint8_t  avail_spare_thresh;
+    uint8_t  percent_used;
+    uint8_t  rsvd[26];
+    uint64_t data_units_read;
+    uint64_t data_units_written;
+    uint64_t host_read_cmds;
+    uint64_t host_write_cmds;
+    uint64_t ctrl_busy_time;
+    uint64_t power_cycles;
+    uint64_t power_on_hours;
+    uint64_t unsafe_shutdowns;
+    uint64_t media_errors;
+    uint64_t num_err_log_entries;
+} smart_log_t;
 
 void nvme_uspace_config_default(struct nvme_uspace_config *config)
 {
@@ -86,6 +107,10 @@ void nvme_uspace_dev_cleanup(struct nvme_uspace_dev *dev)
         free(dev->data_buffer);
     }
 
+    if (dev->fw_staging_buf) {
+        free(dev->fw_staging_buf);
+    }
+
     if (dev->initialized) {
         sssim_cleanup(&dev->sssim);
     }
@@ -128,6 +153,11 @@ int nvme_uspace_identify_ctrl(struct nvme_uspace_dev *dev, struct nvme_identify_
     }
 
     nvme_build_identify_ctrl(id);
+
+    /* Reflect committed firmware revision when available */
+    if (dev->fw_revision[0] != 0) {
+        memcpy(id->fr, dev->fw_revision, 8);
+    }
 
     /* Update with actual SSD capacity information */
     u64 total_lbas = dev->sssim.config.total_lbas;
@@ -381,5 +411,172 @@ int nvme_uspace_trim(struct nvme_uspace_dev *dev, u32 nsid,
         }
     }
 
+    return HFSSS_OK;
+}
+
+/* Logically erase the entire namespace by trimming all LBAs then flushing. */
+int nvme_uspace_format_nvm(struct nvme_uspace_dev *dev, u32 nsid)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (nsid != 1 && nsid != 0) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    u64 total_lbas = dev->sssim.config.total_lbas;
+    int ret = sssim_trim(&dev->sssim, 0, (u32)total_lbas);
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+    return sssim_flush(&dev->sssim);
+}
+
+/* Sanitize: same semantics as format_nvm for simulation purposes. */
+int nvme_uspace_sanitize(struct nvme_uspace_dev *dev, u32 sanact)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+    /* sanact values 1=block-erase, 2=overwrite, 3=crypto-erase are all
+     * treated identically: trim all LBAs + flush. */
+    (void)sanact;
+
+    u64 total_lbas = dev->sssim.config.total_lbas;
+    int ret = sssim_trim(&dev->sssim, 0, (u32)total_lbas);
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+    return sssim_flush(&dev->sssim);
+}
+
+/* Stage firmware image bytes into dev->fw_staging_buf at the given offset. */
+int nvme_uspace_fw_download(struct nvme_uspace_dev *dev,
+                             u32 offset, const void *data, u32 len)
+{
+    if (!dev || !dev->initialized || !data) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    u32 needed = offset + len;
+    if (dev->fw_staging_buf == NULL || dev->fw_staging_size < needed) {
+        void *nb = realloc(dev->fw_staging_buf, needed);
+        if (!nb) {
+            return HFSSS_ERR_NOMEM;
+        }
+        dev->fw_staging_buf = nb;
+        dev->fw_staging_size = needed;
+    }
+
+    memcpy((u8 *)dev->fw_staging_buf + offset, data, len);
+    return HFSSS_OK;
+}
+
+/* Activate staged firmware: copy first 8 bytes into fw_revision. */
+int nvme_uspace_fw_commit(struct nvme_uspace_dev *dev, u32 slot, u32 action)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+    (void)slot;
+    (void)action;
+
+    if (!dev->fw_staging_buf) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    u32 copy_len = dev->fw_staging_size < 8 ? dev->fw_staging_size : 8;
+    memset(dev->fw_revision, 0, sizeof(dev->fw_revision));
+    memcpy(dev->fw_revision, dev->fw_staging_buf, copy_len);
+
+    free(dev->fw_staging_buf);
+    dev->fw_staging_buf = NULL;
+    dev->fw_staging_size = 0;
+
+    return HFSSS_OK;
+}
+
+/* Get Log Page: only LID=2 (SMART/Health) is implemented. */
+int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid,
+                              u8 lid, void *buf, u32 len)
+{
+    if (!dev || !dev->initialized || !buf) {
+        return HFSSS_ERR_INVAL;
+    }
+    (void)nsid;
+
+    if (lid != 2) {
+        return HFSSS_ERR_NOTSUPP;
+    }
+
+    struct ftl_stats stats;
+    sssim_get_stats(&dev->sssim, &stats);
+
+    smart_log_t log;
+    memset(&log, 0, sizeof(log));
+
+    log.critical_warning   = 0;
+    log.temperature        = 0x015E;  /* 350 K */
+    log.avail_spare        = 100;
+    log.avail_spare_thresh = 10;
+    log.percent_used       = 0;
+    log.data_units_read    = stats.read_count;
+    log.data_units_written = stats.write_count;
+    log.host_read_cmds     = stats.read_count;
+    log.host_write_cmds    = stats.write_count;
+    log.ctrl_busy_time     = 0;
+    log.power_cycles       = 1;
+    log.power_on_hours     = 0;
+    log.unsafe_shutdowns   = 0;
+    log.media_errors       = 0;
+    log.num_err_log_entries = 0;
+
+    u32 copy_len = len < (u32)sizeof(log) ? len : (u32)sizeof(log);
+    memset(buf, 0, len);
+    memcpy(buf, &log, copy_len);
+
+    return HFSSS_OK;
+}
+
+/* Get Features: return simulated or previously-set feature value. */
+int nvme_uspace_get_features(struct nvme_uspace_dev *dev, u8 fid, u32 *value)
+{
+    if (!dev || !dev->initialized || !value) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* If set_features was called, return the stored value. */
+    if (dev->features[fid] != 0) {
+        *value = dev->features[fid];
+        return HFSSS_OK;
+    }
+
+    switch (fid) {
+    case 0x02:  /* Power Management: PS0 */
+        *value = 0;
+        return HFSSS_OK;
+    case 0x04:  /* Temperature Threshold: 350 K */
+        *value = 0x015E;
+        return HFSSS_OK;
+    case 0x07:  /* Number of Queues: 64 IO queues each direction */
+        *value = 0x003F003F;
+        return HFSSS_OK;
+    default:
+        return HFSSS_ERR_NOTSUPP;
+    }
+}
+
+/* Set Features: persist a feature value; only FIDs 0x02 and 0x04 accepted. */
+int nvme_uspace_set_features(struct nvme_uspace_dev *dev, u8 fid, u32 value)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    if (fid != 0x02 && fid != 0x04) {
+        return HFSSS_ERR_NOTSUPP;
+    }
+
+    dev->features[fid] = value;
     return HFSSS_OK;
 }

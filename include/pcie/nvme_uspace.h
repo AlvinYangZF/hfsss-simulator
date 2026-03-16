@@ -26,6 +26,14 @@ struct nvme_uspace_dev {
 
     /* Lock */
     struct mutex lock;
+
+    /* Firmware staging buffer (fw_download/fw_commit) */
+    void *fw_staging_buf;
+    u32   fw_staging_size;
+    char  fw_revision[8];
+
+    /* Per-FID feature storage (set_features/get_features) */
+    u32 features[256];
 };
 
 /* User-space NVMe Configuration */
@@ -57,5 +65,16 @@ int nvme_uspace_trim(struct nvme_uspace_dev *dev, u32 nsid,
 
 /* Default Config Helper */
 void nvme_uspace_config_default(struct nvme_uspace_config *config);
+
+/* Admin Commands */
+int nvme_uspace_format_nvm(struct nvme_uspace_dev *dev, u32 nsid);
+int nvme_uspace_sanitize(struct nvme_uspace_dev *dev, u32 sanact);
+int nvme_uspace_fw_download(struct nvme_uspace_dev *dev,
+                             u32 offset, const void *data, u32 len);
+int nvme_uspace_fw_commit(struct nvme_uspace_dev *dev, u32 slot, u32 action);
+int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid,
+                              u8 lid, void *buf, u32 len);
+int nvme_uspace_get_features(struct nvme_uspace_dev *dev, u8 fid, u32 *value);
+int nvme_uspace_set_features(struct nvme_uspace_dev *dev, u8 fid, u32 value);
 
 #endif /* __HFSSS_NVME_USPACE_H */
