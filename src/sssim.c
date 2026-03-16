@@ -28,7 +28,7 @@ void sssim_config_default(struct sssim_config *config)
 
     /* FTL configuration */
     config->op_ratio = 20;                  /* 20% over-provisioning */
-    config->gc_policy = GC_POLICY_GREEDY;
+    config->gc_policy = GC_POLICY_FIFO;
     config->gc_threshold = 10;
     config->gc_hiwater = 20;
     config->gc_lowater = 5;

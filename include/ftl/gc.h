@@ -25,6 +25,13 @@ struct gc_ctx {
     u64 reclaimed_blocks;
     u64 gc_write_pages;   /* Pages written by GC */
     struct mutex lock;
+    /*
+     * Persistent destination block: kept open across multiple GC cycles so
+     * that successive victims can share one destination block.  This allows
+     * net-positive block reclamation even at high utilization ratios.
+     */
+    struct block_desc *dst_block;
+    u32               dst_page;
 };
 
 /* Function Prototypes */
@@ -34,5 +41,7 @@ bool gc_should_trigger(struct gc_ctx *ctx, u64 free_blocks);
 int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *mapping_ctx,
            void *hal_ctx);
 void gc_get_stats(struct gc_ctx *ctx, u64 *gc_count, u64 *moved_pages, u64 *reclaimed_blocks, u64 *gc_write_pages);
+void gc_print_debug_stats(void);
+void gc_flush_dst(struct gc_ctx *ctx, struct block_mgr *block_mgr);
 
 #endif /* __HFSSS_GC_H */

@@ -2,6 +2,10 @@
 #include "hal/hal.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+
+static u64 gc_dbg_read_fail_removes = 0;
+static u64 gc_dbg_write_fail_removes = 0;
 
 int gc_init(struct gc_ctx *ctx, enum gc_policy policy, u32 threshold, u32 hiwater, u32 lowater)
 {
@@ -29,6 +33,8 @@ int gc_init(struct gc_ctx *ctx, enum gc_policy policy, u32 threshold, u32 hiwate
     ctx->moved_pages = 0;
     ctx->reclaimed_blocks = 0;
     ctx->gc_write_pages = 0;
+    ctx->dst_block = NULL;
+    ctx->dst_page = 0;
 
     return HFSSS_OK;
 }
@@ -85,12 +91,9 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
 {
     struct hal_ctx *hal = (struct hal_ctx *)hal_ctx;
     struct block_desc *victim;
-    struct block_desc *dst_block = NULL;
-    u32 dst_page = 0;
     u64 moved = 0;
     u64 reclaimed = 0;
     u8 *page_buf = NULL;
-    bool reloc_aborted = false;
     int ret;
 
     if (!ctx || !block_mgr) {
@@ -128,17 +131,19 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
     /*
      * Relocate all live pages from the victim block before reclaiming it.
      *
-     * For each page slot in the victim block:
-     *   1. Derive its PPN and ask P2L for the associated LBA.
-     *   2. Cross-check via L2P that the LBA still maps back to this exact
-     *      PPN — if not, the page is stale (an earlier write superseded it)
-     *      and can be skipped.
-     *   3. For live pages: read from NAND, write to a freshly allocated
-     *      destination block, and update the L2P mapping atomically.
+     * The destination block (ctx->dst_block) is kept open across GC cycles
+     * so that multiple victims can share a single destination block.  This
+     * achieves net-positive block reclamation even at high utilisation
+     * ratios: if each victim contributes V valid pages (V < pages_per_block),
+     * ceil(pages_per_block / V) victims fill one destination block and free
+     * the same number of victim blocks, for a net gain of
+     * ceil(pages_per_block / V) - 1 blocks per destination cycle.
      *
-     * Only attempt relocation when both mapping and HAL contexts are
-     * available (they are always passed from ftl_gc_trigger, but guard
-     * against NULL for unit-test scenarios that call gc_run directly).
+     * On resource exhaustion (no free block for a new destination) the
+     * relocation stops after partially processing the current victim.  The
+     * L2P updates already applied remain valid; the victim is restored to the
+     * closed list with fewer live pages than before and will be retried on
+     * the next GC call.
      */
     if (mapping_ctx && hal && hal->nand) {
         u32 pages_per_block = hal->nand->pages_per_block;
@@ -152,14 +157,12 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
             goto invalidate_mappings;
         }
 
+        bool reloc_aborted = false;
+
         /*
-         * Discover live pages by scanning the L2P table rather than relying
-         * on P2L reverse lookups.  The P2L table is a flat hash table with no
-         * collision resolution: two PPNs that hash to the same slot silently
-         * overwrite each other, making P2L an unreliable source of truth.
-         * The L2P table is authoritative — every valid entry here represents
-         * a live host mapping.  We iterate all LBAs and relocate those whose
-         * PPN falls inside the victim block.
+         * Scan the L2P table to discover live pages in the victim block.
+         * The L2P table is authoritative; P2L reverse lookups are skipped
+         * because the flat hash table has no collision resolution.
          */
         for (u64 lba = 0; lba < mapping_ctx->l2p_size; lba++) {
             union ppn src_ppn;
@@ -185,60 +188,86 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
                                      victim->block_id, pg,
                                      page_buf, NULL);
             if (ret != HFSSS_OK) {
-                /* Unreadable page — invalidate the mapping entry so the
-                 * host gets a clean error on the next read rather than
-                 * silently wrong data. */
+                gc_dbg_read_fail_removes++;
+                if (gc_dbg_read_fail_removes <= 3) {
+                    fprintf(stderr, "[GC_DBG] read fail: lba=%llu pg=%u "
+                            "victim(ch=%u blk=%u) ret=%d\n",
+                            (unsigned long long)lba, pg,
+                            victim->channel, victim->block_id, ret);
+                }
                 mapping_remove(mapping_ctx, lba);
                 continue;
             }
 
-            /* Ensure we have a destination block with room. */
-            if (!dst_block || dst_page >= pages_per_block) {
-                if (dst_block) {
-                    block_mark_closed(block_mgr, dst_block);
+            /* Ensure the persistent destination block has room. */
+            if (!ctx->dst_block || ctx->dst_page >= pages_per_block) {
+                if (ctx->dst_block) {
+                    /* Current destination is full; close it. */
+                    block_mark_closed(block_mgr, ctx->dst_block);
+                    ctx->dst_block = NULL;
                 }
-                dst_block = block_alloc(block_mgr);
-                if (!dst_block) {
-                    /* Out of free blocks: abort relocation rather than
-                     * discarding live mappings.  Restore the victim to
-                     * CLOSED so GC can retry the block later when space
-                     * becomes available. */
+                ctx->dst_block = block_alloc(block_mgr);
+                if (!ctx->dst_block) {
+                    /*
+                     * No free blocks available for a new destination.
+                     * L2P updates applied so far remain valid.  Restore
+                     * the victim to CLOSED so it can be retried later.
+                     */
                     reloc_aborted = true;
                     break;
                 }
-                dst_page = 0;
+                ctx->dst_page = 0;
 
-                /* Erase the newly allocated block before writing. */
-                hal_nand_erase_sync(hal,
-                                    dst_block->channel, dst_block->chip,
-                                    dst_block->die, dst_block->plane,
-                                    dst_block->block_id);
+                /* Erase the newly allocated destination block. */
+                ret = hal_nand_erase_sync(hal,
+                                          ctx->dst_block->channel,
+                                          ctx->dst_block->chip,
+                                          ctx->dst_block->die,
+                                          ctx->dst_block->plane,
+                                          ctx->dst_block->block_id);
+                if (ret != HFSSS_OK) {
+                    block_mark_bad(block_mgr, ctx->dst_block);
+                    ctx->dst_block = NULL;
+                    reloc_aborted = true;
+                    break;
+                }
             }
 
             /* Write the live page to the destination block. */
             ret = hal_nand_program_sync(hal,
-                                        dst_block->channel, dst_block->chip,
-                                        dst_block->die, dst_block->plane,
-                                        dst_block->block_id, dst_page,
+                                        ctx->dst_block->channel,
+                                        ctx->dst_block->chip,
+                                        ctx->dst_block->die,
+                                        ctx->dst_block->plane,
+                                        ctx->dst_block->block_id,
+                                        ctx->dst_page,
                                         page_buf, NULL);
             if (ret != HFSSS_OK) {
+                gc_dbg_write_fail_removes++;
+                if (gc_dbg_write_fail_removes <= 3) {
+                    fprintf(stderr, "[GC_DBG] write fail: lba=%llu dst_pg=%u "
+                            "dst(ch=%u blk=%u) ret=%d\n",
+                            (unsigned long long)lba, ctx->dst_page,
+                            ctx->dst_block->channel, ctx->dst_block->block_id,
+                            ret);
+                }
                 mapping_remove(mapping_ctx, lba);
-                dst_page++;
+                ctx->dst_page++;
                 continue;
             }
 
-            /* Build the new PPN and update L2P atomically. */
-            union ppn dst_ppn = gc_encode_ppn(dst_block->channel,
-                                               dst_block->chip,
-                                               dst_block->die,
-                                               dst_block->plane,
-                                               dst_block->block_id,
-                                               dst_page);
-            union ppn ignored_old;
-            mapping_update(mapping_ctx, lba, dst_ppn, &ignored_old);
+            /* Update L2P to point to the new physical location. */
+            union ppn dst_ppn = gc_encode_ppn(ctx->dst_block->channel,
+                                               ctx->dst_block->chip,
+                                               ctx->dst_block->die,
+                                               ctx->dst_block->plane,
+                                               ctx->dst_block->block_id,
+                                               ctx->dst_page);
+            union ppn old_ppn;
+            mapping_update(mapping_ctx, lba, dst_ppn, &old_ppn);
 
-            dst_block->valid_page_count++;
-            dst_page++;
+            ctx->dst_block->valid_page_count++;
+            ctx->dst_page++;
             moved++;
         }
 
@@ -246,23 +275,25 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
         page_buf = NULL;
 
         if (reloc_aborted) {
-            /* Close any partially-written destination block. */
-            if (dst_block && dst_block->state == FTL_BLOCK_OPEN) {
-                block_mark_closed(block_mgr, dst_block);
-            }
-            /* Restore victim to CLOSED — do not erase it; live data remains. */
-            victim->state = FTL_BLOCK_CLOSED;
+            /*
+             * Partial relocation: L2P is consistent for the pages already
+             * moved.  Restore the victim to CLOSED so it can be picked up
+             * again once more space is available.
+             */
+            block_unmark_gc(block_mgr, victim);
             mutex_lock(&ctx->lock, 0);
+            ctx->gc_write_pages += moved;
+            ctx->gc_count++;
+            ctx->moved_pages += moved;
             ctx->running = false;
             mutex_unlock(&ctx->lock);
             return HFSSS_ERR_NOSPC;
         }
 
-        /* Close the destination block if it was used. */
-        if (dst_block && dst_block->state == FTL_BLOCK_OPEN) {
-            block_mark_closed(block_mgr, dst_block);
-        }
-
+        /*
+         * Do NOT close ctx->dst_block here — it stays open so the next GC
+         * cycle can continue filling it, achieving net-positive reclamation.
+         */
         goto erase_and_free;
     }
 
@@ -289,12 +320,25 @@ invalidate_mappings:
     }
 
 erase_and_free:
-    /* Erase the victim block on NAND before returning it to the free pool. */
+    /* Erase the victim block on NAND.  If the erase fails the block has
+     * worn out; permanently retire it rather than returning it to the free
+     * pool where it would cause repeated IO errors on future writes. */
     if (hal) {
-        hal_nand_erase_sync(hal,
-                            victim->channel, victim->chip,
-                            victim->die, victim->plane,
-                            victim->block_id);
+        ret = hal_nand_erase_sync(hal,
+                                  victim->channel, victim->chip,
+                                  victim->die, victim->plane,
+                                  victim->block_id);
+        if (ret != HFSSS_OK) {
+            block_mark_bad(block_mgr, victim);
+            /* Track GC write pages for WAF */
+            ctx->gc_write_pages += moved;
+            mutex_lock(&ctx->lock, 0);
+            ctx->gc_count++;
+            ctx->moved_pages += moved;
+            ctx->running = false;
+            mutex_unlock(&ctx->lock);
+            return HFSSS_OK;
+        }
     }
 
     /* Track GC write pages for WAF */
@@ -319,6 +363,13 @@ erase_and_free:
     return HFSSS_OK;
 }
 
+void gc_print_debug_stats(void)
+{
+    fprintf(stderr, "[GC_DBG] mapping_remove: read_fail=%llu write_fail=%llu\n",
+            (unsigned long long)gc_dbg_read_fail_removes,
+            (unsigned long long)gc_dbg_write_fail_removes);
+}
+
 void gc_get_stats(struct gc_ctx *ctx, u64 *gc_count, u64 *moved_pages, u64 *reclaimed_blocks, u64 *gc_write_pages)
 {
     if (!ctx) {
@@ -333,4 +384,23 @@ void gc_get_stats(struct gc_ctx *ctx, u64 *gc_count, u64 *moved_pages, u64 *recl
     if (gc_write_pages) *gc_write_pages = ctx->gc_write_pages;
 
     mutex_unlock(&ctx->lock);
+}
+
+/*
+ * Close the persistent GC destination block if one is currently open.
+ * Must be called during flush and cleanup so the block enters the closed
+ * list and becomes eligible for future GC victim selection.
+ */
+void gc_flush_dst(struct gc_ctx *ctx, struct block_mgr *block_mgr)
+{
+    if (!ctx || !block_mgr || !ctx->dst_block) {
+        return;
+    }
+
+    if (ctx->dst_block->state == FTL_BLOCK_OPEN) {
+        block_mark_closed(block_mgr, ctx->dst_block);
+    }
+
+    ctx->dst_block = NULL;
+    ctx->dst_page  = 0;
 }

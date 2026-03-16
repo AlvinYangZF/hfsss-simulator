@@ -100,8 +100,12 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
         return HFSSS_ERR_INVAL;
     }
 
-    /* Ensure CWB has a block */
+    /* Ensure CWB has a block; if out of space, run GC once and retry. */
     ret = ftl_allocate_cwb(ctx, ch, plane);
+    if (ret == HFSSS_ERR_NOSPC) {
+        ftl_gc_trigger(ctx);
+        ret = ftl_allocate_cwb(ctx, ch, plane);
+    }
     if (ret != HFSSS_OK) {
         return ret;
     }
@@ -154,19 +158,31 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
     }
 
     if (ret != HFSSS_OK) {
+        /* Abandon the failed CWB block.  An IO error indicates a worn-out
+         * block that must never be reused; mark it BAD so it is permanently
+         * retired.  Other failures close the block normally so GC can still
+         * reclaim it later. */
+        if (cwb->block) {
+            if (ret == HFSSS_ERR_IO) {
+                block_mark_bad(&ctx->block_mgr, cwb->block);
+            } else {
+                block_mark_closed(&ctx->block_mgr, cwb->block);
+            }
+            cwb->block = NULL;
+            cwb->current_page = 0;
+        }
         return ret;
     }
 
     /* Update L2P mapping */
     mapping_update(&ctx->mapping, lba, ppn, &old_ppn);
 
-    /* If there was an old mapping, mark that page as invalid */
+    /* If there was an old mapping, mark the superseded page as invalid. */
     if (old_ppn.raw != 0) {
         u32 old_ch, old_chip, old_die, old_plane, old_block, old_page;
         ftl_decode_ppn(old_ppn, &old_ch, &old_chip, &old_die, &old_plane, &old_block, &old_page);
-
-        /* For now, we don't track per-page validity, just increment invalid count on block */
-        /* In a full implementation, we'd need a better way to track this */
+        block_mark_page_invalid(&ctx->block_mgr,
+                                 old_ch, old_chip, old_die, old_plane, old_block);
     }
 
     /* Update CWB */
@@ -306,6 +322,28 @@ int ftl_init(struct ftl_ctx *ctx, struct ftl_config *config, struct hal_ctx *hal
         return ret;
     }
 
+    /* Pre-scan for factory-bad blocks and retire them before first allocation. */
+    {
+        u32 ch, chip, die, plane, blk;
+        for (ch = 0; ch < config->channel_count; ch++) {
+            for (chip = 0; chip < config->chips_per_channel; chip++) {
+                for (die = 0; die < config->dies_per_chip; die++) {
+                    for (plane = 0; plane < config->planes_per_die; plane++) {
+                        for (blk = 0; blk < config->blocks_per_plane; blk++) {
+                            if (hal_ctx_nand_is_bad_block(hal, ch, chip, die, plane, blk) == 1) {
+                                struct block_desc *bd = block_find_by_coords(
+                                        &ctx->block_mgr, ch, chip, die, plane, blk);
+                                if (bd) {
+                                    block_mark_bad(&ctx->block_mgr, bd);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /* Initialize GC */
     ret = gc_init(&ctx->gc, config->gc_policy, config->gc_threshold,
                   config->gc_hiwater, config->gc_lowater);
@@ -366,6 +404,7 @@ void ftl_cleanup(struct ftl_ctx *ctx)
     error_cleanup(&ctx->error);
     ecc_cleanup(&ctx->ecc);
     wear_level_cleanup(&ctx->wl);
+    gc_flush_dst(&ctx->gc, &ctx->block_mgr);
     gc_cleanup(&ctx->gc);
     block_mgr_cleanup(&ctx->block_mgr);
     mapping_cleanup(&ctx->mapping);
@@ -500,6 +539,9 @@ int ftl_flush(struct ftl_ctx *ctx)
             cwb->current_page = 0;
         }
     }
+
+    /* Close the persistent GC destination block if open. */
+    gc_flush_dst(&ctx->gc, &ctx->block_mgr);
 
     mutex_unlock(&ctx->lock);
 
