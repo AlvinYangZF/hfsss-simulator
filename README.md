@@ -263,4 +263,4 @@ GitHub Actions runs on every push and pull request:
 
 ## License
 
-Internal use only.
+This project is licensed under the [MIT License](LICENSE).
