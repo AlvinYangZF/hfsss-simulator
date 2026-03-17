@@ -185,6 +185,9 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
                                  old_ch, old_chip, old_die, old_plane, old_block);
     }
 
+    /* Append write operation to superblock journal */
+    sb_journal_append(&ctx->sb, JRNL_OP_WRITE, lba, ppn.raw);
+
     /* Update CWB */
     cwb->current_page++;
     cwb->last_write_ts = get_time_ns();
@@ -344,6 +347,21 @@ int ftl_init(struct ftl_ctx *ctx, struct ftl_config *config, struct hal_ctx *hal
         }
     }
 
+    /* Initialize superblock metadata subsystem */
+    ret = sb_init(&ctx->sb, &ctx->block_mgr, hal, config);
+    if (ret != HFSSS_OK) {
+        block_mgr_cleanup(&ctx->block_mgr);
+        mapping_cleanup(&ctx->mapping);
+        free(ctx->cwbs);
+        mutex_cleanup(&ctx->lock);
+        return ret;
+    }
+
+    /* Recover mapping from superblock if a valid checkpoint exists */
+    if (sb_has_valid_checkpoint(&ctx->sb)) {
+        sb_recover(&ctx->sb, &ctx->mapping, &ctx->block_mgr);
+    }
+
     /* Initialize GC */
     ret = gc_init(&ctx->gc, config->gc_policy, config->gc_threshold,
                   config->gc_hiwater, config->gc_lowater);
@@ -406,6 +424,7 @@ void ftl_cleanup(struct ftl_ctx *ctx)
     wear_level_cleanup(&ctx->wl);
     gc_flush_dst(&ctx->gc, &ctx->block_mgr);
     gc_cleanup(&ctx->gc);
+    sb_cleanup(&ctx->sb);
     block_mgr_cleanup(&ctx->block_mgr);
     mapping_cleanup(&ctx->mapping);
     free(ctx->cwbs);
@@ -517,6 +536,7 @@ int ftl_trim(struct ftl_ctx *ctx, u64 lba, u32 len)
         ret = mapping_remove(&ctx->mapping, lba + i);
         /* Ignore error - page may not be mapped */
         (void)ret;
+        sb_journal_append(&ctx->sb, JRNL_OP_TRIM, lba + i, 0);
     }
 
     /* Update stats */
@@ -549,6 +569,10 @@ int ftl_flush(struct ftl_ctx *ctx)
 
     /* Close the persistent GC destination block if open. */
     gc_flush_dst(&ctx->gc, &ctx->block_mgr);
+
+    /* Flush journal buffer and write checkpoint to superblock */
+    sb_journal_flush(&ctx->sb);
+    sb_checkpoint_write(&ctx->sb, &ctx->mapping);
 
     mutex_unlock(&ctx->lock);
 
@@ -612,6 +636,15 @@ int ftl_unmap_lba(struct ftl_ctx *ctx, u64 lba)
     }
 
     return mapping_remove(&ctx->mapping, lba);
+}
+
+int ftl_checkpoint(struct ftl_ctx *ctx)
+{
+    if (!ctx || !ctx->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+    sb_journal_flush(&ctx->sb);
+    return sb_checkpoint_write(&ctx->sb, &ctx->mapping);
 }
 
 int ftl_gc_trigger(struct ftl_ctx *ctx)

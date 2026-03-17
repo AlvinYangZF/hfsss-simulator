@@ -12,6 +12,7 @@ enum ftl_block_state {
     FTL_BLOCK_CLOSED = 2,
     FTL_BLOCK_GC = 3,
     FTL_BLOCK_BAD = 4,
+    FTL_BLOCK_RESERVED = 5,
 };
 
 /* Block Descriptor */
@@ -78,5 +79,6 @@ struct block_desc *block_find_by_coords(struct block_mgr *mgr,
 void block_mark_page_invalid(struct block_mgr *mgr,
                               u32 ch, u32 chip, u32 die,
                               u32 plane, u32 block_id);
+int block_mark_reserved(struct block_mgr *mgr, struct block_desc *block);
 
 #endif /* __HFSSS_BLOCK_H */

@@ -353,7 +353,8 @@ static void test_factory_bad_block_prescan(void)
            (unsigned long long)free_after_prescan);
     TEST_ASSERT(free_after_prescan < total_blocks,
                 "factory-bad: free pool must be smaller than total after pre-scan");
-    TEST_ASSERT(free_after_prescan == total_blocks - 2,
+    /* 2 bad blocks + FBBT_CH reserved superblocks (1 per channel) */
+    TEST_ASSERT(free_after_prescan == total_blocks - 2 - FBBT_CH,
                 "factory-bad: exactly 2 blocks must be retired by pre-scan");
 
     ftl_cleanup(&ftl);
@@ -462,38 +463,39 @@ static void test_cwb_io_error_retirement(void)
     }
 
     /*
-     * With 20 blocks and no factory-bad blocks, all 20 are in the free list.
-     * block_list_add_head is called for blk=0..19 in order, so blk=19 ends
-     * up at the head — the first ftl_write will allocate blk=19.
+     * With 20 blocks, 1 is reserved as a metadata superblock (last block
+     * in each channel), leaving 19 free.  block_list_add_head is called in
+     * order so blk=18 ends up at the head of the free list — the first
+     * ftl_write will allocate blk=18.
      *
-     * Mark blk=19 bad in the BBT now, after pre-scan, so the FTL's write
+     * Mark blk=18 bad in the BBT now, after pre-scan, so the FTL's write
      * attempt to it returns HFSSS_ERR_IO.
      */
     u64 free_before = block_get_free_count(&ftl.block_mgr);
-    TEST_ASSERT(free_before == CWB_BLKS,
+    TEST_ASSERT(free_before == CWB_BLKS - 1,
                 "cwb-io-error: all blocks should be free before first write");
 
-    ret = hal_ctx_nand_mark_bad_block(&hal, 0, 0, 0, 0, CWB_BLKS - 1);
+    ret = hal_ctx_nand_mark_bad_block(&hal, 0, 0, 0, 0, CWB_BLKS - 2);
     TEST_ASSERT(ret == HFSSS_OK,
-                "cwb-io-error: marking blk=19 bad in BBT should succeed");
+                "cwb-io-error: marking blk=18 bad in BBT should succeed");
 
     /* Confirm BBT registers it as bad before the write attempt. */
-    TEST_ASSERT(hal_ctx_nand_is_bad_block(&hal, 0, 0, 0, 0, CWB_BLKS - 1) == 1,
-                "cwb-io-error: BBT should report blk=19 as bad");
+    TEST_ASSERT(hal_ctx_nand_is_bad_block(&hal, 0, 0, 0, 0, CWB_BLKS - 2) == 1,
+                "cwb-io-error: BBT should report blk=18 as bad");
 
-    /* First write attempt — must fail because blk=19 is now IO-bad. */
+    /* First write attempt — must fail because blk=18 is now IO-bad. */
     fill_pattern(wbuf, 0);
     ret = ftl_write(&ftl, 0, CWB_PGSZ, wbuf);
     TEST_ASSERT(ret == HFSSS_ERR_IO,
                 "cwb-io-error: first write must fail with HFSSS_ERR_IO");
 
-    /* blk=19 descriptor must now be FTL_BLOCK_BAD. */
+    /* blk=18 descriptor must now be FTL_BLOCK_BAD. */
     struct block_desc *bd = block_find_by_coords(&ftl.block_mgr,
-                                                  0, 0, 0, 0, CWB_BLKS - 1);
-    TEST_ASSERT(bd != NULL, "cwb-io-error: block descriptor for blk=19 must exist");
+                                                  0, 0, 0, 0, CWB_BLKS - 2);
+    TEST_ASSERT(bd != NULL, "cwb-io-error: block descriptor for blk=18 must exist");
     if (bd) {
         TEST_ASSERT(bd->state == FTL_BLOCK_BAD,
-                    "cwb-io-error: blk=19 must be FTL_BLOCK_BAD after IO error");
+                    "cwb-io-error: blk=18 must be FTL_BLOCK_BAD after IO error");
     }
 
     /* Free count must have dropped by 1 (blk=19 retired, never returned). */

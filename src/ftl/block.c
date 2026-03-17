@@ -468,3 +468,45 @@ int block_mark_bad(struct block_mgr *mgr, struct block_desc *block)
 
     return HFSSS_OK;
 }
+
+/*
+ * Reserve a block for metadata (superblock) use.  The block is removed from
+ * the free list and will never be allocated by block_alloc() or selected
+ * as a GC victim.
+ */
+int block_mark_reserved(struct block_mgr *mgr, struct block_desc *block)
+{
+    if (!mgr || !block) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    mutex_lock(&mgr->lock, 0);
+
+    if (block->state == FTL_BLOCK_RESERVED) {
+        mutex_unlock(&mgr->lock);
+        return HFSSS_OK;
+    }
+
+    switch (block->state) {
+    case FTL_BLOCK_FREE:
+        block_list_remove(&mgr->free_list, block);
+        mgr->free_blocks--;
+        break;
+    case FTL_BLOCK_OPEN:
+        block_list_remove(&mgr->open_list, block);
+        mgr->open_blocks--;
+        break;
+    case FTL_BLOCK_CLOSED:
+        block_list_remove(&mgr->closed_list, block);
+        mgr->closed_blocks--;
+        break;
+    default:
+        break;
+    }
+
+    block->state = FTL_BLOCK_RESERVED;
+
+    mutex_unlock(&mgr->lock);
+
+    return HFSSS_OK;
+}

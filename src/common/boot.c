@@ -24,7 +24,7 @@ static void crc32_build_table(void) {
     crc32_table_ready = true;
 }
 
-static uint32_t crc32_compute(const void *data, size_t len) {
+uint32_t hfsss_crc32(const void *data, size_t len) {
     if (!crc32_table_ready) {
         crc32_build_table();
     }
@@ -81,7 +81,7 @@ void boot_sysinfo_init(struct sysinfo_partition *si) {
     memset(si, 0, sizeof(*si));
     si->magic      = SYSINFO_MAGIC;
     si->active_slot = 0xFF;
-    si->crc32 = crc32_compute(si, sizeof(*si) - sizeof(si->crc32));
+    si->crc32 = hfsss_crc32(si, sizeof(*si) - sizeof(si->crc32));
 }
 
 int boot_sysinfo_verify(const struct sysinfo_partition *si) {
@@ -94,7 +94,7 @@ int boot_sysinfo_verify(const struct sysinfo_partition *si) {
     if (si->magic != SYSINFO_MAGIC) {
         return HFSSS_ERR_IO;
     }
-    uint32_t expected = crc32_compute(si, sizeof(*si) - sizeof(si->crc32));
+    uint32_t expected = hfsss_crc32(si, sizeof(*si) - sizeof(si->crc32));
     return (expected == si->crc32) ? HFSSS_OK : HFSSS_ERR_IO;
 }
 
@@ -107,7 +107,7 @@ void boot_sysinfo_stamp_boot(struct sysinfo_partition *si, enum boot_type bt) {
     si->crash_marker_valid          = 0;
     si->clean_shutdown_marker       = 0;
     si->crash_marker                = 0;
-    si->crc32 = crc32_compute(si, sizeof(*si) - sizeof(si->crc32));
+    si->crc32 = hfsss_crc32(si, sizeof(*si) - sizeof(si->crc32));
 }
 
 /* ------------------------------------------------------------------
@@ -295,7 +295,7 @@ int boot_run(struct boot_ctx *ctx) {
     /* Stamp power cycle count before phases */
     if (boot_sysinfo_verify(&ctx->sysinfo) == HFSSS_OK) {
         ctx->sysinfo.boot_count++;
-        ctx->sysinfo.crc32 = crc32_compute(&ctx->sysinfo,
+        ctx->sysinfo.crc32 = hfsss_crc32(&ctx->sysinfo,
                                             sizeof(ctx->sysinfo) -
                                             sizeof(ctx->sysinfo.crc32));
     } else if (ctx->sysinfo.magic == 0xFFFFFFFFu) {
@@ -376,7 +376,7 @@ int power_mgmt_normal_shutdown(struct power_mgmt_ctx *ctx) {
         si->crash_marker_valid            = 0;
         si->crash_marker                  = 0;
         si->last_shutdown_ns              = get_realtime_ns();
-        si->crc32 = crc32_compute(si, sizeof(*si) - sizeof(si->crc32));
+        si->crc32 = hfsss_crc32(si, sizeof(*si) - sizeof(si->crc32));
     }
 
     return HFSSS_OK;
@@ -402,7 +402,7 @@ void power_mgmt_abnormal_shutdown(struct power_mgmt_ctx *ctx,
             si->unsafe_shutdown_count++;
         }
         /* CRC update — allowed since we own the struct */
-        si->crc32 = crc32_compute(si, sizeof(*si) - sizeof(si->crc32));
+        si->crc32 = hfsss_crc32(si, sizeof(*si) - sizeof(si->crc32));
     }
 }
 

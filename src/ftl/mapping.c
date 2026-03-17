@@ -242,3 +242,56 @@ u64 mapping_get_valid_count(struct mapping_ctx *ctx)
 
     return count;
 }
+
+/* Set L2P entry directly without touching P2L or valid_count.
+ * Used during checkpoint recovery to bulk-load L2P before rebuilding P2L. */
+int mapping_direct_set(struct mapping_ctx *ctx, u64 lba, union ppn ppn)
+{
+    if (!ctx || lba >= ctx->l2p_size) {
+        return HFSSS_ERR_INVAL;
+    }
+    ctx->l2p_table[lba].ppn = ppn;
+    ctx->l2p_table[lba].valid = true;
+    return HFSSS_OK;
+}
+
+/* Clear L2P entry directly without touching P2L or valid_count.
+ * Used during journal replay for TRIM operations. */
+int mapping_direct_clear(struct mapping_ctx *ctx, u64 lba)
+{
+    if (!ctx || lba >= ctx->l2p_size) {
+        return HFSSS_ERR_INVAL;
+    }
+    ctx->l2p_table[lba].valid = false;
+    memset(&ctx->l2p_table[lba].ppn, 0, sizeof(union ppn));
+    return HFSSS_OK;
+}
+
+/* Rebuild P2L table and valid_count from the current L2P table.
+ * Called after checkpoint load + journal replay to reconstruct derived state. */
+int mapping_rebuild_p2l(struct mapping_ctx *ctx)
+{
+    if (!ctx) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    mutex_lock(&ctx->lock, 0);
+
+    /* Clear P2L table */
+    memset(ctx->p2l_table, 0, ctx->p2l_size * sizeof(struct p2l_entry));
+    ctx->valid_count = 0;
+
+    /* Scan L2P and populate P2L */
+    for (u64 lba = 0; lba < ctx->l2p_size; lba++) {
+        if (ctx->l2p_table[lba].valid) {
+            union ppn ppn = ctx->l2p_table[lba].ppn;
+            u64 idx = p2l_idx(ppn, ctx->p2l_size);
+            ctx->p2l_table[idx].lba = lba;
+            ctx->p2l_table[idx].valid = true;
+            ctx->valid_count++;
+        }
+    }
+
+    mutex_unlock(&ctx->lock);
+    return HFSSS_OK;
+}

@@ -71,6 +71,9 @@ static inline void sleep_ns(u64 ns) {
     nanosleep(&ts, NULL);
 }
 
+/* CRC-32 (IEEE 802.3) */
+u32 hfsss_crc32(const void *data, size_t len);
+
 /* Panic and Assert Handling */
 void hfsss_panic(const char *file, int line, const char *fmt, ...);
 

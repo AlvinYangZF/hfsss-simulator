@@ -54,4 +54,9 @@ int mapping_remove(struct mapping_ctx *ctx, u64 lba);
 int mapping_update(struct mapping_ctx *ctx, u64 lba, union ppn new_ppn, union ppn *old_ppn);
 u64 mapping_get_valid_count(struct mapping_ctx *ctx);
 
+/* Recovery helpers — used during superblock checkpoint load */
+int mapping_direct_set(struct mapping_ctx *ctx, u64 lba, union ppn ppn);
+int mapping_direct_clear(struct mapping_ctx *ctx, u64 lba);
+int mapping_rebuild_p2l(struct mapping_ctx *ctx);
+
 #endif /* __HFSSS_MAPPING_H */

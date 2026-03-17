@@ -10,6 +10,7 @@
 #include "ftl/ecc.h"
 #include "ftl/error.h"
 #include "hal/hal.h"
+#include "ftl/superblock.h"
 
 /* FTL Configuration */
 struct ftl_config {
@@ -54,6 +55,7 @@ struct ftl_ctx {
     struct wear_level_ctx wl;
     struct ecc_ctx ecc;
     struct error_ctx error;
+    struct superblock_ctx sb;
     struct hal_ctx *hal;
     struct ftl_stats stats;
     struct mutex lock;
@@ -67,6 +69,7 @@ int ftl_read(struct ftl_ctx *ctx, u64 lba, u32 len, void *data);
 int ftl_write(struct ftl_ctx *ctx, u64 lba, u32 len, const void *data);
 int ftl_trim(struct ftl_ctx *ctx, u64 lba, u32 len);
 int ftl_flush(struct ftl_ctx *ctx);
+int ftl_checkpoint(struct ftl_ctx *ctx);
 void ftl_get_stats(struct ftl_ctx *ctx, struct ftl_stats *stats);
 void ftl_reset_stats(struct ftl_ctx *ctx);
 
