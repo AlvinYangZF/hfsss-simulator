@@ -72,4 +72,4 @@ GitHub Actions is set up to automatically build and test on every push and pull 
 ```
 
 ## Test Status
-All 1069+ tests pass as of the latest build.
+All 1,750+ test assertions pass as of the latest build (1,150+ unit tests + 616 system tests).
