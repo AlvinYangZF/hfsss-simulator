@@ -4,7 +4,10 @@
 #include "common/common.h"
 #include "media/media.h"
 #include "hal/hal.h"
+#include "hal/hal_nor.h"
 #include "ftl/ftl.h"
+
+#define SSSIM_PATH_LEN 512
 
 /* SSD Simulator Configuration */
 struct sssim_config {
@@ -31,6 +34,10 @@ struct sssim_config {
 
     /* Media Configuration */
     enum nand_type nand_type;
+
+    /* Persistence: empty string = no persistence */
+    char nand_image_path[SSSIM_PATH_LEN];
+    char nor_image_path[SSSIM_PATH_LEN];
 };
 
 /* SSD Simulator Context */
@@ -38,6 +45,7 @@ struct sssim_ctx {
     struct sssim_config config;
     struct media_ctx media;
     struct hal_nand_dev nand_dev;
+    struct hal_nor_dev nor_dev;
     struct hal_ctx hal;
     struct ftl_ctx ftl;
     bool initialized;
@@ -45,6 +53,7 @@ struct sssim_ctx {
 
 /* Function Prototypes */
 int sssim_init(struct sssim_ctx *ctx, struct sssim_config *config);
+int sssim_shutdown(struct sssim_ctx *ctx);
 void sssim_cleanup(struct sssim_ctx *ctx);
 int sssim_read(struct sssim_ctx *ctx, u64 lba, u32 count, void *data);
 int sssim_write(struct sssim_ctx *ctx, u64 lba, u32 count, const void *data);

@@ -158,6 +158,108 @@ int hal_nor_erase_block(struct hal_nor_dev *dev, u32 addr)
     return HFSSS_OK;
 }
 
+/* ------------------------------------------------------------------ */
+/* hal_nor_save / hal_nor_load                                         */
+/* ------------------------------------------------------------------ */
+
+int hal_nor_save(struct hal_nor_dev *dev, const char *filepath)
+{
+    FILE *f;
+    struct hal_nor_file_header hdr;
+    u32 crc;
+
+    if (!dev || !dev->initialized || !filepath) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    f = fopen(filepath, "wb");
+    if (!f) {
+        return HFSSS_ERR_IO;
+    }
+
+    hdr.magic       = HAL_NOR_FILE_MAGIC;
+    hdr.version     = HAL_NOR_FILE_VERSION;
+    hdr.size        = dev->size;
+    hdr.sector_size = dev->sector_size;
+    hdr.block_size  = dev->block_size;
+
+    if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) {
+        fclose(f);
+        return HFSSS_ERR_IO;
+    }
+
+    mutex_lock(&dev->lock, 0);
+    if (fwrite(dev->data, dev->size, 1, f) != 1) {
+        mutex_unlock(&dev->lock);
+        fclose(f);
+        return HFSSS_ERR_IO;
+    }
+    crc = hfsss_crc32(dev->data, dev->size);
+    mutex_unlock(&dev->lock);
+
+    if (fwrite(&crc, sizeof(crc), 1, f) != 1) {
+        fclose(f);
+        return HFSSS_ERR_IO;
+    }
+
+    fclose(f);
+    return HFSSS_OK;
+}
+
+int hal_nor_load(struct hal_nor_dev *dev, const char *filepath)
+{
+    FILE *f;
+    struct hal_nor_file_header hdr;
+    u32 crc;
+    u32 stored_crc;
+
+    if (!dev || !dev->initialized || !filepath) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    f = fopen(filepath, "rb");
+    if (!f) {
+        return HFSSS_ERR_NOENT;
+    }
+
+    if (fread(&hdr, sizeof(hdr), 1, f) != 1) {
+        fclose(f);
+        return HFSSS_ERR_IO;
+    }
+
+    if (hdr.magic != HAL_NOR_FILE_MAGIC || hdr.version != HAL_NOR_FILE_VERSION) {
+        fclose(f);
+        return HFSSS_ERR_INVAL;
+    }
+
+    if (hdr.size != dev->size) {
+        fclose(f);
+        return HFSSS_ERR_INVAL;
+    }
+
+    mutex_lock(&dev->lock, 0);
+    if (fread(dev->data, dev->size, 1, f) != 1) {
+        mutex_unlock(&dev->lock);
+        fclose(f);
+        return HFSSS_ERR_IO;
+    }
+    mutex_unlock(&dev->lock);
+
+    if (fread(&stored_crc, sizeof(stored_crc), 1, f) != 1) {
+        fclose(f);
+        return HFSSS_ERR_IO;
+    }
+
+    crc = hfsss_crc32(dev->data, dev->size);
+    if (crc != stored_crc) {
+        fclose(f);
+        return HFSSS_ERR_IO;
+    }
+
+    fclose(f);
+    return HFSSS_OK;
+}
+
 int hal_nor_erase(struct hal_nor_dev *dev, u32 addr, u32 len)
 {
     u32 end_addr;

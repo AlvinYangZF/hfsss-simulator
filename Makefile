@@ -85,6 +85,7 @@ STRESS_MIXED_TRIM = $(BIN_DIR)/stress_mixed_trim
 TEST_FTL_INT = $(BIN_DIR)/test_ftl_integrity
 STRESS_ADMIN_MIX = $(BIN_DIR)/stress_admin_mix
 TEST_SB = $(BIN_DIR)/test_superblock
+TEST_POWER_CYCLE = $(BIN_DIR)/test_power_cycle
 SYSTEST_DI = $(BIN_DIR)/systest_data_integrity
 SYSTEST_NC = $(BIN_DIR)/systest_nvme_compliance
 SYSTEST_EB = $(BIN_DIR)/systest_error_boundary
@@ -99,7 +100,7 @@ PERF_OBJS = $(PERF_SRCS:$(SRC_DIR)/perf/%.c=$(BUILD_DIR)/perf/%.o)
 # Targets
 .PHONY: all clean directories test systest help
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -293,6 +294,10 @@ $(TEST_SB): $(TEST_DIR)/test_superblock.c $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBH
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common $(LDFLAGS)
 
+$(TEST_POWER_CYCLE): $(TEST_DIR)/test_power_cycle.c $(LIBHFSSS_SSSIM) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-sssim -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common $(LDFLAGS)
+
 $(SYSTEST_DI): $(TEST_DIR)/systest_data_integrity.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
@@ -365,6 +370,8 @@ test: all
 	@$(TEST_PRP)
 	@echo ""
 	@$(TEST_FTL_INT)
+	@echo ""
+	@$(TEST_POWER_CYCLE)
 
 # Clean
 clean:

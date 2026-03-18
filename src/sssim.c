@@ -1,7 +1,18 @@
 #include "sssim.h"
+#include "common/boot.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+
+/* NOR device size for SysInfo storage */
+#define SSSIM_NOR_SIZE  (64 * 1024)
+
+static bool file_exists(const char *path)
+{
+    struct stat st;
+    return (path && path[0] && stat(path, &st) == 0 && S_ISREG(st.st_mode));
+}
 
 void sssim_config_default(struct sssim_config *config)
 {
@@ -64,6 +75,31 @@ int sssim_init(struct sssim_ctx *ctx, struct sssim_config *config)
         return ret;
     }
 
+    /* Load NAND image from file if persistence path is configured */
+    if (file_exists(config->nand_image_path)) {
+        ret = media_load(&ctx->media, config->nand_image_path);
+        if (ret != HFSSS_OK) {
+            media_cleanup(&ctx->media);
+            return ret;
+        }
+    }
+
+    /* Initialize NOR device for SysInfo storage */
+    ret = hal_nor_dev_init(&ctx->nor_dev, SSSIM_NOR_SIZE, NULL);
+    if (ret != HFSSS_OK) {
+        media_cleanup(&ctx->media);
+        return ret;
+    }
+
+    /* Load NOR image from file if available */
+    if (file_exists(config->nor_image_path)) {
+        ret = hal_nor_load(&ctx->nor_dev, config->nor_image_path);
+        if (ret != HFSSS_OK) {
+            /* Non-fatal: proceed with fresh NOR */
+            (void)ret;
+        }
+    }
+
     /* Initialize HAL NAND device */
     ret = hal_nand_dev_init(&ctx->nand_dev,
                             config->channel_count,
@@ -76,6 +112,7 @@ int sssim_init(struct sssim_ctx *ctx, struct sssim_config *config)
                             config->spare_size,
                             &ctx->media);
     if (ret != HFSSS_OK) {
+        hal_nor_dev_cleanup(&ctx->nor_dev);
         media_cleanup(&ctx->media);
         return ret;
     }
@@ -83,6 +120,7 @@ int sssim_init(struct sssim_ctx *ctx, struct sssim_config *config)
     /* Initialize HAL */
     ret = hal_init(&ctx->hal, &ctx->nand_dev);
     if (ret != HFSSS_OK) {
+        hal_nor_dev_cleanup(&ctx->nor_dev);
         media_cleanup(&ctx->media);
         return ret;
     }
@@ -106,6 +144,7 @@ int sssim_init(struct sssim_ctx *ctx, struct sssim_config *config)
     ret = ftl_init(&ctx->ftl, &ftl_cfg, &ctx->hal);
     if (ret != HFSSS_OK) {
         hal_cleanup(&ctx->hal);
+        hal_nor_dev_cleanup(&ctx->nor_dev);
         media_cleanup(&ctx->media);
         return ret;
     }
@@ -126,6 +165,7 @@ void sssim_cleanup(struct sssim_ctx *ctx)
 
     ftl_cleanup(&ctx->ftl);
     hal_cleanup(&ctx->hal);
+    hal_nor_dev_cleanup(&ctx->nor_dev);
     media_cleanup(&ctx->media);
 
     memset(ctx, 0, sizeof(*ctx));
@@ -206,4 +246,51 @@ void sssim_reset_stats(struct sssim_ctx *ctx)
     }
 
     ftl_reset_stats(&ctx->ftl);
+}
+
+int sssim_shutdown(struct sssim_ctx *ctx)
+{
+    struct sysinfo_partition sysinfo;
+    int ret;
+
+    if (!ctx || !ctx->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Flush FTL: close CWBs, flush journal, write L2P checkpoint */
+    ret = ftl_flush(&ctx->ftl);
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+
+    /* Save NAND image (includes superblock pages with L2P checkpoint) */
+    if (ctx->config.nand_image_path[0]) {
+        ret = media_save(&ctx->media, ctx->config.nand_image_path);
+        if (ret != HFSSS_OK) {
+            return ret;
+        }
+    }
+
+    /* Write SysInfo clean shutdown marker to NOR */
+    if (ctx->config.nor_image_path[0]) {
+        memset(&sysinfo, 0, sizeof(sysinfo));
+        sysinfo.magic = SYSINFO_MAGIC;
+        sysinfo.clean_shutdown_marker_valid = 1;
+        sysinfo.clean_shutdown_marker = SYSINFO_CLEAN_MARKER;
+        sysinfo.checkpoint_seq_at_shutdown =
+            (uint32_t)ctx->ftl.sb.ckpt_sequence;
+        sysinfo.crc32 = hfsss_crc32((const u8 *)&sysinfo,
+                                     sizeof(sysinfo) - sizeof(uint32_t));
+
+        /* Erase the sector and write SysInfo at offset 0 */
+        hal_nor_erase_sector(&ctx->nor_dev, 0);
+        hal_nor_write(&ctx->nor_dev, 0, &sysinfo, sizeof(sysinfo));
+
+        ret = hal_nor_save(&ctx->nor_dev, ctx->config.nor_image_path);
+        if (ret != HFSSS_OK) {
+            return ret;
+        }
+    }
+
+    return HFSSS_OK;
 }
