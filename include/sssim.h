@@ -2,6 +2,7 @@
 #define __HFSSS_SSSIM_H
 
 #include "common/common.h"
+#include "common/uplp.h"
 #include "media/media.h"
 #include "hal/hal.h"
 #include "hal/hal_nor.h"
@@ -48,6 +49,7 @@ struct sssim_ctx {
     struct hal_nor_dev nor_dev;
     struct hal_ctx hal;
     struct ftl_ctx ftl;
+    struct uplp_ctx uplp;
     bool initialized;
 };
 

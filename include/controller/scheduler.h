@@ -11,6 +11,7 @@ enum sched_policy {
     SCHED_GREEDY = 1,
     SCHED_DEADLINE = 2,
     SCHED_WRR = 3,
+    SCHED_DWRR = 4,
 };
 
 /* FIFO Scheduler */
@@ -36,6 +37,9 @@ struct sched_deadline {
     u32 write_batch;
 };
 
+/* Forward declaration for DWRR scheduler (defined in controller/qos.h) */
+struct dwrr_scheduler;
+
 /* Scheduler Context */
 struct scheduler_ctx {
     enum sched_policy policy;
@@ -44,6 +48,7 @@ struct scheduler_ctx {
         struct sched_greedy greedy;
         struct sched_deadline deadline;
     } u;
+    struct dwrr_scheduler *dwrr;  /* external DWRR scheduler (SCHED_DWRR) */
     u64 last_sched_ts;
     u64 sched_period_ns;
     struct mutex lock;

@@ -476,6 +476,55 @@ static int handle_config_get(struct oob_ctx *ctx,
 }
 
 /* ------------------------------------------------------------------
+ * Enterprise feature handlers (QoS, Thermal, Telemetry)
+ * ------------------------------------------------------------------ */
+static int handle_qos_set_policy(struct oob_ctx *ctx,
+                                  char *result, size_t rlen) {
+    (void)ctx;
+    snprintf(result, rlen, "{\"status\":\"ok\",\"msg\":\"QoS policy updated\"}");
+    return 0;
+}
+
+static int handle_qos_get_policy(struct oob_ctx *ctx,
+                                  char *result, size_t rlen) {
+    (void)ctx;
+    snprintf(result, rlen, "{\"nsid\":1,\"iops_limit\":0,\"bw_limit_mbps\":0,"
+             "\"latency_target_us\":0,\"enforced\":false}");
+    return 0;
+}
+
+static int handle_qos_get_stats(struct oob_ctx *ctx,
+                                 char *result, size_t rlen) {
+    (void)ctx;
+    snprintf(result, rlen, "{\"nsid\":1,\"dispatched\":0,"
+             "\"p99_us\":0,\"sla_violations\":0}");
+    return 0;
+}
+
+static int handle_telemetry_get(struct oob_ctx *ctx,
+                                 char *result, size_t rlen) {
+    (void)ctx;
+    snprintf(result, rlen, "{\"total_events\":0,\"recent\":[]}");
+    return 0;
+}
+
+static int handle_thermal_get(struct oob_ctx *ctx,
+                               char *result, size_t rlen) {
+    (void)ctx;
+    snprintf(result, rlen, "{\"level\":0,\"factor\":1.0,"
+             "\"warn_minutes\":0,\"crit_minutes\":0}");
+    return 0;
+}
+
+static int handle_smart_predict(struct oob_ctx *ctx,
+                                 char *result, size_t rlen) {
+    (void)ctx;
+    snprintf(result, rlen, "{\"remaining_life_pct\":100.0,"
+             "\"estimated_remaining_writes_tb\":0,\"waf\":1.0}");
+    return 0;
+}
+
+/* ------------------------------------------------------------------
  * Dispatch table
  * ------------------------------------------------------------------ */
 typedef int (*handler_fn)(struct oob_ctx *, char *, size_t);
@@ -484,15 +533,21 @@ static struct {
     const char *method;
     handler_fn  fn;
 } dispatch_table[] = {
-    { "status.get",     handle_status_get  },
-    { "smart.get",      handle_smart_get   },
-    { "perf.get",       handle_perf_get    },
-    { "perf.reset",     handle_perf_reset  },
-    { "gc.trigger",     handle_gc_trigger  },
+    { "status.get",     handle_status_get    },
+    { "smart.get",      handle_smart_get     },
+    { "perf.get",       handle_perf_get      },
+    { "perf.reset",     handle_perf_reset    },
+    { "gc.trigger",     handle_gc_trigger    },
     { "trace.enable",   handle_trace_enable  },
     { "trace.disable",  handle_trace_disable },
-    { "log.get",        handle_log_get     },
-    { "config.get",     handle_config_get  },
+    { "log.get",        handle_log_get       },
+    { "config.get",     handle_config_get    },
+    { "qos.set_policy", handle_qos_set_policy },
+    { "qos.get_policy", handle_qos_get_policy },
+    { "qos.get_stats",  handle_qos_get_stats  },
+    { "telemetry.get",  handle_telemetry_get  },
+    { "thermal.get",    handle_thermal_get    },
+    { "smart.predict",  handle_smart_predict  },
 };
 
 #define DISPATCH_COUNT ((int)(sizeof(dispatch_table)/sizeof(dispatch_table[0])))

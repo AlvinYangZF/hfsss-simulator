@@ -263,3 +263,35 @@ u32 hal_pci_ns_get_active_count(struct hal_pci_ctx *ctx)
 
     return ctx->active_namespace_count;
 }
+
+int hal_pci_ns_format(struct hal_pci_ctx *ctx, u32 nsid, u32 new_lba_size)
+{
+    u32 i;
+
+    if (!ctx || !ctx->initialized || nsid == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    if (new_lba_size != 0 && new_lba_size != 512 &&
+        new_lba_size != 4096 && new_lba_size != 16384) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    mutex_lock(&ctx->lock, 0);
+
+    for (i = 0; i < HAL_PCI_MAX_NAMESPACES; i++) {
+        if (ctx->namespaces[i].active && ctx->namespaces[i].nsid == nsid) {
+            if (new_lba_size > 0) {
+                ctx->namespaces[i].lba_size = new_lba_size;
+            }
+            /* Format resets the namespace to a clean state.
+             * The caller is responsible for clearing FTL-level
+             * mapping tables separately. */
+            mutex_unlock(&ctx->lock);
+            return HFSSS_OK;
+        }
+    }
+
+    mutex_unlock(&ctx->lock);
+    return HFSSS_ERR_NOENT;
+}

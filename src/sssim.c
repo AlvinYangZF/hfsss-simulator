@@ -149,6 +149,9 @@ int sssim_init(struct sssim_ctx *ctx, struct sssim_config *config)
         return ret;
     }
 
+    /* Initialize UPLP with default supercapacitor parameters */
+    uplp_init(&ctx->uplp, 5.0, 0.1, 5.0, 2.7, 10.0);
+
     ctx->initialized = true;
     return HFSSS_OK;
 }
@@ -163,6 +166,7 @@ void sssim_cleanup(struct sssim_ctx *ctx)
         return;
     }
 
+    uplp_cleanup(&ctx->uplp);
     ftl_cleanup(&ctx->ftl);
     hal_cleanup(&ctx->hal);
     hal_nor_dev_cleanup(&ctx->nor_dev);

@@ -244,6 +244,11 @@ static int phase2_meta_load(struct boot_ctx *ctx) {
         break;
     case BOOT_RECOVERY:
         boot_log(ctx, 0, "Meta Load: replaying WAL after abnormal shutdown");
+        boot_log(ctx, 0, "Meta Load: initiating UPLP recovery sequence");
+        ctx->sysinfo.unsafe_shutdown_count++;
+        ctx->sysinfo.crc32 = hfsss_crc32(&ctx->sysinfo,
+                                          sizeof(ctx->sysinfo) -
+                                          sizeof(ctx->sysinfo.crc32));
         break;
     default:
         break;

@@ -1,4 +1,5 @@
 #include "controller/scheduler.h"
+#include "controller/qos.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -76,6 +77,34 @@ int scheduler_enqueue(struct scheduler_ctx *ctx, struct cmd_context *cmd)
             ctx->u.fifo.tail = cmd;
         }
         ctx->u.fifo.count++;
+        break;
+
+    case SCHED_DWRR:
+        /* Route to DWRR scheduler.  Namespace ID is extracted from the
+         * NVMe command CDW1 (kern_cmd.cdw[1]) when multi-NS is active;
+         * default to nsid=1 for single-namespace configurations. */
+        if (ctx->dwrr) {
+            u32 nsid = 1;
+            if (cmd->kern_cmd.cdw0_15[1] > 0) {
+                nsid = cmd->kern_cmd.cdw0_15[1];
+            }
+            int dwrr_ret = dwrr_enqueue(ctx->dwrr, nsid);
+            if (dwrr_ret != HFSSS_OK) {
+                /* Fallback: enqueue to FIFO if DWRR rejects */
+                if (ctx->u.fifo.head == NULL) {
+                    ctx->u.fifo.head = cmd;
+                    ctx->u.fifo.tail = cmd;
+                    cmd->next = NULL;
+                    cmd->prev = NULL;
+                } else {
+                    ctx->u.fifo.tail->next = cmd;
+                    cmd->prev = ctx->u.fifo.tail;
+                    cmd->next = NULL;
+                    ctx->u.fifo.tail = cmd;
+                }
+                ctx->u.fifo.count++;
+            }
+        }
         break;
 
     default:

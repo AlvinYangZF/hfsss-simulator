@@ -181,12 +181,14 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
 
             u32 pg = src_ppn.bits.page;
 
-            /* Page is live.  Read it from NAND. */
+            /* Page is live.  Read it from NAND (spare area carries PI metadata). */
+            u8 spare_buf[64];
+            memset(spare_buf, 0xFF, sizeof(spare_buf));
             ret = hal_nand_read_sync(hal,
                                      victim->channel, victim->chip,
                                      victim->die, victim->plane,
                                      victim->block_id, pg,
-                                     page_buf, NULL);
+                                     page_buf, spare_buf);
             if (ret != HFSSS_OK) {
                 gc_dbg_read_fail_removes++;
                 if (gc_dbg_read_fail_removes <= 3) {
@@ -233,7 +235,8 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
                 }
             }
 
-            /* Write the live page to the destination block. */
+            /* Write the live page to the destination block.
+             * Pass through spare_buf to preserve T10 PI metadata. */
             ret = hal_nand_program_sync(hal,
                                         ctx->dst_block->channel,
                                         ctx->dst_block->chip,
@@ -241,7 +244,7 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
                                         ctx->dst_block->plane,
                                         ctx->dst_block->block_id,
                                         ctx->dst_page,
-                                        page_buf, NULL);
+                                        page_buf, spare_buf);
             if (ret != HFSSS_OK) {
                 gc_dbg_write_fail_removes++;
                 if (gc_dbg_write_fail_removes <= 3) {

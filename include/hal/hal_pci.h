@@ -59,5 +59,6 @@ int hal_pci_ns_get_info(struct hal_pci_ctx *ctx, u32 nsid, struct hal_pci_namesp
 int hal_pci_ns_set_write_protect(struct hal_pci_ctx *ctx, u32 nsid, bool wp);
 int hal_pci_ns_list(struct hal_pci_ctx *ctx, u32 *nsid_list, u32 *count);
 u32 hal_pci_ns_get_active_count(struct hal_pci_ctx *ctx);
+int hal_pci_ns_format(struct hal_pci_ctx *ctx, u32 nsid, u32 new_lba_size);
 
 #endif /* __HFSSS_HAL_PCI_H */
