@@ -50,6 +50,19 @@ typedef int64_t  s64;
 #define HFSSS_ERR_AGAIN    (-10)
 #define HFSSS_ERR_IO       (-100)
 
+/* Enterprise error codes */
+#define HFSSS_ERR_PI_GUARD   (-101)  /* T10 PI guard tag CRC mismatch */
+#define HFSSS_ERR_PI_REFTAG  (-102)  /* T10 PI reference tag mismatch */
+#define HFSSS_ERR_PI_APPTAG  (-103)  /* T10 PI application tag mismatch */
+#define HFSSS_ERR_CRYPTO     (-104)  /* Encryption/decryption failure */
+#define HFSSS_ERR_AUTH       (-105)  /* Authentication failure */
+#define HFSSS_ERR_LOCKED     (-106)  /* Resource locked (TCG Opal) */
+#define HFSSS_ERR_POWER_LOSS (-107)  /* Power loss detected */
+#define HFSSS_ERR_THERMAL    (-108)  /* Thermal shutdown triggered */
+
+/* CRC-16 (T10 DIF polynomial) */
+u16 t10_crc16(const void *data, size_t len);
+
 /* Log Levels */
 #define LOG_LEVEL_ERROR    0
 #define LOG_LEVEL_WARN     1

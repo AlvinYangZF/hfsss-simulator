@@ -86,9 +86,17 @@ TEST_FTL_INT = $(BIN_DIR)/test_ftl_integrity
 STRESS_ADMIN_MIX = $(BIN_DIR)/stress_admin_mix
 TEST_SB = $(BIN_DIR)/test_superblock
 TEST_POWER_CYCLE = $(BIN_DIR)/test_power_cycle
+TEST_FOUNDATION = $(BIN_DIR)/test_foundation
+TEST_T10PI = $(BIN_DIR)/test_t10_pi
 SYSTEST_DI = $(BIN_DIR)/systest_data_integrity
 SYSTEST_NC = $(BIN_DIR)/systest_nvme_compliance
 SYSTEST_EB = $(BIN_DIR)/systest_error_boundary
+TEST_UPLP = $(BIN_DIR)/test_uplp
+TEST_QOS = $(BIN_DIR)/test_qos
+TEST_SECURITY = $(BIN_DIR)/test_security
+TEST_MULTI_NS = $(BIN_DIR)/test_multi_ns
+TEST_THERMAL_TEL = $(BIN_DIR)/test_thermal_telemetry
+STRESS_ENTERPRISE = $(BIN_DIR)/stress_enterprise
 
 # Perf validation library and test
 TEST_PERF = $(BIN_DIR)/test_perf_validation
@@ -100,7 +108,7 @@ PERF_OBJS = $(PERF_SRCS:$(SRC_DIR)/perf/%.c=$(BUILD_DIR)/perf/%.o)
 # Targets
 .PHONY: all clean directories test systest help
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -298,6 +306,14 @@ $(TEST_POWER_CYCLE): $(TEST_DIR)/test_power_cycle.c $(LIBHFSSS_SSSIM) $(LIBHFSSS
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-sssim -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common $(LDFLAGS)
 
+$(TEST_FOUNDATION): $(TEST_DIR)/test_foundation.c $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common $(LDFLAGS)
+
+$(TEST_T10PI): $(TEST_DIR)/test_t10_pi.c $(LIBHFSSS_FTL) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-common $(LDFLAGS)
+
 $(SYSTEST_DI): $(TEST_DIR)/systest_data_integrity.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
@@ -309,6 +325,30 @@ $(SYSTEST_NC): $(TEST_DIR)/systest_nvme_compliance.c $(LIBHFSSS_PCIE) $(LIBHFSSS
 $(SYSTEST_EB): $(TEST_DIR)/systest_error_boundary.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
+
+$(TEST_UPLP): $(TEST_DIR)/test_uplp.c $(LIBHFSSS_FTL) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-common -lm $(LDFLAGS)
+
+$(TEST_QOS): $(TEST_DIR)/test_qos.c $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-controller -lhfsss-ftl -lhfsss-common -lm $(LDFLAGS)
+
+$(TEST_SECURITY): $(TEST_DIR)/test_security.c $(LIBHFSSS_CTRL) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-controller -lhfsss-common $(LDFLAGS)
+
+$(TEST_MULTI_NS): $(TEST_DIR)/test_multi_ns.c $(LIBHFSSS_FTL) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-common -lm $(LDFLAGS)
+
+$(TEST_THERMAL_TEL): $(TEST_DIR)/test_thermal_telemetry.c $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common -lm $(LDFLAGS)
+
+$(STRESS_ENTERPRISE): $(TEST_DIR)/stress_enterprise.c $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
 
 # System-level tests (Tier 1)
 .PHONY: systest
@@ -372,6 +412,20 @@ test: all
 	@$(TEST_FTL_INT)
 	@echo ""
 	@$(TEST_POWER_CYCLE)
+	@echo ""
+	@$(TEST_FOUNDATION)
+	@echo ""
+	@$(TEST_T10PI)
+	@echo ""
+	@$(TEST_UPLP)
+	@echo ""
+	@$(TEST_QOS)
+	@echo ""
+	@$(TEST_SECURITY)
+	@echo ""
+	@$(TEST_MULTI_NS)
+	@echo ""
+	@$(TEST_THERMAL_TEL)
 
 # Clean
 clean:

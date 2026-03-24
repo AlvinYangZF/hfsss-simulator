@@ -1,0 +1,89 @@
+#ifndef __HFSSS_SECURITY_H
+#define __HFSSS_SECURITY_H
+
+#include "common/common.h"
+
+#define SEC_KEY_LEN      32   /* 256-bit keys */
+#define SEC_WRAPPED_LEN  48   /* wrapped DEK size */
+#define SEC_MAX_NS       32
+#define SEC_KEY_MAGIC    0x4B455953U  /* "KEYS" */
+
+/* Key states */
+enum key_state {
+    KEY_EMPTY     = 0,
+    KEY_ACTIVE    = 1,
+    KEY_SUSPENDED = 2,
+    KEY_DESTROYED = 3,
+};
+
+/* Crypto context per namespace */
+struct crypto_ctx {
+    u8  data_key[SEC_KEY_LEN];
+    u8  tweak_key[SEC_KEY_LEN];
+    u32 nsid;
+    bool active;
+};
+
+/* Key entry in persistent key table */
+struct key_entry {
+    u8  wrapped_dek[SEC_WRAPPED_LEN];
+    u32 nsid;
+    u32 state;     /* enum key_state */
+    u32 reserved[2];
+};
+
+/* Persistent key table (stored in NOR) */
+struct key_table {
+    u32 magic;
+    u32 version;
+    u8  master_key_wrapped[SEC_WRAPPED_LEN];
+    struct key_entry entries[SEC_MAX_NS];
+    u32 crc32;
+};
+
+/* Firmware signature for secure boot */
+struct fw_signature {
+    u32 magic;
+    u32 fw_version;
+    u32 image_crc32;
+    u32 reserved;
+};
+
+#define FW_SIG_MAGIC 0x46575347U  /* "FWSG" */
+
+/* AES-XTS simulation (XOR-based placeholder) */
+void crypto_xts_encrypt(const struct crypto_ctx *ctx, u64 sector,
+                        const u8 *plain, u8 *cipher, u32 len);
+void crypto_xts_decrypt(const struct crypto_ctx *ctx, u64 sector,
+                        const u8 *cipher, u8 *plain, u32 len);
+
+/* Crypto context management */
+int  crypto_ctx_init(struct crypto_ctx *ctx, u32 nsid, const u8 *dek);
+void crypto_ctx_cleanup(struct crypto_ctx *ctx);
+
+/* Key generation and derivation */
+void sec_generate_random_key(u8 *key, u32 len);
+void sec_hkdf_derive(const u8 mk[SEC_KEY_LEN], u32 nsid,
+                     u8 kek_out[SEC_KEY_LEN]);
+
+/* DEK wrapping / unwrapping */
+void sec_dek_wrap(const u8 kek[SEC_KEY_LEN], const u8 dek[SEC_KEY_LEN],
+                  u8 wrapped[SEC_WRAPPED_LEN]);
+int  sec_dek_unwrap(const u8 kek[SEC_KEY_LEN],
+                    const u8 wrapped[SEC_WRAPPED_LEN],
+                    u8 dek_out[SEC_KEY_LEN]);
+
+/* Key table management */
+int key_table_init(struct key_table *kt);
+int key_table_save(const struct key_table *kt, const char *filepath);
+int key_table_load(struct key_table *kt, const char *filepath);
+
+/* Crypto erase */
+int crypto_erase_ns(struct key_table *kt, u32 nsid,
+                    const u8 mk[SEC_KEY_LEN]);
+
+/* Secure boot verification */
+bool secure_boot_verify(const u8 *image, u32 size,
+                        const struct fw_signature *sig);
+
+#endif /* __HFSSS_SECURITY_H */

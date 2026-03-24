@@ -37,6 +37,36 @@ uint32_t hfsss_crc32(const void *data, size_t len) {
 }
 
 /* ------------------------------------------------------------------
+ * CRC-16 (T10 DIF polynomial: x^16+x^15+x^11+x^9+x^8+x^7+x^5+x^4+x^2+x+1)
+ * Polynomial: 0x8BB7 (normal) / used in T10 PI guard tag
+ * ------------------------------------------------------------------ */
+static uint16_t crc16_table[256];
+static bool     crc16_table_ready = false;
+
+static void crc16_build_table(void) {
+    for (uint32_t i = 0; i < 256; i++) {
+        uint16_t c = (uint16_t)(i << 8);
+        for (int k = 0; k < 8; k++) {
+            c = (c & 0x8000) ? (uint16_t)((c << 1) ^ 0x8BB7u) : (uint16_t)(c << 1);
+        }
+        crc16_table[i] = c;
+    }
+    crc16_table_ready = true;
+}
+
+uint16_t t10_crc16(const void *data, size_t len) {
+    if (!crc16_table_ready) {
+        crc16_build_table();
+    }
+    const uint8_t *p = (const uint8_t *)data;
+    uint16_t crc = 0;
+    for (size_t i = 0; i < len; i++) {
+        crc = (uint16_t)((crc << 8) ^ crc16_table[((crc >> 8) ^ p[i]) & 0xFF]);
+    }
+    return crc;
+}
+
+/* ------------------------------------------------------------------
  * Time helpers
  * ------------------------------------------------------------------ */
 static uint64_t get_ns(void) {
