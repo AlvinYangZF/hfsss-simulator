@@ -15,15 +15,15 @@ void hfsss_config_defaults(struct hfsss_config *cfg) {
     if (!cfg) return;
     memset(cfg, 0, sizeof(*cfg));
 
-    /* NAND: modest test geometry */
-    cfg->nand.channel_count     = 8;
+    /* NAND: enterprise QLC SSD profile (4TB raw) */
+    cfg->nand.channel_count     = 16;
     cfg->nand.chips_per_channel = 8;
-    cfg->nand.dies_per_chip     = 2;
+    cfg->nand.dies_per_chip     = 4;
     cfg->nand.planes_per_die    = 2;
-    cfg->nand.blocks_per_plane  = 1024;
-    cfg->nand.pages_per_block   = 256;
-    cfg->nand.page_size         = 4096;
-    cfg->nand.spare_size        = 64;
+    cfg->nand.blocks_per_plane  = 2048;
+    cfg->nand.pages_per_block   = 512;
+    cfg->nand.page_size         = 16384;
+    cfg->nand.spare_size        = 256;
     cfg->nand.op_ratio_pct      = 7;
 
     /* GC */
