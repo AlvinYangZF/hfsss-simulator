@@ -48,6 +48,20 @@ struct resource_pool {
     struct mutex lock;
 };
 
+/* Simulated per-role CPU utilization (REQ-119) */
+enum cpu_role {
+    CPU_ROLE_NAND = 0,
+    CPU_ROLE_FTL  = 1,
+    CPU_ROLE_PCIE = 2,
+    CPU_ROLE_GC   = 3,
+    CPU_ROLE_MAX  = 4,
+};
+
+struct cpu_stats {
+    u64 cycle_count[CPU_ROLE_MAX];
+    u64 total_cycles;
+};
+
 /* Resource Manager */
 struct resource_mgr {
     struct resource_pool pools[RESOURCE_MAX];
@@ -57,6 +71,9 @@ struct resource_mgr {
 
     /* Idle Block Pool */
     struct idle_block_pool idle_blocks;
+
+    /* Per-role CPU stats (REQ-119) */
+    struct cpu_stats cpu;
 };
 
 /* Function Prototypes */
@@ -72,5 +89,10 @@ struct idle_block_entry *idle_block_alloc(struct resource_mgr *mgr);
 void idle_block_free(struct resource_mgr *mgr, struct idle_block_entry *block);
 u32 idle_block_get_free_count(struct resource_mgr *mgr);
 bool idle_block_needs_gc(struct resource_mgr *mgr);
+
+/* CPU Stats Functions (REQ-119) */
+void resource_cpu_record(struct resource_mgr *mgr, enum cpu_role role, u64 cycles);
+void resource_cpu_get_stats(const struct resource_mgr *mgr, struct cpu_stats *out);
+double resource_cpu_utilization(const struct resource_mgr *mgr, enum cpu_role role);
 
 #endif /* __HFSSS_RESOURCE_H */
