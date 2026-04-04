@@ -57,10 +57,23 @@ echo "========================================="
 echo "Starting HFSSS vhost-user-blk server..."
 "$VHOST_BIN" -s "$SOCKET" &
 VHOST_PID=$!
-sleep 1
 
-if ! kill -0 "$VHOST_PID" 2>/dev/null; then
-    echo "ERROR: vhost-user-blk server failed to start"
+# Wait for socket to appear (up to 30 seconds)
+echo "Waiting for vhost server to initialize..."
+for i in $(seq 1 30); do
+    if [ -S "$SOCKET" ]; then
+        break
+    fi
+    if ! kill -0 "$VHOST_PID" 2>/dev/null; then
+        echo "ERROR: vhost-user-blk server exited unexpectedly"
+        exit 1
+    fi
+    sleep 1
+done
+
+if [ ! -S "$SOCKET" ]; then
+    echo "ERROR: socket $SOCKET not created after 30 seconds"
+    kill "$VHOST_PID" 2>/dev/null
     exit 1
 fi
 echo "vhost-user-blk server running (PID $VHOST_PID, socket: $SOCKET)"
