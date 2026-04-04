@@ -254,105 +254,156 @@ nvme_uspace_set_features(&dev, fid, value);
 - **[System Test Plan](docs/SYSTEM_TEST_PLAN.md)** — 73-case test plan across 10 categories
 - **[README_CODE.md](README_CODE.md)** — Chinese documentation (original)
 
-## QEMU NVMe Block Device
+## QEMU NVMe Block Device (Live Simulator)
 
-The simulator can be exposed as a real `/dev/nvme0n1` block device inside a QEMU virtual machine. This allows testing with standard Linux NVMe tools (`nvme-cli`, `fio`, `mkfs`, etc.) against the full simulator stack.
+The simulator can be exposed as a real `/dev/nvme0n1` block device inside a QEMU virtual machine. **Every I/O goes through the full simulator FTL/NAND stack** — this is not a static disk image, but the live simulator processing each read, write, trim, and flush.
 
 ### Architecture
 
 ```
 Mac Studio (macOS, Apple Silicon)
-├── hfsss-img-export          Creates raw disk image from simulator
 │
-└── QEMU (HVF accelerated)
-    ├── -device nvme           NVMe controller emulation
-    ├── -drive file=hfsss.raw  Raw image as NVMe namespace
-    └── Linux Guest VM
-        ├── /dev/nvme0n1       Real NVMe block device
-        └── nvme-cli, fio      Standard NVMe tooling
+├── hfsss-nbd-server (C process)     ← Simulator with full FTL/NAND stack
+│   ├── NBD protocol server (TCP :10809)
+│   ├── nvme_uspace_dev (NVMe command handling)
+│   └── sssim_ctx (FTL → GC → Wear Leveling → NAND media)
+│
+└── QEMU (HVF hardware-accelerated)
+    ├── -device nvme              NVMe controller emulation
+    ├── -drive driver=nbd         NBD client → simulator
+    └── Linux Guest VM (Alpine Linux)
+        ├── /dev/nvme0n1          Real NVMe block device
+        └── fio, nvme-cli         Standard NVMe tooling
 ```
 
-### Prerequisites
+**Data path:** `fio → /dev/nvme0n1 → Linux NVMe driver → QEMU NVMe → NBD TCP → hfsss-nbd-server → FTL → NAND simulation`
+
+### One-Command Quick Start
+
+After initial setup, launch everything with one command:
 
 ```bash
-# Install QEMU (with HVF support for Apple Silicon)
+./scripts/start_nvme_test.sh
+```
+
+This starts the NBD server (simulator), boots QEMU, waits for SSH, and prints connection instructions. `Ctrl-C` to shut everything down.
+
+SSH into the guest:
+```bash
+ssh -i /tmp/hfsss_qemu_key -p 2222 root@127.0.0.1
+```
+
+### Initial Setup (One-Time)
+
+```bash
+# 1. Install QEMU
 brew install qemu
 
-# Download Alpine Linux aarch64 kernel and initramfs
-cd guest/
-curl -LO https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/netboot/vmlinuz-lts
-curl -LO https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/netboot/initramfs-lts
-cd ..
-```
-
-### Quick Start
-
-```bash
-# 1. Build the simulator
+# 2. Build the simulator
 make all
 
-# 2. Create a 512 MB raw disk image backed by the simulator
-./build/bin/hfsss-img-export -o /tmp/hfsss.raw -s 512
+# 3. Download and prepare Alpine Linux guest image
+cd guest/
+curl -LO https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/generic_alpine-3.21.2-aarch64-uefi-cloudinit-r0.qcow2
+mv generic_alpine-3.21.2-aarch64-uefi-cloudinit-r0.qcow2 alpine.qcow2
+dd if=/dev/zero of=ovmf_vars.fd bs=1m count=64
 
-# 3. Boot QEMU with the NVMe device
+# 4. Create cloud-init ISO with SSH key
+ssh-keygen -t ed25519 -f /tmp/hfsss_qemu_key -N "" -q
+mkdir -p cidata
+cat > cidata/meta-data << 'EOF'
+instance-id: hfsss-003
+local-hostname: hfsss
+EOF
+cat > cidata/user-data << EOF
+#cloud-config
+ssh_pwauth: true
+disable_root: false
+chpasswd:
+  expire: false
+  users:
+    - name: root
+      password: hfsss
+      type: text
+ssh_authorized_keys:
+  - $(cat /tmp/hfsss_qemu_key.pub)
+EOF
+hdiutil makehybrid -iso -joliet -default-volume-name cidata -o cidata.iso cidata/
+cd ..
+
+# 5. First boot: install fio, then save the image
+# (follow the manual QEMU launch below, install fio, then save)
+```
+
+### Manual QEMU Launch
+
+```bash
+# Terminal 1: Start NBD server (simulator in data path)
+./build/bin/hfsss-nbd-server -p 10809 -s 512 2>&1 | tee nbd_server.log
+
+# Terminal 2: Start QEMU
 qemu-system-aarch64 \
     -M virt,gic-version=3 -accel hvf -cpu host \
     -m 2G -smp 2 \
-    -kernel guest/vmlinuz-lts -initrd guest/initramfs-lts \
-    -append 'console=ttyAMA0' \
-    -drive file=/tmp/hfsss.raw,format=raw,if=none,id=nvm0 \
+    -drive if=pflash,format=raw,file=/opt/homebrew/share/qemu/edk2-aarch64-code.fd,readonly=on \
+    -drive if=pflash,format=raw,file=guest/ovmf_vars.fd \
+    -drive file=guest/alpine-hfsss.qcow2,if=virtio,format=qcow2,snapshot=on \
+    -drive file=guest/cidata.iso,if=virtio,media=cdrom \
+    -drive "driver=nbd,server.type=inet,server.host=127.0.0.1,server.port=10809,if=none,id=nvm0" \
     -device nvme,serial=HFSSS0001,drive=nvm0 \
+    -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+    -device virtio-net-pci,netdev=net0 \
     -nographic
 ```
 
-### Inside the Guest
-
-The VM boots to an Alpine Linux emergency shell (no root filesystem needed). The NVMe device is immediately available:
+### fio Test Examples
 
 ```bash
-# List NVMe devices
-ls /dev/nvme*
-# Expected: /dev/nvme0  /dev/nvme0n1
+# SSH into the guest
+ssh -i /tmp/hfsss_qemu_key -p 2222 root@127.0.0.1
 
-# Check block devices
-cat /proc/partitions
-# Shows the nvme0n1 namespace
+# Random 4K mixed R/W — 60 seconds
+fio --name=mixed --rw=randrw --rwmixread=70 --bs=4k --size=512M \
+    --filename=/dev/nvme0n1 --direct=1 --ioengine=sync \
+    --runtime=60 --time_based
 
-# Read from the NVMe device
-dd if=/dev/nvme0n1 bs=4096 count=1 | hexdump -C
+# Sequential write — 60 seconds
+fio --name=seq_write --rw=write --bs=128k --size=512M \
+    --filename=/dev/nvme0n1 --direct=1 --ioengine=sync \
+    --runtime=60 --time_based
 
-# Write and read back
-dd if=/dev/urandom of=/dev/nvme0n1 bs=4k count=100
-dd if=/dev/nvme0n1 bs=4k count=100 | md5sum
+# Long stress with trim — 30 minutes
+fio --name=stress --rw=randrw --rwmixread=60 --bs=4k --size=512M \
+    --filename=/dev/nvme0n1 --direct=1 --ioengine=sync \
+    --trim_percentage=20 --runtime=1800 --time_based --loops=0
 
-# Install NVMe tools (requires network — add -netdev user,id=net0 -device virtio-net-pci,netdev=net0)
-apk add nvme-cli fio
+# NVMe admin commands
+apk add nvme-cli
 nvme list
 nvme id-ctrl /dev/nvme0
-fio --name=test --rw=randwrite --bs=4k --size=16M --filename=/dev/nvme0n1 --direct=1
+nvme smart-log /dev/nvme0
 ```
 
-Press `Ctrl-A X` to exit QEMU.
+### Simulator Logs
 
-### Image Export Options
+The NBD server logs all I/O activity to `nbd_server.log`. On the Mac host:
 
 ```bash
-# Create a 1 GB image
-./build/bin/hfsss-img-export -o /tmp/hfsss.raw -s 1024
-
-# Create a 4 GB image
-./build/bin/hfsss-img-export -o /tmp/hfsss.raw -s 4096
+tail -f nbd_server.log          # Live I/O log
+ps aux | grep hfsss-nbd         # Check CPU/memory usage
 ```
 
-### Convenience Script
+### Saving the Guest Image
 
-An all-in-one launch script is also available:
+After installing packages (fio, nvme-cli), save the image so future runs skip setup:
 
 ```bash
-./scripts/run_qemu_nvme.sh
+# Stop QEMU first, then:
+qemu-img convert -O qcow2 guest/alpine-fresh.qcow2 guest/alpine-hfsss.qcow2
+cp guest/ovmf_vars.fd guest/ovmf_vars-saved.fd
 ```
 
-This starts the vhost-user-blk server and QEMU together. See `docs/VHOST_USER_GUIDE.md` for details.
+The `start_nvme_test.sh` script uses `snapshot=on` so the base image stays clean between runs.
 
 ## CI/CD
 
