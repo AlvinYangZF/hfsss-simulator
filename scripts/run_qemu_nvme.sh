@@ -86,7 +86,7 @@ QEMU_ARGS=(
     -m "$MEM" -smp 4
     -kernel "$KERNEL"
     -initrd "$INITRD"
-    -append "console=ttyAMA0 ip=dhcp alpine_repo=http://dl-cdn.alpinelinux.org/alpine/latest-stable/main/"
+    -append "console=ttyAMA0"
     -drive "file=$ROOTFS,if=virtio,format=qcow2"
     -chardev "socket,id=char0,path=$SOCKET"
     -device "vhost-user-blk-pci,chardev=char0,num-queues=1"
