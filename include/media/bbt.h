@@ -3,11 +3,11 @@
 
 #include "common/common.h"
 
-#define MAX_CHANNELS 32
-#define MAX_CHIPS_PER_CHANNEL 8
-#define MAX_DIES_PER_CHIP 4
-#define MAX_PLANES_PER_DIE 2
-#define MAX_BLOCKS_PER_PLANE 2048
+#define MAX_CHANNELS 64
+#define MAX_CHIPS_PER_CHANNEL 16
+#define MAX_DIES_PER_CHIP 8
+#define MAX_PLANES_PER_DIE 4
+#define MAX_BLOCKS_PER_PLANE 4096
 
 #define BBT_ENTRY_FREE 0x00
 #define BBT_ENTRY_BAD 0xFF

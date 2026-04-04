@@ -3,10 +3,10 @@
 
 #include "common/common.h"
 
-#define MAX_CHANNELS 32
-#define MAX_CHIPS_PER_CHANNEL 8
-#define MAX_DIES_PER_CHIP 4
-#define MAX_PLANES_PER_DIE 2
+#define MAX_CHANNELS 64
+#define MAX_CHIPS_PER_CHANNEL 16
+#define MAX_DIES_PER_CHIP 8
+#define MAX_PLANES_PER_DIE 4
 
 /* Operation Type */
 enum op_type {

@@ -516,21 +516,53 @@ int main(int argc, char *argv[])
     const uint64_t total_lbas  = export_size / lba_size;
 
     /* ------------------------------------------------------------------ */
+    /* Auto-size NAND geometry to fit requested export size                 */
+    /* ------------------------------------------------------------------ */
+    const uint32_t page_size  = 4096;
+    const uint32_t spare_size = 64;
+    const uint32_t op_pct     = 7;  /* 7% over-provisioning */
+
+    /* Target raw pages: export + OP headroom */
+    uint64_t pages_needed = (total_lbas * (100 + op_pct) + 99) / 100;
+
+    /* Start with a baseline and scale up */
+    uint32_t nch = 4, nchip = 4, ndie = 2, nplane = 2;
+    uint32_t nblk = 512, npg = 256;
+
+    /* Scale blocks first (up to 4096), then pages (up to 1024),
+     * then channels (up to 16), then chips (up to 8) */
+    for (;;) {
+        uint64_t raw = (uint64_t)nch * nchip * ndie * nplane * nblk * npg;
+        if (raw >= pages_needed)
+            break;
+        if (nblk < 4096)       { nblk  = (nblk  < 2048) ? nblk  * 2 : 4096; continue; }
+        if (npg  < 1024)       { npg   = (npg   < 512)  ? npg   * 2 : 1024; continue; }
+        if (nch  < 16)         { nch   *= 2; continue; }
+        if (nchip < 8)         { nchip *= 2; continue; }
+        if (ndie  < 8)         { ndie  *= 2; continue; }
+        if (nplane < 4)        { nplane *= 2; continue; }
+        break;  /* maxed out */
+    }
+
+    /* ------------------------------------------------------------------ */
     /* Initialize simulator                                                */
     /* ------------------------------------------------------------------ */
     struct nvme_uspace_config config;
     nvme_uspace_config_default(&config);
 
-    config.sssim_cfg.channel_count     = 4;
-    config.sssim_cfg.chips_per_channel = 4;
-    config.sssim_cfg.dies_per_chip     = 2;
-    config.sssim_cfg.planes_per_die    = 2;
-    config.sssim_cfg.blocks_per_plane  = 512;
-    config.sssim_cfg.pages_per_block   = 256;
-    config.sssim_cfg.page_size         = 4096;
-    config.sssim_cfg.spare_size        = 64;
+    config.sssim_cfg.channel_count     = nch;
+    config.sssim_cfg.chips_per_channel = nchip;
+    config.sssim_cfg.dies_per_chip     = ndie;
+    config.sssim_cfg.planes_per_die    = nplane;
+    config.sssim_cfg.blocks_per_plane  = nblk;
+    config.sssim_cfg.pages_per_block   = npg;
+    config.sssim_cfg.page_size         = page_size;
+    config.sssim_cfg.spare_size        = spare_size;
     config.sssim_cfg.lba_size          = lba_size;
     config.sssim_cfg.total_lbas        = total_lbas;
+
+    uint64_t raw_pages = (uint64_t)nch * nchip * ndie * nplane * nblk * npg;
+    uint64_t raw_gb    = (raw_pages * page_size) >> 30;
 
     struct nvme_uspace_dev dev;
 
@@ -541,6 +573,8 @@ int main(int argc, char *argv[])
     fprintf(stderr, "Size:     %llu MB (%llu LBAs x %u B)\n",
             (unsigned long long)size_mb,
             (unsigned long long)total_lbas, lba_size);
+    fprintf(stderr, "NAND:     %uch/%uchip/%udie/%uplane/%ublk/%upg/%uB (%" PRIu64 " GB raw)\n",
+            nch, nchip, ndie, nplane, nblk, npg, page_size, raw_gb);
     fprintf(stderr, "Initializing simulator...\n");
 
     if (nvme_uspace_dev_init(&dev, &config) != 0) {

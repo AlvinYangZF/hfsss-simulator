@@ -4,9 +4,9 @@
 #include "common/common.h"
 #include "common/mutex.h"
 
-/* Use a smaller table for testing */
-#define L2P_TABLE_SIZE (1ULL << 20)    /* 1M entries for testing */
-#define P2L_TABLE_SIZE (1ULL << 24)    /* 16M entries for testing */
+/* Mapping table sizes — supports up to 64 GB at 4K LBA */
+#define L2P_TABLE_SIZE (1ULL << 24)    /* 16M entries (64 GB at 4K) */
+#define P2L_TABLE_SIZE (1ULL << 25)    /* 32M entries */
 
 /* PPN Encoding */
 union ppn {
