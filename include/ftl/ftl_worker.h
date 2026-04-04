@@ -28,6 +28,16 @@ struct ftl_mt_ctx {
     struct taa_ctx     taa;
     struct ftl_worker  workers[FTL_NUM_WORKERS];
     bool               initialized;
+
+    /* Background GC thread */
+    pthread_t          gc_thread;
+    pthread_mutex_t    gc_mutex;
+    pthread_cond_t     gc_cond;
+    bool               gc_running;
+
+    /* Background WL/Read Disturb thread */
+    pthread_t          wl_thread;
+    bool               wl_running;
 };
 
 /* Lifecycle */

@@ -4,6 +4,10 @@
 #include <stdio.h>
 #include <sched.h>
 
+/* Background thread entry points (defined in gc_thread.c / wl_thread.c) */
+extern void *gc_thread_main(void *arg);
+extern void *wl_thread_main(void *arg);
+
 static void *ftl_worker_main(void *arg)
 {
     struct ftl_worker *w = (struct ftl_worker *)arg;
@@ -176,6 +180,16 @@ int ftl_mt_start(struct ftl_mt_ctx *ctx)
         }
     }
 
+    /* Start GC background thread */
+    pthread_mutex_init(&ctx->gc_mutex, NULL);
+    pthread_cond_init(&ctx->gc_cond, NULL);
+    ctx->gc_running = true;
+    pthread_create(&ctx->gc_thread, NULL, gc_thread_main, ctx);
+
+    /* Start WL/Read Disturb background thread */
+    ctx->wl_running = true;
+    pthread_create(&ctx->wl_thread, NULL, wl_thread_main, ctx);
+
     return HFSSS_OK;
 }
 
@@ -183,6 +197,22 @@ void ftl_mt_stop(struct ftl_mt_ctx *ctx)
 {
     if (!ctx) return;
 
+    /* Stop GC thread */
+    if (ctx->gc_running) {
+        ctx->gc_running = false;
+        pthread_cond_signal(&ctx->gc_cond);
+        pthread_join(ctx->gc_thread, NULL);
+        pthread_mutex_destroy(&ctx->gc_mutex);
+        pthread_cond_destroy(&ctx->gc_cond);
+    }
+
+    /* Stop WL thread */
+    if (ctx->wl_running) {
+        ctx->wl_running = false;
+        pthread_join(ctx->wl_thread, NULL);
+    }
+
+    /* Stop worker threads */
     for (int i = 0; i < FTL_NUM_WORKERS; i++) {
         if (ctx->workers[i].running) {
             struct io_request stop;
