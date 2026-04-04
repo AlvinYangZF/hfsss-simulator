@@ -236,6 +236,50 @@ static void test_null_safety(void) {
 }
 
 /* ------------------------------------------------------------------
+ * Full NAND geometry round-trip
+ * ------------------------------------------------------------------ */
+static void test_full_nand_roundtrip(void) {
+    separator();
+    printf("Test: full NAND geometry round-trip\n");
+    separator();
+
+    const char *path = "/tmp/hfsss_test_nand_rt.yaml";
+    struct hfsss_config orig;
+    hfsss_config_defaults(&orig);
+
+    /* Override every NAND field to non-default values */
+    orig.nand.channel_count     = 32;
+    orig.nand.chips_per_channel = 4;
+    orig.nand.dies_per_chip     = 8;
+    orig.nand.planes_per_die    = 4;
+    orig.nand.blocks_per_plane  = 4096;
+    orig.nand.pages_per_block   = 1024;
+    orig.nand.page_size         = 32768;
+    orig.nand.spare_size        = 512;
+    orig.nand.op_ratio_pct      = 28;
+
+    int ret = hfsss_config_save(path, &orig);
+    TEST_ASSERT(ret == HFSSS_OK, "save returns OK");
+
+    struct hfsss_config loaded;
+    char errbuf[256] = {0};
+    ret = hfsss_config_load(path, &loaded, errbuf, sizeof(errbuf));
+    TEST_ASSERT(ret == HFSSS_OK, "load returns OK");
+
+    TEST_ASSERT(loaded.nand.channel_count     == 32,    "channel_count 32 round-trips");
+    TEST_ASSERT(loaded.nand.chips_per_channel == 4,     "chips_per_channel 4 round-trips");
+    TEST_ASSERT(loaded.nand.dies_per_chip     == 8,     "dies_per_chip 8 round-trips");
+    TEST_ASSERT(loaded.nand.planes_per_die    == 4,     "planes_per_die 4 round-trips");
+    TEST_ASSERT(loaded.nand.blocks_per_plane  == 4096,  "blocks_per_plane 4096 round-trips");
+    TEST_ASSERT(loaded.nand.pages_per_block   == 1024,  "pages_per_block 1024 round-trips");
+    TEST_ASSERT(loaded.nand.page_size         == 32768, "page_size 32768 round-trips");
+    TEST_ASSERT(loaded.nand.spare_size        == 512,   "spare_size 512 round-trips");
+    TEST_ASSERT(loaded.nand.op_ratio_pct      == 28,    "op_ratio_pct 28 round-trips");
+
+    remove(path);
+}
+
+/* ------------------------------------------------------------------
  * main
  * ------------------------------------------------------------------ */
 int main(void) {
@@ -250,6 +294,7 @@ int main(void) {
     test_load_unknown_keys();
     test_get_set();
     test_null_safety();
+    test_full_nand_roundtrip();
 
     separator();
     printf("Test Summary\n");

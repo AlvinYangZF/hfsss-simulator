@@ -35,3 +35,4 @@ core
 # Backup files
 *.bak
 *.backup
+guest/

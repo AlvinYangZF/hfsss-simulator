@@ -342,3 +342,27 @@ bool idle_block_needs_gc(struct resource_mgr *mgr)
 
     return needs_gc;
 }
+
+void resource_cpu_record(struct resource_mgr *mgr, enum cpu_role role, u64 cycles)
+{
+    if (!mgr || role >= CPU_ROLE_MAX) return;
+    mutex_lock(&mgr->lock, 0);
+    mgr->cpu.cycle_count[role] += cycles;
+    mgr->cpu.total_cycles += cycles;
+    mutex_unlock(&mgr->lock);
+}
+
+void resource_cpu_get_stats(const struct resource_mgr *mgr, struct cpu_stats *out)
+{
+    if (!mgr || !out) return;
+    struct resource_mgr *m = (struct resource_mgr *)mgr;
+    mutex_lock(&m->lock, 0);
+    *out = mgr->cpu;
+    mutex_unlock(&m->lock);
+}
+
+double resource_cpu_utilization(const struct resource_mgr *mgr, enum cpu_role role)
+{
+    if (!mgr || role >= CPU_ROLE_MAX || mgr->cpu.total_cycles == 0) return 0.0;
+    return (double)mgr->cpu.cycle_count[role] / (double)mgr->cpu.total_cycles;
+}

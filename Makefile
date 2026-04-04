@@ -3,7 +3,7 @@
 # Compiler and flags
 CC = gcc
 CFLAGS = -Wall -Wextra -g -O2 -std=gnu11 -fPIC
-CFLAGS += -Iinclude -Iinclude/common -Iinclude/media -Iinclude/hal -Iinclude/ftl -Iinclude/controller -Iinclude/pcie
+CFLAGS += -Iinclude -Iinclude/common -Iinclude/media -Iinclude/hal -Iinclude/ftl -Iinclude/controller -Iinclude/pcie -Isrc/vhost
 CFLAGS += -MMD -MP
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
@@ -97,6 +97,8 @@ TEST_SECURITY = $(BIN_DIR)/test_security
 TEST_MULTI_NS = $(BIN_DIR)/test_multi_ns
 TEST_THERMAL_TEL = $(BIN_DIR)/test_thermal_telemetry
 STRESS_ENTERPRISE = $(BIN_DIR)/stress_enterprise
+TEST_PROC = $(BIN_DIR)/test_proc_interface
+STRESS_STABILITY = $(BIN_DIR)/stress_stability
 
 # Perf validation library and test
 TEST_PERF = $(BIN_DIR)/test_perf_validation
@@ -105,10 +107,19 @@ PERF_SRC = $(SRC_DIR)/perf
 PERF_SRCS = $(wildcard $(PERF_SRC)/*.c)
 PERF_OBJS = $(PERF_SRCS:$(SRC_DIR)/perf/%.c=$(BUILD_DIR)/perf/%.o)
 
-# Targets
-.PHONY: all clean directories test systest help
+# vhost-user-blk server
+VHOST_SRC = $(SRC_DIR)/vhost
+VHOST_SRCS = $(VHOST_SRC)/vhost_user_blk.c
+VHOST_OBJS = $(VHOST_SRCS:$(SRC_DIR)/vhost/%.c=$(BUILD_DIR)/vhost/%.o)
+HFSSS_VHOST = $(BIN_DIR)/hfsss-vhost-blk
+HFSSS_IMG_EXPORT = $(BIN_DIR)/hfsss-img-export
+HFSSS_NBD = $(BIN_DIR)/hfsss-nbd-server
+TEST_VHOST = $(BIN_DIR)/test_vhost_proto
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE)
+# Targets
+.PHONY: all clean directories test systest stress-long help
+
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_VHOST) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_VHOST)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -121,6 +132,7 @@ directories:
 	@mkdir -p $(BUILD_DIR)/controller
 	@mkdir -p $(BUILD_DIR)/pcie
 	@mkdir -p $(BUILD_DIR)/perf
+	@mkdir -p $(BUILD_DIR)/vhost
 	@mkdir -p $(BUILD_DIR)
 	@mkdir -p $(LIB_DIR)
 	@mkdir -p $(BIN_DIR)
@@ -350,6 +362,43 @@ $(STRESS_ENTERPRISE): $(TEST_DIR)/stress_enterprise.c $(LIBHFSSS_SSSIM) $(LIBHFS
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
 
+$(TEST_PROC): $(TEST_DIR)/test_proc_interface.c $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common -lm $(LDFLAGS)
+
+$(STRESS_STABILITY): $(TEST_DIR)/stress_stability.c $(LIBHFSSS_FTL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-media -lhfsss-hal -lhfsss-common -lm $(LDFLAGS)
+
+# vhost library objects
+$(BUILD_DIR)/vhost/%.o: $(SRC_DIR)/vhost/%.c
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) -c $< -o $@
+
+# vhost-user-blk server executable
+$(HFSSS_VHOST): $(VHOST_SRC)/hfsss_vhost_main.c $(VHOST_OBJS) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $(VHOST_SRC)/hfsss_vhost_main.c $(VHOST_OBJS) -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
+
+# hfsss-img-export (raw disk image exporter for QEMU)
+$(HFSSS_IMG_EXPORT): $(VHOST_SRC)/hfsss_img_export.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
+
+# hfsss-nbd-server (NBD server exposing simulator as live block device for QEMU)
+$(HFSSS_NBD): $(VHOST_SRC)/hfsss_nbd_server.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
+
+# vhost protocol unit tests
+$(TEST_VHOST): $(TEST_DIR)/test_vhost_proto.c $(VHOST_OBJS) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< $(VHOST_OBJS) -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
+
+stress-long: all
+	@echo "Running stability stress test (duration=$(or $(STRESS_DURATION),60)s)..."
+	@STRESS_DURATION=$(or $(STRESS_DURATION),60) $(STRESS_STABILITY)
+
 # System-level tests (Tier 1)
 .PHONY: systest
 systest: all
@@ -426,6 +475,11 @@ test: all
 	@$(TEST_MULTI_NS)
 	@echo ""
 	@$(TEST_THERMAL_TEL)
+	@echo ""
+	@$(TEST_PROC)
+	@echo ""
+	@$(TEST_VHOST)
+	@echo ""
 
 # Clean
 clean:
