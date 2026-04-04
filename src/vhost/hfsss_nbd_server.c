@@ -27,12 +27,14 @@
 #include <signal.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <sched.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include "pcie/nvme_uspace.h"
+#include "ftl/ftl_worker.h"
 
 /* -------------------------------------------------------------------------
  * Portable 64-bit byte-swap helpers
@@ -93,6 +95,10 @@ static inline uint64_t hfsss_htonll(uint64_t v)
 
 /* Verbose I/O logging (set via -v flag) */
 static int g_verbose = 0;
+
+/* Multi-threaded mode (set via -m flag) */
+static int g_multithread = 0;
+static struct ftl_mt_ctx *g_mt = NULL;
 
 /* NBD error codes (errno-compatible subset) */
 #define NBD_EIO   5u
@@ -275,6 +281,32 @@ static int nbd_handshake(int client_fd, uint64_t export_size)
 }
 
 /* -------------------------------------------------------------------------
+ * Multi-threaded I/O helpers — submit to worker and wait for completion
+ * ---------------------------------------------------------------------- */
+
+static int mt_io(enum io_opcode op, uint64_t lba, uint32_t count,
+                 uint8_t *data)
+{
+    struct io_request req;
+    memset(&req, 0, sizeof(req));
+    req.opcode = op;
+    req.lba = lba;
+    req.count = count;
+    req.data = data;
+    req.nbd_handle = 0;
+
+    while (!ftl_mt_submit(g_mt, &req)) {
+        sched_yield();
+    }
+
+    struct io_completion cpl;
+    while (!ftl_mt_poll_completion(g_mt, &cpl)) {
+        sched_yield();
+    }
+    return cpl.status;
+}
+
+/* -------------------------------------------------------------------------
  * NBD transmission phase — serve I/O until disconnect or error
  * ---------------------------------------------------------------------- */
 
@@ -333,7 +365,12 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
          * READ — read full pages, return only the requested byte range
          * ---------------------------------------------------------------- */
         case NBD_CMD_READ: {
-            int rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
+            int rc;
+            if (g_multithread) {
+                rc = mt_io(IO_OP_READ, lba, count, iobuf);
+            } else {
+                rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
+            }
             if (rc != 0) {
                 /* Unwritten pages: return zeros instead of error */
                 memset(iobuf, 0, full_bytes);
@@ -381,7 +418,12 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
                 wbuf = NULL;
             }
 
-            int rc = nvme_uspace_write(dev, 1, lba, count, iobuf);
+            int rc;
+            if (g_multithread) {
+                rc = mt_io(IO_OP_WRITE, lba, count, iobuf);
+            } else {
+                rc = nvme_uspace_write(dev, 1, lba, count, iobuf);
+            }
             if (g_verbose)
                 fprintf(stderr, "[NBD] WRITE off=%-10" PRIu64 " len=%-6u lba=%-8" PRIu64 " cnt=%-4u rc=%d\n",
                         offset, length, lba, count, rc);
@@ -486,7 +528,7 @@ int main(int argc, char *argv[])
     int verbose      = 0;
     int opt;
 
-    while ((opt = getopt(argc, argv, "p:s:vh")) != -1) {
+    while ((opt = getopt(argc, argv, "p:s:vmh")) != -1) {
         switch (opt) {
         case 'p':
             port = (uint16_t)atoi(optarg);
@@ -501,6 +543,9 @@ int main(int argc, char *argv[])
         case 'v':
             verbose = 1;
             g_verbose = 1;
+            break;
+        case 'm':
+            g_multithread = 1;
             break;
         case 'h':
             print_usage(argv[0]);
@@ -586,6 +631,50 @@ int main(int argc, char *argv[])
         fprintf(stderr, "ERROR: nvme_uspace_dev_start failed\n");
         nvme_uspace_dev_cleanup(&dev);
         return 1;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Initialize multi-threaded FTL (if -m flag)                          */
+    /* ------------------------------------------------------------------ */
+    static struct ftl_mt_ctx mt_ctx;
+    if (g_multithread) {
+        struct ftl_config ftl_cfg;
+        memset(&ftl_cfg, 0, sizeof(ftl_cfg));
+        ftl_cfg.total_lbas       = total_lbas;
+        ftl_cfg.page_size        = page_size;
+        ftl_cfg.pages_per_block  = npg;
+        ftl_cfg.blocks_per_plane = nblk;
+        ftl_cfg.planes_per_die   = nplane;
+        ftl_cfg.dies_per_chip    = ndie;
+        ftl_cfg.chips_per_channel = nchip;
+        ftl_cfg.channel_count    = nch;
+        ftl_cfg.op_ratio         = op_pct;
+        ftl_cfg.gc_policy        = GC_POLICY_GREEDY;
+        ftl_cfg.gc_threshold     = 10;
+        ftl_cfg.gc_hiwater       = 20;
+        ftl_cfg.gc_lowater       = 5;
+
+        /* MT FTL uses the same HAL as the sssim device */
+        struct hal_ctx *hal = &dev.sssim.hal;
+
+        if (ftl_mt_init(&mt_ctx, &ftl_cfg, hal) != HFSSS_OK) {
+            fprintf(stderr, "ERROR: ftl_mt_init failed\n");
+            nvme_uspace_dev_stop(&dev);
+            nvme_uspace_dev_cleanup(&dev);
+            return 1;
+        }
+        if (ftl_mt_start(&mt_ctx) != HFSSS_OK) {
+            fprintf(stderr, "ERROR: ftl_mt_start failed\n");
+            ftl_mt_cleanup(&mt_ctx);
+            nvme_uspace_dev_stop(&dev);
+            nvme_uspace_dev_cleanup(&dev);
+            return 1;
+        }
+        g_mt = &mt_ctx;
+        fprintf(stderr, "Mode:     MULTI-THREADED (%d FTL workers + GC + WL)\n",
+                FTL_NUM_WORKERS);
+    } else {
+        fprintf(stderr, "Mode:     SINGLE-THREADED\n");
     }
 
     /* ------------------------------------------------------------------ */
