@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <inttypes.h>
 #include <unistd.h>
 #include <errno.h>
 #include <sched.h>
@@ -135,8 +136,8 @@ static inline uint64_t nbd_ntohll(uint64_t v) { return nbd_htonll(v); }
 
 struct __attribute__((packed)) nbd_request_hdr {
     uint32_t magic;
-    uint16_t type;
-    uint16_t flags;
+    uint16_t flags;   /* NBD command flags */
+    uint16_t type;    /* NBD_CMD_* */
     uint64_t handle;
     uint64_t offset;
     uint32_t length;
@@ -280,6 +281,12 @@ static void *nbd_cq_thread_main(void *arg)
                 if (!slot) continue;
 
                 uint32_t error = (cpl.status == 0) ? 0 : NBD_EIO;
+
+                /* For READ: unmapped pages return zeros (not error) */
+                if (slot->nbd_cmd == NBD_CMD_READ && cpl.status != 0) {
+                    memset(slot->data, 0, slot->length);
+                    error = 0;  /* return zeros, not EIO */
+                }
 
                 /* Send NBD reply header */
                 if (send_nbd_reply(ctx->client_fd, slot->nbd_handle, error) != 0) {
