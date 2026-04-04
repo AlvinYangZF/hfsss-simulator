@@ -467,6 +467,10 @@ static void print_usage(const char *prog)
 
 int main(int argc, char *argv[])
 {
+    /* Disable stdio buffering so logs appear immediately in redirected files */
+    setbuf(stdout, NULL);
+    setbuf(stderr, NULL);
+
     uint16_t port    = 10809;
     uint64_t size_mb = 512;
     int opt;
