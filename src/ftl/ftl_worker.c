@@ -9,6 +9,10 @@
 extern void *gc_thread_main(void *arg);
 extern void *wl_thread_main(void *arg);
 
+/* Global pointers set by ftl_mt_start() so worker threads can signal GC */
+pthread_mutex_t *ftl_mt_gc_mutex_ptr = NULL;
+pthread_cond_t  *ftl_mt_gc_cond_ptr  = NULL;
+
 static void *ftl_worker_main(void *arg)
 {
     struct ftl_worker *w = (struct ftl_worker *)arg;
@@ -192,6 +196,8 @@ int ftl_mt_start(struct ftl_mt_ctx *ctx)
     pthread_cond_init(&ctx->gc_cond, NULL);
     ctx->gc_running = true;
     pthread_create(&ctx->gc_thread, NULL, gc_thread_main, ctx);
+    ftl_mt_gc_mutex_ptr = &ctx->gc_mutex;
+    ftl_mt_gc_cond_ptr  = &ctx->gc_cond;
 
     /* Start WL/Read Disturb background thread */
     ctx->wl_running = true;
@@ -209,6 +215,8 @@ void ftl_mt_stop(struct ftl_mt_ctx *ctx)
         ctx->gc_running = false;
         pthread_cond_signal(&ctx->gc_cond);
         pthread_join(ctx->gc_thread, NULL);
+        ftl_mt_gc_mutex_ptr = NULL;
+        ftl_mt_gc_cond_ptr  = NULL;
         pthread_mutex_destroy(&ctx->gc_mutex);
         pthread_cond_destroy(&ctx->gc_cond);
     }

@@ -23,8 +23,8 @@ void *gc_thread_main(void *arg)
         if (!mt->gc_running) break;
 
         /* Run GC cycle */
-        int rc = gc_run(&ftl->gc, &ftl->block_mgr, &ftl->mapping,
-                         ftl->hal);
+        int rc = gc_run_mt(&ftl->gc, &ftl->block_mgr, &mt->taa,
+                            ftl->hal);
         if (rc == HFSSS_OK) {
             ftl->stats.gc_count++;
         }

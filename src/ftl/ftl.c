@@ -1,4 +1,5 @@
 #include "ftl/ftl.h"
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -809,10 +810,17 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         cwb->current_page = 0;
     }
 
-    /* Check if GC should be triggered */
+    /* Signal GC thread if needed (don't run GC inline — let the
+     * dedicated GC thread handle it via gc_run_mt with TAA) */
     u64 free_blocks = block_get_free_count(&ctx->block_mgr);
     if (gc_should_trigger(&ctx->gc, free_blocks)) {
-        ftl_gc_trigger(ctx);
+        extern pthread_mutex_t *ftl_mt_gc_mutex_ptr;
+        extern pthread_cond_t  *ftl_mt_gc_cond_ptr;
+        if (ftl_mt_gc_mutex_ptr && ftl_mt_gc_cond_ptr) {
+            pthread_mutex_lock(ftl_mt_gc_mutex_ptr);
+            pthread_cond_signal(ftl_mt_gc_cond_ptr);
+            pthread_mutex_unlock(ftl_mt_gc_mutex_ptr);
+        }
     }
 
     return HFSSS_OK;

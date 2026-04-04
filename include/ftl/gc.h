@@ -44,4 +44,9 @@ void gc_get_stats(struct gc_ctx *ctx, u64 *gc_count, u64 *moved_pages, u64 *recl
 void gc_print_debug_stats(void);
 void gc_flush_dst(struct gc_ctx *ctx, struct block_mgr *block_mgr);
 
+/* MT-aware GC: uses TAA for valid page lookup instead of global mapping */
+struct taa_ctx;  /* forward declaration */
+int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
+              struct taa_ctx *taa, void *hal_ctx);
+
 #endif /* __HFSSS_GC_H */

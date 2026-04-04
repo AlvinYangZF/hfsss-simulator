@@ -1,4 +1,5 @@
 #include "ftl/gc.h"
+#include "ftl/taa.h"
 #include "hal/hal.h"
 #include <stdlib.h>
 #include <string.h>
@@ -356,6 +357,190 @@ erase_and_free:
     }
 
     /* Update GC stats */
+    mutex_lock(&ctx->lock, 0);
+    ctx->gc_count++;
+    ctx->moved_pages += moved;
+    ctx->reclaimed_blocks += reclaimed;
+    ctx->running = false;
+    mutex_unlock(&ctx->lock);
+
+    return HFSSS_OK;
+}
+
+int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
+              struct taa_ctx *taa, void *hal_ctx)
+{
+    struct hal_ctx *hal = (struct hal_ctx *)hal_ctx;
+    struct block_desc *victim;
+    u64 moved = 0;
+    u64 reclaimed = 0;
+    u8 *page_buf = NULL;
+    int ret;
+
+    if (!ctx || !block_mgr || !taa) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    mutex_lock(&ctx->lock, 0);
+    if (ctx->running) {
+        mutex_unlock(&ctx->lock);
+        return HFSSS_ERR_BUSY;
+    }
+    ctx->running = true;
+    mutex_unlock(&ctx->lock);
+
+    victim = block_find_victim(block_mgr, ctx->policy);
+    if (!victim) {
+        mutex_lock(&ctx->lock, 0);
+        ctx->running = false;
+        mutex_unlock(&ctx->lock);
+        return HFSSS_ERR_NOENT;
+    }
+
+    ret = block_mark_gc(block_mgr, victim);
+    if (ret != HFSSS_OK) {
+        mutex_lock(&ctx->lock, 0);
+        ctx->running = false;
+        mutex_unlock(&ctx->lock);
+        return ret;
+    }
+
+    if (!hal || !hal->nand) {
+        goto erase_and_free_mt;
+    }
+
+    u32 pages_per_block = hal->nand->pages_per_block;
+    u32 page_size       = hal->nand->page_size;
+
+    page_buf = (u8 *)malloc(page_size);
+    if (!page_buf) {
+        goto erase_and_free_mt;
+    }
+
+    bool reloc_aborted = false;
+
+    for (u64 lba = 0; lba < taa->total_lbas; lba++) {
+        union ppn src_ppn;
+
+        if (taa_lookup(taa, lba, &src_ppn) != HFSSS_OK) {
+            continue;
+        }
+        if (src_ppn.bits.channel != victim->channel ||
+            src_ppn.bits.chip    != victim->chip    ||
+            src_ppn.bits.die     != victim->die     ||
+            src_ppn.bits.plane   != victim->plane   ||
+            src_ppn.bits.block   != victim->block_id) {
+            continue;
+        }
+
+        u8 spare_buf[64];
+        memset(spare_buf, 0xFF, sizeof(spare_buf));
+        ret = hal_nand_read_sync(hal,
+                                 victim->channel, victim->chip,
+                                 victim->die, victim->plane,
+                                 victim->block_id, src_ppn.bits.page,
+                                 page_buf, spare_buf);
+        if (ret != HFSSS_OK) {
+            taa_remove(taa, lba);
+            continue;
+        }
+
+        if (!ctx->dst_block || ctx->dst_page >= pages_per_block) {
+            if (ctx->dst_block) {
+                block_mark_closed(block_mgr, ctx->dst_block);
+                ctx->dst_block = NULL;
+            }
+            ctx->dst_block = block_alloc(block_mgr);
+            if (!ctx->dst_block) {
+                reloc_aborted = true;
+                break;
+            }
+            ctx->dst_page = 0;
+
+            ret = hal_nand_erase_sync(hal,
+                                      ctx->dst_block->channel,
+                                      ctx->dst_block->chip,
+                                      ctx->dst_block->die,
+                                      ctx->dst_block->plane,
+                                      ctx->dst_block->block_id);
+            if (ret != HFSSS_OK) {
+                block_mark_bad(block_mgr, ctx->dst_block);
+                ctx->dst_block = NULL;
+                reloc_aborted = true;
+                break;
+            }
+        }
+
+        ret = hal_nand_program_sync(hal,
+                                    ctx->dst_block->channel,
+                                    ctx->dst_block->chip,
+                                    ctx->dst_block->die,
+                                    ctx->dst_block->plane,
+                                    ctx->dst_block->block_id,
+                                    ctx->dst_page,
+                                    page_buf, spare_buf);
+        if (ret != HFSSS_OK) {
+            taa_remove(taa, lba);
+            ctx->dst_page++;
+            continue;
+        }
+
+        union ppn dst_ppn;
+        dst_ppn.raw = 0;
+        dst_ppn.bits.channel = ctx->dst_block->channel;
+        dst_ppn.bits.chip    = ctx->dst_block->chip;
+        dst_ppn.bits.die     = ctx->dst_block->die;
+        dst_ppn.bits.plane   = ctx->dst_block->plane;
+        dst_ppn.bits.block   = ctx->dst_block->block_id;
+        dst_ppn.bits.page    = ctx->dst_page;
+
+        union ppn old_ppn;
+        taa_update(taa, lba, dst_ppn, &old_ppn);
+
+        ctx->dst_block->valid_page_count++;
+        ctx->dst_page++;
+        moved++;
+    }
+
+    free(page_buf);
+
+    if (reloc_aborted) {
+        block_unmark_gc(block_mgr, victim);
+        mutex_lock(&ctx->lock, 0);
+        ctx->gc_write_pages += moved;
+        ctx->gc_count++;
+        ctx->moved_pages += moved;
+        ctx->running = false;
+        mutex_unlock(&ctx->lock);
+        return HFSSS_ERR_NOSPC;
+    }
+
+erase_and_free_mt:
+    if (hal) {
+        ret = hal_nand_erase_sync(hal,
+                                  victim->channel, victim->chip,
+                                  victim->die, victim->plane,
+                                  victim->block_id);
+        if (ret != HFSSS_OK) {
+            block_mark_bad(block_mgr, victim);
+            ctx->gc_write_pages += moved;
+            mutex_lock(&ctx->lock, 0);
+            ctx->gc_count++;
+            ctx->moved_pages += moved;
+            ctx->running = false;
+            mutex_unlock(&ctx->lock);
+            return HFSSS_OK;
+        }
+    }
+
+    ctx->gc_write_pages += moved;
+    victim->valid_page_count   = 0;
+    victim->invalid_page_count = 0;
+    ret = block_free(block_mgr, victim);
+    if (ret == HFSSS_OK) {
+        reclaimed = 1;
+    }
+
     mutex_lock(&ctx->lock, 0);
     ctx->gc_count++;
     ctx->moved_pages += moved;
