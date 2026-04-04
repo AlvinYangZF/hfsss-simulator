@@ -718,7 +718,6 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     int ret;
     int write_retry;
     const int max_write_retries = 3;
-    u8 *verify_buf = NULL;
 
     if (!ctx || !taa || !data) {
         return HFSSS_ERR_INVAL;
@@ -754,37 +753,17 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     ppn = ftl_encode_ppn(phys_ch, phys_chip, phys_die, phys_plane,
                           cwb->block->block_id, cwb->current_page);
 
-    /* Write with retry logic */
+    /* Write to NAND — no verify in MT mode (DRAM-backed, always succeeds) */
     for (write_retry = 0; write_retry < max_write_retries; write_retry++) {
         ret = hal_nand_program_sync(ctx->hal, phys_ch, phys_chip,
                                      phys_die, phys_plane,
                                      cwb->block->block_id,
                                      cwb->current_page, data, NULL);
 
-        if (ret != HFSSS_OK) {
-            ctx->error.write_error_count++;
-            continue;
+        if (ret == HFSSS_OK) {
+            break;
         }
-
-        /* Write Verify */
-        error_write_verify_attempt(&ctx->error);
-        verify_buf = (u8 *)malloc(ctx->config.page_size);
-        if (verify_buf) {
-            ret = hal_nand_read_sync(ctx->hal, phys_ch, phys_chip,
-                                      phys_die, phys_plane,
-                                      cwb->block->block_id,
-                                      cwb->current_page, verify_buf, NULL);
-            if (ret == HFSSS_OK &&
-                memcmp(data, verify_buf, ctx->config.page_size) == 0) {
-                free(verify_buf);
-                verify_buf = NULL;
-                break; /* Verify passed */
-            }
-
-            error_write_verify_failure(&ctx->error);
-            free(verify_buf);
-            verify_buf = NULL;
-        }
+        ctx->error.write_error_count++;
     }
 
     if (ret != HFSSS_OK) {
