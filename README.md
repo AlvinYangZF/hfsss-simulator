@@ -254,6 +254,106 @@ nvme_uspace_set_features(&dev, fid, value);
 - **[System Test Plan](docs/SYSTEM_TEST_PLAN.md)** — 73-case test plan across 10 categories
 - **[README_CODE.md](README_CODE.md)** — Chinese documentation (original)
 
+## QEMU NVMe Block Device
+
+The simulator can be exposed as a real `/dev/nvme0n1` block device inside a QEMU virtual machine. This allows testing with standard Linux NVMe tools (`nvme-cli`, `fio`, `mkfs`, etc.) against the full simulator stack.
+
+### Architecture
+
+```
+Mac Studio (macOS, Apple Silicon)
+├── hfsss-img-export          Creates raw disk image from simulator
+│
+└── QEMU (HVF accelerated)
+    ├── -device nvme           NVMe controller emulation
+    ├── -drive file=hfsss.raw  Raw image as NVMe namespace
+    └── Linux Guest VM
+        ├── /dev/nvme0n1       Real NVMe block device
+        └── nvme-cli, fio      Standard NVMe tooling
+```
+
+### Prerequisites
+
+```bash
+# Install QEMU (with HVF support for Apple Silicon)
+brew install qemu
+
+# Download Alpine Linux aarch64 kernel and initramfs
+cd guest/
+curl -LO https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/netboot/vmlinuz-lts
+curl -LO https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/netboot/initramfs-lts
+cd ..
+```
+
+### Quick Start
+
+```bash
+# 1. Build the simulator
+make all
+
+# 2. Create a 512 MB raw disk image backed by the simulator
+./build/bin/hfsss-img-export -o /tmp/hfsss.raw -s 512
+
+# 3. Boot QEMU with the NVMe device
+qemu-system-aarch64 \
+    -M virt,gic-version=3 -accel hvf -cpu host \
+    -m 2G -smp 2 \
+    -kernel guest/vmlinuz-lts -initrd guest/initramfs-lts \
+    -append 'console=ttyAMA0' \
+    -drive file=/tmp/hfsss.raw,format=raw,if=none,id=nvm0 \
+    -device nvme,serial=HFSSS0001,drive=nvm0 \
+    -nographic
+```
+
+### Inside the Guest
+
+The VM boots to an Alpine Linux emergency shell (no root filesystem needed). The NVMe device is immediately available:
+
+```bash
+# List NVMe devices
+ls /dev/nvme*
+# Expected: /dev/nvme0  /dev/nvme0n1
+
+# Check block devices
+cat /proc/partitions
+# Shows the nvme0n1 namespace
+
+# Read from the NVMe device
+dd if=/dev/nvme0n1 bs=4096 count=1 | hexdump -C
+
+# Write and read back
+dd if=/dev/urandom of=/dev/nvme0n1 bs=4k count=100
+dd if=/dev/nvme0n1 bs=4k count=100 | md5sum
+
+# Install NVMe tools (requires network — add -netdev user,id=net0 -device virtio-net-pci,netdev=net0)
+apk add nvme-cli fio
+nvme list
+nvme id-ctrl /dev/nvme0
+fio --name=test --rw=randwrite --bs=4k --size=16M --filename=/dev/nvme0n1 --direct=1
+```
+
+Press `Ctrl-A X` to exit QEMU.
+
+### Image Export Options
+
+```bash
+# Create a 1 GB image
+./build/bin/hfsss-img-export -o /tmp/hfsss.raw -s 1024
+
+# Create a 4 GB image
+./build/bin/hfsss-img-export -o /tmp/hfsss.raw -s 4096
+```
+
+### Convenience Script
+
+An all-in-one launch script is also available:
+
+```bash
+./scripts/run_qemu_nvme.sh
+```
+
+This starts the vhost-user-blk server and QEMU together. See `docs/VHOST_USER_GUIDE.md` for details.
+
 ## CI/CD
 
 GitHub Actions runs on every push and pull request:
