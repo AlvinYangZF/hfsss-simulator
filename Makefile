@@ -3,7 +3,7 @@
 # Compiler and flags
 CC = gcc
 CFLAGS = -Wall -Wextra -g -O2 -std=gnu11 -fPIC
-CFLAGS += -Iinclude -Iinclude/common -Iinclude/media -Iinclude/hal -Iinclude/ftl -Iinclude/controller -Iinclude/pcie
+CFLAGS += -Iinclude -Iinclude/common -Iinclude/media -Iinclude/hal -Iinclude/ftl -Iinclude/controller -Iinclude/pcie -Isrc/vhost
 CFLAGS += -MMD -MP
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
@@ -107,10 +107,17 @@ PERF_SRC = $(SRC_DIR)/perf
 PERF_SRCS = $(wildcard $(PERF_SRC)/*.c)
 PERF_OBJS = $(PERF_SRCS:$(SRC_DIR)/perf/%.c=$(BUILD_DIR)/perf/%.o)
 
+# vhost-user-blk server
+VHOST_SRC = $(SRC_DIR)/vhost
+VHOST_SRCS = $(VHOST_SRC)/vhost_user_blk.c
+VHOST_OBJS = $(VHOST_SRCS:$(SRC_DIR)/vhost/%.c=$(BUILD_DIR)/vhost/%.o)
+HFSSS_VHOST = $(BIN_DIR)/hfsss-vhost-blk
+TEST_VHOST = $(BIN_DIR)/test_vhost_proto
+
 # Targets
 .PHONY: all clean directories test systest stress-long help
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_VHOST) $(TEST_VHOST)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -123,6 +130,7 @@ directories:
 	@mkdir -p $(BUILD_DIR)/controller
 	@mkdir -p $(BUILD_DIR)/pcie
 	@mkdir -p $(BUILD_DIR)/perf
+	@mkdir -p $(BUILD_DIR)/vhost
 	@mkdir -p $(BUILD_DIR)
 	@mkdir -p $(LIB_DIR)
 	@mkdir -p $(BIN_DIR)
@@ -360,6 +368,21 @@ $(STRESS_STABILITY): $(TEST_DIR)/stress_stability.c $(LIBHFSSS_FTL) $(LIBHFSSS_M
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-media -lhfsss-hal -lhfsss-common -lm $(LDFLAGS)
 
+# vhost library objects
+$(BUILD_DIR)/vhost/%.o: $(SRC_DIR)/vhost/%.c
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) -c $< -o $@
+
+# vhost-user-blk server executable
+$(HFSSS_VHOST): $(VHOST_SRC)/hfsss_vhost_main.c $(VHOST_OBJS) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $(VHOST_SRC)/hfsss_vhost_main.c $(VHOST_OBJS) -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
+
+# vhost protocol unit tests
+$(TEST_VHOST): $(TEST_DIR)/test_vhost_proto.c $(VHOST_OBJS) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< $(VHOST_OBJS) -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
+
 stress-long: all
 	@echo "Running stability stress test (duration=$(or $(STRESS_DURATION),60)s)..."
 	@STRESS_DURATION=$(or $(STRESS_DURATION),60) $(STRESS_STABILITY)
@@ -442,6 +465,9 @@ test: all
 	@$(TEST_THERMAL_TEL)
 	@echo ""
 	@$(TEST_PROC)
+	@echo ""
+	@$(TEST_VHOST)
+	@echo ""
 
 # Clean
 clean:
