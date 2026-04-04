@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <sched.h>
+#include <unistd.h>
 
 /* Background thread entry points (defined in gc_thread.c / wl_thread.c) */
 extern void *gc_thread_main(void *arg);
@@ -13,13 +14,22 @@ static void *ftl_worker_main(void *arg)
     struct ftl_worker *w = (struct ftl_worker *)arg;
     struct io_request req;
     struct io_completion cpl;
+    int idle_spins = 0;
 
     while (w->running) {
         if (!io_ring_pop(&w->request_ring, &req)) {
-            /* No work — brief yield to avoid busy spin */
-            sched_yield();
+            if (idle_spins < 64) {
+                sched_yield();
+            } else if (idle_spins < 256) {
+                usleep(1);
+            } else {
+                usleep(10);
+            }
+            idle_spins++;
             continue;
         }
+
+        idle_spins = 0;
 
         if (req.opcode == IO_OP_STOP) {
             w->running = false;
@@ -59,7 +69,6 @@ static void *ftl_worker_main(void *arg)
             break;
         }
         case IO_OP_FLUSH:
-            /* Flush is a no-op in DRAM-backed simulator */
             rc = HFSSS_OK;
             break;
         default:
@@ -72,8 +81,6 @@ static void *ftl_worker_main(void *arg)
         w->ops_completed++;
         if (rc != HFSSS_OK) w->ops_failed++;
 
-        /* Push completion — spin if full (should not happen with
-         * reasonable ring sizes) */
         while (!io_ring_push(&w->completion_ring, &cpl)) {
             sched_yield();
         }
