@@ -6,8 +6,8 @@
 #include "media/eat.h"
 #include "media/timing.h"
 
-#define MAX_BLOCKS_PER_PLANE 2048
-#define MAX_PAGES_PER_BLOCK 512
+#define MAX_BLOCKS_PER_PLANE 4096
+#define MAX_PAGES_PER_BLOCK 1024
 #define PAGE_SIZE_TLC 16384
 #define SPARE_SIZE_TLC 2048
 

@@ -1,4 +1,5 @@
 #include "ftl/ftl.h"
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -654,4 +655,201 @@ int ftl_gc_trigger(struct ftl_ctx *ctx)
     }
 
     return gc_run(&ctx->gc, &ctx->block_mgr, &ctx->mapping, ctx->hal);
+}
+
+/* ===================================================================
+ * Multi-threaded page operations — use TAA shards instead of global lock.
+ * These are called by FTL worker threads; they must NOT hold ctx->lock.
+ * The block_mgr has its own internal mutex for allocation safety.
+ * =================================================================== */
+
+#include "ftl/taa.h"
+
+int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                     u64 lba, void *data)
+{
+    union ppn ppn;
+    u32 ch, chip, die, plane, block, page;
+    int ret;
+    int retry_count;
+    const int max_retries = READ_RETRY_MAX_ATTEMPTS;
+
+    if (!ctx || !taa || !data) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Look up L2P mapping via TAA (shard-locked, not global lock) */
+    ret = taa_lookup(taa, lba, &ppn);
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+
+    /* Decode PPN */
+    ftl_decode_ppn(ppn, &ch, &chip, &die, &plane, &block, &page);
+
+    /* Try reading with retry logic */
+    for (retry_count = 0; retry_count < max_retries; retry_count++) {
+        ret = hal_nand_read_sync(ctx->hal, ch, chip, die, plane,
+                                  block, page, data, NULL);
+
+        if (ret == HFSSS_OK) {
+            if (retry_count > 0) {
+                error_read_retry_success(&ctx->error);
+            }
+            return HFSSS_OK;
+        }
+
+        if (retry_count > 0) {
+            error_read_retry_attempt(&ctx->error);
+        }
+    }
+
+    /* All retry attempts failed */
+    ctx->error.uncorrectable_count++;
+    return ret;
+}
+
+int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                      u64 lba, const void *data)
+{
+    struct cwb *cwb;
+    union ppn ppn;
+    union ppn old_ppn;
+    u32 ch, plane;
+    int ret;
+    int write_retry;
+    const int max_write_retries = 3;
+
+    if (!ctx || !taa || !data) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Select channel and plane (simple round-robin) */
+    ch = lba % ctx->config.channel_count;
+    plane = (lba / ctx->config.channel_count) % ctx->config.planes_per_die;
+
+    /* Get CWB */
+    cwb = ftl_get_cwb(ctx, ch, plane);
+    if (!cwb) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Ensure CWB has a block; if out of space, run GC once and retry. */
+    ret = ftl_allocate_cwb(ctx, ch, plane);
+    if (ret == HFSSS_ERR_NOSPC) {
+        ftl_gc_trigger(ctx);
+        ret = ftl_allocate_cwb(ctx, ch, plane);
+    }
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+
+    /* Use the block descriptor's physical coordinates */
+    u32 phys_ch    = cwb->block->channel;
+    u32 phys_chip  = cwb->block->chip;
+    u32 phys_die   = cwb->block->die;
+    u32 phys_plane = cwb->block->plane;
+
+    /* Encode PPN */
+    ppn = ftl_encode_ppn(phys_ch, phys_chip, phys_die, phys_plane,
+                          cwb->block->block_id, cwb->current_page);
+
+    /* Write to NAND — no verify in MT mode (DRAM-backed, always succeeds) */
+    for (write_retry = 0; write_retry < max_write_retries; write_retry++) {
+        ret = hal_nand_program_sync(ctx->hal, phys_ch, phys_chip,
+                                     phys_die, phys_plane,
+                                     cwb->block->block_id,
+                                     cwb->current_page, data, NULL);
+
+        if (ret == HFSSS_OK) {
+            break;
+        }
+        ctx->error.write_error_count++;
+    }
+
+    if (ret != HFSSS_OK) {
+        if (cwb->block) {
+            if (ret == HFSSS_ERR_IO) {
+                block_mark_bad(&ctx->block_mgr, cwb->block);
+            } else {
+                block_mark_closed(&ctx->block_mgr, cwb->block);
+            }
+            cwb->block = NULL;
+            cwb->current_page = 0;
+        }
+        return ret;
+    }
+
+    /* Update L2P mapping via TAA (shard-locked, not global lock) */
+    old_ppn.raw = 0;
+    taa_update(taa, lba, ppn, &old_ppn);
+
+    /* If there was an old mapping, mark the superseded page as invalid */
+    if (old_ppn.raw != 0) {
+        u32 old_ch, old_chip, old_die, old_plane, old_block, old_page;
+        ftl_decode_ppn(old_ppn, &old_ch, &old_chip, &old_die,
+                        &old_plane, &old_block, &old_page);
+        block_mark_page_invalid(&ctx->block_mgr,
+                                 old_ch, old_chip, old_die,
+                                 old_plane, old_block);
+    }
+
+    /* Update CWB */
+    cwb->current_page++;
+    cwb->last_write_ts = get_time_ns();
+    cwb->block->valid_page_count++;
+    cwb->block->last_write_ts = get_time_ns();
+
+    /* Track host write pages for WAF */
+    ctx->stats.host_write_pages++;
+
+    /* Check if block is full */
+    if (cwb->current_page >= ctx->config.pages_per_block) {
+        block_mark_closed(&ctx->block_mgr, cwb->block);
+        cwb->block = NULL;
+        cwb->current_page = 0;
+    }
+
+    /* Signal GC thread if needed (don't run GC inline — let the
+     * dedicated GC thread handle it via gc_run_mt with TAA) */
+    u64 free_blocks = block_get_free_count(&ctx->block_mgr);
+    if (gc_should_trigger(&ctx->gc, free_blocks)) {
+        extern pthread_mutex_t *ftl_mt_gc_mutex_ptr;
+        extern pthread_cond_t  *ftl_mt_gc_cond_ptr;
+        if (ftl_mt_gc_mutex_ptr && ftl_mt_gc_cond_ptr) {
+            pthread_mutex_lock(ftl_mt_gc_mutex_ptr);
+            pthread_cond_signal(ftl_mt_gc_cond_ptr);
+            pthread_mutex_unlock(ftl_mt_gc_mutex_ptr);
+        }
+    }
+
+    return HFSSS_OK;
+}
+
+int ftl_trim_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa, u64 lba)
+{
+    union ppn ppn;
+    int ret;
+
+    if (!ctx || !taa) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Look up via TAA to find current physical page */
+    ret = taa_lookup(taa, lba, &ppn);
+    if (ret == HFSSS_OK) {
+        u32 ch, chip, die, plane, block_id, page;
+        ftl_decode_ppn(ppn, &ch, &chip, &die, &plane, &block_id, &page);
+        block_mark_page_invalid(&ctx->block_mgr, ch, chip, die,
+                                 plane, block_id);
+    }
+
+    /* Remove mapping via TAA */
+    ret = taa_remove(taa, lba);
+    /* Ignore NOENT — page may not be mapped */
+    if (ret == HFSSS_ERR_NOENT) {
+        ret = HFSSS_OK;
+    }
+
+    return ret;
 }

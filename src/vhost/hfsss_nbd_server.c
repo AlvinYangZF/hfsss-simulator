@@ -27,12 +27,15 @@
 #include <signal.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <sched.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include "pcie/nvme_uspace.h"
+#include "ftl/ftl_worker.h"
+#include "vhost/nbd_async.h"
 
 /* -------------------------------------------------------------------------
  * Portable 64-bit byte-swap helpers
@@ -93,6 +96,11 @@ static inline uint64_t hfsss_htonll(uint64_t v)
 
 /* Verbose I/O logging (set via -v flag) */
 static int g_verbose = 0;
+
+/* Multi-threaded mode (set via -m flag) */
+static int g_multithread = 0;
+static int g_async = 0;
+static struct ftl_mt_ctx *g_mt = NULL;
 
 /* NBD error codes (errno-compatible subset) */
 #define NBD_EIO   5u
@@ -275,6 +283,32 @@ static int nbd_handshake(int client_fd, uint64_t export_size)
 }
 
 /* -------------------------------------------------------------------------
+ * Multi-threaded I/O helpers — submit to worker and wait for completion
+ * ---------------------------------------------------------------------- */
+
+static int mt_io(enum io_opcode op, uint64_t lba, uint32_t count,
+                 uint8_t *data)
+{
+    struct io_request req;
+    memset(&req, 0, sizeof(req));
+    req.opcode = op;
+    req.lba = lba;
+    req.count = count;
+    req.data = data;
+    req.nbd_handle = 0;
+
+    while (!ftl_mt_submit(g_mt, &req)) {
+        sched_yield();
+    }
+
+    struct io_completion cpl;
+    while (!ftl_mt_poll_completion(g_mt, &cpl)) {
+        sched_yield();
+    }
+    return cpl.status;
+}
+
+/* -------------------------------------------------------------------------
  * NBD transmission phase — serve I/O until disconnect or error
  * ---------------------------------------------------------------------- */
 
@@ -333,7 +367,12 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
          * READ — read full pages, return only the requested byte range
          * ---------------------------------------------------------------- */
         case NBD_CMD_READ: {
-            int rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
+            int rc;
+            if (g_multithread) {
+                rc = mt_io(IO_OP_READ, lba, count, iobuf);
+            } else {
+                rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
+            }
             if (rc != 0) {
                 /* Unwritten pages: return zeros instead of error */
                 memset(iobuf, 0, full_bytes);
@@ -353,35 +392,42 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
          * WRITE — for sub-page writes, do read-modify-write
          * ---------------------------------------------------------------- */
         case NBD_CMD_WRITE: {
-            /* Read client data into a temp buffer first */
-            uint8_t *wbuf = (uint8_t *)malloc(length);
-            if (!wbuf) {
-                send_reply(client_fd, handle, NBD_EIO);
-                goto done;
-            }
-            if (read_exact(client_fd, wbuf, length) != 0) {
-                free(wbuf);
+            /* Read client write data directly into iobuf */
+            if (read_exact(client_fd, iobuf, length) != 0) {
                 goto done;
             }
 
-            /* If sub-page or unaligned, do read-modify-write */
+            /* If sub-page or unaligned, do read-modify-write in place */
             if (byte_off != 0 || length != full_bytes) {
-                /* Read existing pages */
-                int rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
+                /* Save the partial write data */
+                uint8_t *partial = (uint8_t *)malloc(length);
+                if (!partial) {
+                    send_reply(client_fd, handle, NBD_EIO);
+                    break;
+                }
+                memcpy(partial, iobuf, length);
+
+                /* Read existing full pages */
+                int rc;
+                if (g_multithread) {
+                    rc = mt_io(IO_OP_READ, lba, count, iobuf);
+                } else {
+                    rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
+                }
                 if (rc != 0)
                     memset(iobuf, 0, full_bytes);
-                /* Overlay the write data */
-                memcpy(iobuf + byte_off, wbuf, length);
-                free(wbuf);
-                wbuf = NULL;
-            } else {
-                /* Aligned write — use client data directly */
-                memcpy(iobuf, wbuf, length);
-                free(wbuf);
-                wbuf = NULL;
+
+                /* Overlay the partial write data at the correct offset */
+                memcpy(iobuf + byte_off, partial, length);
+                free(partial);
             }
 
-            int rc = nvme_uspace_write(dev, 1, lba, count, iobuf);
+            int rc;
+            if (g_multithread) {
+                rc = mt_io(IO_OP_WRITE, lba, count, iobuf);
+            } else {
+                rc = nvme_uspace_write(dev, 1, lba, count, iobuf);
+            }
             if (g_verbose)
                 fprintf(stderr, "[NBD] WRITE off=%-10" PRIu64 " len=%-6u lba=%-8" PRIu64 " cnt=%-4u rc=%d\n",
                         offset, length, lba, count, rc);
@@ -463,6 +509,9 @@ static void print_usage(const char *prog)
         "Options:\n"
         "  -p <port>   TCP port to listen on (default: 10809)\n"
         "  -s <MB>     Export size in MB (default: 512)\n"
+        "  -v          Verbose I/O logging\n"
+        "  -m          Multi-threaded FTL workers\n"
+        "  -a          Async NBD pipeline (SPDK-style SQ/CQ, implies -m)\n"
         "  -h          Show this help\n"
         "\n"
         "Connect QEMU with:\n"
@@ -486,7 +535,7 @@ int main(int argc, char *argv[])
     int verbose      = 0;
     int opt;
 
-    while ((opt = getopt(argc, argv, "p:s:vh")) != -1) {
+    while ((opt = getopt(argc, argv, "p:s:vmah")) != -1) {
         switch (opt) {
         case 'p':
             port = (uint16_t)atoi(optarg);
@@ -502,6 +551,13 @@ int main(int argc, char *argv[])
             verbose = 1;
             g_verbose = 1;
             break;
+        case 'm':
+            g_multithread = 1;
+            break;
+        case 'a':
+            g_async = 1;
+            g_multithread = 1;  /* async implies multi-threaded */
+            break;
         case 'h':
             print_usage(argv[0]);
             return 0;
@@ -516,21 +572,53 @@ int main(int argc, char *argv[])
     const uint64_t total_lbas  = export_size / lba_size;
 
     /* ------------------------------------------------------------------ */
+    /* Auto-size NAND geometry to fit requested export size                 */
+    /* ------------------------------------------------------------------ */
+    const uint32_t page_size  = 4096;
+    const uint32_t spare_size = 64;
+    const uint32_t op_pct     = 7;  /* 7% over-provisioning */
+
+    /* Target raw pages: export + OP headroom */
+    uint64_t pages_needed = (total_lbas * (100 + op_pct) + 99) / 100;
+
+    /* Start with a baseline and scale up */
+    uint32_t nch = 4, nchip = 4, ndie = 2, nplane = 2;
+    uint32_t nblk = 512, npg = 256;
+
+    /* Scale blocks first (up to 4096), then pages (up to 1024),
+     * then channels (up to 16), then chips (up to 8) */
+    for (;;) {
+        uint64_t raw = (uint64_t)nch * nchip * ndie * nplane * nblk * npg;
+        if (raw >= pages_needed)
+            break;
+        if (nblk < 4096)       { nblk  = (nblk  < 2048) ? nblk  * 2 : 4096; continue; }
+        if (npg  < 1024)       { npg   = (npg   < 512)  ? npg   * 2 : 1024; continue; }
+        if (nch  < 16)         { nch   *= 2; continue; }
+        if (nchip < 8)         { nchip *= 2; continue; }
+        if (ndie  < 8)         { ndie  *= 2; continue; }
+        if (nplane < 4)        { nplane *= 2; continue; }
+        break;  /* maxed out */
+    }
+
+    /* ------------------------------------------------------------------ */
     /* Initialize simulator                                                */
     /* ------------------------------------------------------------------ */
     struct nvme_uspace_config config;
     nvme_uspace_config_default(&config);
 
-    config.sssim_cfg.channel_count     = 4;
-    config.sssim_cfg.chips_per_channel = 4;
-    config.sssim_cfg.dies_per_chip     = 2;
-    config.sssim_cfg.planes_per_die    = 2;
-    config.sssim_cfg.blocks_per_plane  = 512;
-    config.sssim_cfg.pages_per_block   = 256;
-    config.sssim_cfg.page_size         = 4096;
-    config.sssim_cfg.spare_size        = 64;
+    config.sssim_cfg.channel_count     = nch;
+    config.sssim_cfg.chips_per_channel = nchip;
+    config.sssim_cfg.dies_per_chip     = ndie;
+    config.sssim_cfg.planes_per_die    = nplane;
+    config.sssim_cfg.blocks_per_plane  = nblk;
+    config.sssim_cfg.pages_per_block   = npg;
+    config.sssim_cfg.page_size         = page_size;
+    config.sssim_cfg.spare_size        = spare_size;
     config.sssim_cfg.lba_size          = lba_size;
     config.sssim_cfg.total_lbas        = total_lbas;
+
+    uint64_t raw_pages = (uint64_t)nch * nchip * ndie * nplane * nblk * npg;
+    uint64_t raw_gb    = (raw_pages * page_size) >> 30;
 
     struct nvme_uspace_dev dev;
 
@@ -541,6 +629,8 @@ int main(int argc, char *argv[])
     fprintf(stderr, "Size:     %llu MB (%llu LBAs x %u B)\n",
             (unsigned long long)size_mb,
             (unsigned long long)total_lbas, lba_size);
+    fprintf(stderr, "NAND:     %uch/%uchip/%udie/%uplane/%ublk/%upg/%uB (%" PRIu64 " GB raw)\n",
+            nch, nchip, ndie, nplane, nblk, npg, page_size, raw_gb);
     fprintf(stderr, "Initializing simulator...\n");
 
     if (nvme_uspace_dev_init(&dev, &config) != 0) {
@@ -552,6 +642,50 @@ int main(int argc, char *argv[])
         fprintf(stderr, "ERROR: nvme_uspace_dev_start failed\n");
         nvme_uspace_dev_cleanup(&dev);
         return 1;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Initialize multi-threaded FTL (if -m flag)                          */
+    /* ------------------------------------------------------------------ */
+    static struct ftl_mt_ctx mt_ctx;
+    if (g_multithread) {
+        struct ftl_config ftl_cfg;
+        memset(&ftl_cfg, 0, sizeof(ftl_cfg));
+        ftl_cfg.total_lbas       = total_lbas;
+        ftl_cfg.page_size        = page_size;
+        ftl_cfg.pages_per_block  = npg;
+        ftl_cfg.blocks_per_plane = nblk;
+        ftl_cfg.planes_per_die   = nplane;
+        ftl_cfg.dies_per_chip    = ndie;
+        ftl_cfg.chips_per_channel = nchip;
+        ftl_cfg.channel_count    = nch;
+        ftl_cfg.op_ratio         = op_pct;
+        ftl_cfg.gc_policy        = GC_POLICY_GREEDY;
+        ftl_cfg.gc_threshold     = 10;
+        ftl_cfg.gc_hiwater       = 20;
+        ftl_cfg.gc_lowater       = 5;
+
+        /* MT FTL uses the same HAL as the sssim device */
+        struct hal_ctx *hal = &dev.sssim.hal;
+
+        if (ftl_mt_init(&mt_ctx, &ftl_cfg, hal) != HFSSS_OK) {
+            fprintf(stderr, "ERROR: ftl_mt_init failed\n");
+            nvme_uspace_dev_stop(&dev);
+            nvme_uspace_dev_cleanup(&dev);
+            return 1;
+        }
+        if (ftl_mt_start(&mt_ctx) != HFSSS_OK) {
+            fprintf(stderr, "ERROR: ftl_mt_start failed\n");
+            ftl_mt_cleanup(&mt_ctx);
+            nvme_uspace_dev_stop(&dev);
+            nvme_uspace_dev_cleanup(&dev);
+            return 1;
+        }
+        g_mt = &mt_ctx;
+        fprintf(stderr, "Mode:     MULTI-THREADED (%d FTL workers + GC + WL)\n",
+                FTL_NUM_WORKERS);
+    } else {
+        fprintf(stderr, "Mode:     SINGLE-THREADED\n");
     }
 
     /* ------------------------------------------------------------------ */
@@ -631,7 +765,24 @@ int main(int argc, char *argv[])
 
         if (nbd_handshake(client_fd, export_size) == 0) {
             fprintf(stderr, "[NBD] Handshake OK, entering transmission phase\n");
-            nbd_serve(client_fd, &dev, lba_size);
+            if (g_async && g_mt) {
+                fprintf(stderr, "Mode:     ASYNC PIPELINE (SQ + CQ + %d FTL workers)\n",
+                        FTL_NUM_WORKERS);
+                struct nbd_async_ctx async_ctx;
+                if (nbd_async_init(&async_ctx, client_fd, lba_size, g_mt, 256) != 0) {
+                    fprintf(stderr, "ERROR: nbd_async_init failed\n");
+                } else if (nbd_async_start(&async_ctx) != 0) {
+                    fprintf(stderr, "ERROR: nbd_async_start failed\n");
+                    nbd_async_cleanup(&async_ctx);
+                } else {
+                    /* Wait for SQ thread to finish (client disconnect or error) */
+                    pthread_join(async_ctx.sq_thread, NULL);
+                    pthread_join(async_ctx.cq_thread, NULL);
+                    nbd_async_cleanup(&async_ctx);
+                }
+            } else {
+                nbd_serve(client_fd, &dev, lba_size);
+            }
         } else {
             fprintf(stderr, "[NBD] Handshake failed\n");
         }
