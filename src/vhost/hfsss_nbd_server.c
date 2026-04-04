@@ -300,64 +300,83 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
             break;
         }
 
-        /* Ensure I/O buffer is large enough */
-        if (type == NBD_CMD_READ || type == NBD_CMD_WRITE) {
-            if (length > iobuf_cap) {
-                free(iobuf);
-                iobuf = (uint8_t *)malloc(length);
-                if (!iobuf) {
-                    fprintf(stderr, "[NBD] malloc(%u) failed\n", length);
-                    send_reply(client_fd, handle, NBD_EIO);
-                    break;
-                }
-                iobuf_cap = length;
-            }
-        }
+        /* Compute LBA and count from byte offset/length.
+         * The simulator works in lba_size units (4096B), but NBD clients
+         * may request sub-page I/O (e.g. 512B).  We always read/write
+         * full pages and slice/merge as needed. */
+        uint64_t lba        = offset / lba_size;
+        uint32_t byte_off   = (uint32_t)(offset % lba_size);  /* offset within first page */
+        uint64_t end_byte   = offset + length;
+        uint64_t end_lba    = (end_byte + lba_size - 1) / lba_size;
+        uint32_t count      = (uint32_t)(end_lba - lba);
+        uint32_t full_bytes = count * lba_size;
 
-        /* Compute LBA and count from byte offset/length */
-        uint64_t lba   = offset / lba_size;
-        uint32_t count = (length + lba_size - 1) / lba_size;
+        /* Ensure iobuf is large enough for full-page I/O */
+        if (full_bytes > iobuf_cap) {
+            free(iobuf);
+            iobuf = (uint8_t *)malloc(full_bytes);
+            if (!iobuf) {
+                fprintf(stderr, "[NBD] malloc(%u) failed\n", full_bytes);
+                send_reply(client_fd, handle, NBD_EIO);
+                goto done;
+            }
+            iobuf_cap = full_bytes;
+        }
 
         switch (type) {
 
         /* ----------------------------------------------------------------
-         * READ
+         * READ — read full pages, return only the requested byte range
          * ---------------------------------------------------------------- */
         case NBD_CMD_READ: {
-            fprintf(stderr,
-                    "[NBD] READ  offset=0x%016llx len=%u lba=%llu count=%u\n",
-                    (unsigned long long)offset, length,
-                    (unsigned long long)lba, count);
-
             int rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
             if (rc != 0) {
-                fprintf(stderr, "[NBD] nvme_uspace_read failed rc=%d\n", rc);
-                if (send_reply(client_fd, handle, NBD_EIO) != 0)
-                    goto done;
-                break;
+                /* Unwritten pages: return zeros instead of error */
+                memset(iobuf, 0, full_bytes);
             }
             if (send_reply(client_fd, handle, 0) != 0)
                 goto done;
-            if (write_exact(client_fd, iobuf, length) != 0)
+            /* Return only the requested slice */
+            if (write_exact(client_fd, iobuf + byte_off, length) != 0)
                 goto done;
             break;
         }
 
         /* ----------------------------------------------------------------
-         * WRITE
+         * WRITE — for sub-page writes, do read-modify-write
          * ---------------------------------------------------------------- */
         case NBD_CMD_WRITE: {
-            fprintf(stderr,
-                    "[NBD] WRITE offset=0x%016llx len=%u lba=%llu count=%u\n",
-                    (unsigned long long)offset, length,
-                    (unsigned long long)lba, count);
-
-            if (read_exact(client_fd, iobuf, length) != 0)
+            /* Read client data into a temp buffer first */
+            uint8_t *wbuf = (uint8_t *)malloc(length);
+            if (!wbuf) {
+                send_reply(client_fd, handle, NBD_EIO);
                 goto done;
+            }
+            if (read_exact(client_fd, wbuf, length) != 0) {
+                free(wbuf);
+                goto done;
+            }
+
+            /* If sub-page or unaligned, do read-modify-write */
+            if (byte_off != 0 || length != full_bytes) {
+                /* Read existing pages */
+                int rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
+                if (rc != 0)
+                    memset(iobuf, 0, full_bytes);
+                /* Overlay the write data */
+                memcpy(iobuf + byte_off, wbuf, length);
+                free(wbuf);
+                wbuf = NULL;
+            } else {
+                /* Aligned write — use client data directly */
+                memcpy(iobuf, wbuf, length);
+                free(wbuf);
+                wbuf = NULL;
+            }
 
             int rc = nvme_uspace_write(dev, 1, lba, count, iobuf);
             if (rc != 0) {
-                fprintf(stderr, "[NBD] nvme_uspace_write failed rc=%d\n", rc);
+                fprintf(stderr, "[NBD] write failed rc=%d\n", rc);
                 if (send_reply(client_fd, handle, NBD_EIO) != 0)
                     goto done;
                 break;
