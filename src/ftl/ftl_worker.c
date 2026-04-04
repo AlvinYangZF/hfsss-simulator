@@ -1,0 +1,221 @@
+#include "ftl/ftl_worker.h"
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <sched.h>
+
+static void *ftl_worker_main(void *arg)
+{
+    struct ftl_worker *w = (struct ftl_worker *)arg;
+    struct io_request req;
+    struct io_completion cpl;
+
+    while (w->running) {
+        if (!io_ring_pop(&w->request_ring, &req)) {
+            /* No work — brief yield to avoid busy spin */
+            sched_yield();
+            continue;
+        }
+
+        if (req.opcode == IO_OP_STOP) {
+            w->running = false;
+            break;
+        }
+
+        int rc = HFSSS_OK;
+
+        switch (req.opcode) {
+        case IO_OP_READ: {
+            u32 page_size = w->ftl->config.page_size;
+            u8 *ptr = req.data;
+            for (u32 i = 0; i < req.count; i++) {
+                rc = ftl_read_page_mt(w->ftl, w->taa,
+                                      req.lba + i, ptr);
+                if (rc != HFSSS_OK) break;
+                ptr += page_size;
+            }
+            break;
+        }
+        case IO_OP_WRITE: {
+            u32 page_size = w->ftl->config.page_size;
+            const u8 *ptr = req.data;
+            for (u32 i = 0; i < req.count; i++) {
+                rc = ftl_write_page_mt(w->ftl, w->taa,
+                                       req.lba + i, ptr);
+                if (rc != HFSSS_OK) break;
+                ptr += page_size;
+            }
+            break;
+        }
+        case IO_OP_TRIM: {
+            for (u32 i = 0; i < req.count; i++) {
+                rc = ftl_trim_page_mt(w->ftl, w->taa, req.lba + i);
+                if (rc != HFSSS_OK) break;
+            }
+            break;
+        }
+        case IO_OP_FLUSH:
+            /* Flush is a no-op in DRAM-backed simulator */
+            rc = HFSSS_OK;
+            break;
+        default:
+            rc = HFSSS_ERR_INVAL;
+            break;
+        }
+
+        cpl.nbd_handle = req.nbd_handle;
+        cpl.status = rc;
+        w->ops_completed++;
+        if (rc != HFSSS_OK) w->ops_failed++;
+
+        /* Push completion — spin if full (should not happen with
+         * reasonable ring sizes) */
+        while (!io_ring_push(&w->completion_ring, &cpl)) {
+            sched_yield();
+        }
+    }
+
+    return NULL;
+}
+
+int ftl_mt_init(struct ftl_mt_ctx *ctx, struct ftl_config *config,
+                struct hal_ctx *hal)
+{
+    int ret;
+
+    if (!ctx || !config || !hal) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    memset(ctx, 0, sizeof(*ctx));
+
+    /* Initialize base FTL */
+    ret = ftl_init(&ctx->ftl, config, hal);
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+
+    /* Initialize TAA with 256 shards */
+    u64 total_pages = (u64)config->channel_count *
+                      config->chips_per_channel *
+                      config->dies_per_chip *
+                      config->planes_per_die *
+                      config->blocks_per_plane *
+                      config->pages_per_block;
+
+    ret = taa_init(&ctx->taa, config->total_lbas, total_pages,
+                   TAA_DEFAULT_SHARDS);
+    if (ret != HFSSS_OK) {
+        ftl_cleanup(&ctx->ftl);
+        return ret;
+    }
+
+    /* Initialize worker contexts (threads not started yet) */
+    for (int i = 0; i < FTL_NUM_WORKERS; i++) {
+        struct ftl_worker *w = &ctx->workers[i];
+        w->worker_id = (u32)i;
+        w->ftl = &ctx->ftl;
+        w->taa = &ctx->taa;
+        w->running = false;
+        w->ops_completed = 0;
+        w->ops_failed = 0;
+
+        ret = io_ring_init(&w->request_ring, sizeof(struct io_request),
+                           IO_RING_DEFAULT_CAPACITY);
+        if (ret != HFSSS_OK) goto fail;
+
+        ret = io_ring_init(&w->completion_ring, sizeof(struct io_completion),
+                           IO_RING_DEFAULT_CAPACITY);
+        if (ret != HFSSS_OK) goto fail;
+    }
+
+    ctx->initialized = true;
+    return HFSSS_OK;
+
+fail:
+    ftl_mt_cleanup(ctx);
+    return ret;
+}
+
+void ftl_mt_cleanup(struct ftl_mt_ctx *ctx)
+{
+    if (!ctx) return;
+
+    ftl_mt_stop(ctx);
+
+    for (int i = 0; i < FTL_NUM_WORKERS; i++) {
+        io_ring_cleanup(&ctx->workers[i].request_ring);
+        io_ring_cleanup(&ctx->workers[i].completion_ring);
+    }
+
+    taa_cleanup(&ctx->taa);
+    ftl_cleanup(&ctx->ftl);
+    memset(ctx, 0, sizeof(*ctx));
+}
+
+int ftl_mt_start(struct ftl_mt_ctx *ctx)
+{
+    if (!ctx || !ctx->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    for (int i = 0; i < FTL_NUM_WORKERS; i++) {
+        ctx->workers[i].running = true;
+        int ret = pthread_create(&ctx->workers[i].thread, NULL,
+                                  ftl_worker_main, &ctx->workers[i]);
+        if (ret != 0) {
+            /* Stop already-started workers */
+            for (int j = 0; j < i; j++) {
+                struct io_request stop;
+                memset(&stop, 0, sizeof(stop));
+                stop.opcode = IO_OP_STOP;
+                io_ring_push(&ctx->workers[j].request_ring, &stop);
+                pthread_join(ctx->workers[j].thread, NULL);
+            }
+            return HFSSS_ERR_INVAL;
+        }
+    }
+
+    return HFSSS_OK;
+}
+
+void ftl_mt_stop(struct ftl_mt_ctx *ctx)
+{
+    if (!ctx) return;
+
+    for (int i = 0; i < FTL_NUM_WORKERS; i++) {
+        if (ctx->workers[i].running) {
+            struct io_request stop;
+            memset(&stop, 0, sizeof(stop));
+            stop.opcode = IO_OP_STOP;
+            while (!io_ring_push(&ctx->workers[i].request_ring, &stop)) {
+                sched_yield();
+            }
+            pthread_join(ctx->workers[i].thread, NULL);
+            ctx->workers[i].running = false;
+        }
+    }
+}
+
+bool ftl_mt_submit(struct ftl_mt_ctx *ctx, const struct io_request *req)
+{
+    if (!ctx || !req) return false;
+
+    /* Route by LBA to worker: worker_id = lba % NUM_WORKERS */
+    u32 wid = (u32)(req->lba % FTL_NUM_WORKERS);
+    return io_ring_push(&ctx->workers[wid].request_ring, req);
+}
+
+bool ftl_mt_poll_completion(struct ftl_mt_ctx *ctx,
+                            struct io_completion *out)
+{
+    if (!ctx || !out) return false;
+
+    /* Round-robin poll all workers for completions */
+    for (int i = 0; i < FTL_NUM_WORKERS; i++) {
+        if (io_ring_pop(&ctx->workers[i].completion_ring, out)) {
+            return true;
+        }
+    }
+    return false;
+}

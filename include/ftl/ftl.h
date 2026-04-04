@@ -78,4 +78,12 @@ int ftl_map_l2p(struct ftl_ctx *ctx, u64 lba, union ppn *ppn);
 int ftl_unmap_lba(struct ftl_ctx *ctx, u64 lba);
 int ftl_gc_trigger(struct ftl_ctx *ctx);
 
+
+/* Multi-threaded page operations — use TAA shards instead of global lock */
+struct taa_ctx;
+int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                     u64 lba, void *data);
+int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                      u64 lba, const void *data);
+int ftl_trim_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa, u64 lba);
 #endif /* __HFSSS_FTL_H */
