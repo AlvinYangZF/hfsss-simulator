@@ -416,9 +416,9 @@ $(HFSSS_IMG_EXPORT): $(VHOST_SRC)/hfsss_img_export.c $(LIBHFSSS_PCIE) $(LIBHFSSS
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
 
 # hfsss-nbd-server (NBD server exposing simulator as live block device for QEMU)
-$(HFSSS_NBD): $(VHOST_SRC)/hfsss_nbd_server.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+$(HFSSS_NBD): $(VHOST_SRC)/hfsss_nbd_server.c $(VHOST_SRC)/nbd_async.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
-	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
+	@$(CC) $(CFLAGS) $(VHOST_SRC)/hfsss_nbd_server.c $(VHOST_SRC)/nbd_async.c -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
 
 # vhost protocol unit tests
 $(TEST_VHOST): $(TEST_DIR)/test_vhost_proto.c $(VHOST_OBJS) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)

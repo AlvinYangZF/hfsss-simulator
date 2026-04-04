@@ -35,6 +35,7 @@
 
 #include "pcie/nvme_uspace.h"
 #include "ftl/ftl_worker.h"
+#include "vhost/nbd_async.h"
 
 /* -------------------------------------------------------------------------
  * Portable 64-bit byte-swap helpers
@@ -98,6 +99,7 @@ static int g_verbose = 0;
 
 /* Multi-threaded mode (set via -m flag) */
 static int g_multithread = 0;
+static int g_async = 0;
 static struct ftl_mt_ctx *g_mt = NULL;
 
 /* NBD error codes (errno-compatible subset) */
@@ -507,6 +509,9 @@ static void print_usage(const char *prog)
         "Options:\n"
         "  -p <port>   TCP port to listen on (default: 10809)\n"
         "  -s <MB>     Export size in MB (default: 512)\n"
+        "  -v          Verbose I/O logging\n"
+        "  -m          Multi-threaded FTL workers\n"
+        "  -a          Async NBD pipeline (SPDK-style SQ/CQ, implies -m)\n"
         "  -h          Show this help\n"
         "\n"
         "Connect QEMU with:\n"
@@ -530,7 +535,7 @@ int main(int argc, char *argv[])
     int verbose      = 0;
     int opt;
 
-    while ((opt = getopt(argc, argv, "p:s:vmh")) != -1) {
+    while ((opt = getopt(argc, argv, "p:s:vmah")) != -1) {
         switch (opt) {
         case 'p':
             port = (uint16_t)atoi(optarg);
@@ -548,6 +553,10 @@ int main(int argc, char *argv[])
             break;
         case 'm':
             g_multithread = 1;
+            break;
+        case 'a':
+            g_async = 1;
+            g_multithread = 1;  /* async implies multi-threaded */
             break;
         case 'h':
             print_usage(argv[0]);
@@ -756,7 +765,24 @@ int main(int argc, char *argv[])
 
         if (nbd_handshake(client_fd, export_size) == 0) {
             fprintf(stderr, "[NBD] Handshake OK, entering transmission phase\n");
-            nbd_serve(client_fd, &dev, lba_size);
+            if (g_async && g_mt) {
+                fprintf(stderr, "Mode:     ASYNC PIPELINE (SQ + CQ + %d FTL workers)\n",
+                        FTL_NUM_WORKERS);
+                struct nbd_async_ctx async_ctx;
+                if (nbd_async_init(&async_ctx, client_fd, lba_size, g_mt, 256) != 0) {
+                    fprintf(stderr, "ERROR: nbd_async_init failed\n");
+                } else if (nbd_async_start(&async_ctx) != 0) {
+                    fprintf(stderr, "ERROR: nbd_async_start failed\n");
+                    nbd_async_cleanup(&async_ctx);
+                } else {
+                    /* Wait for SQ thread to finish (client disconnect or error) */
+                    pthread_join(async_ctx.sq_thread, NULL);
+                    pthread_join(async_ctx.cq_thread, NULL);
+                    nbd_async_cleanup(&async_ctx);
+                }
+            } else {
+                nbd_serve(client_fd, &dev, lba_size);
+            }
         } else {
             fprintf(stderr, "[NBD] Handshake failed\n");
         }
