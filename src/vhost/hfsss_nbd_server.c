@@ -390,32 +390,34 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
          * WRITE — for sub-page writes, do read-modify-write
          * ---------------------------------------------------------------- */
         case NBD_CMD_WRITE: {
-            /* Read client data into a temp buffer first */
-            uint8_t *wbuf = (uint8_t *)malloc(length);
-            if (!wbuf) {
-                send_reply(client_fd, handle, NBD_EIO);
-                goto done;
-            }
-            if (read_exact(client_fd, wbuf, length) != 0) {
-                free(wbuf);
+            /* Read client write data directly into iobuf */
+            if (read_exact(client_fd, iobuf, length) != 0) {
                 goto done;
             }
 
-            /* If sub-page or unaligned, do read-modify-write */
+            /* If sub-page or unaligned, do read-modify-write in place */
             if (byte_off != 0 || length != full_bytes) {
-                /* Read existing pages */
-                int rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
+                /* Save the partial write data */
+                uint8_t *partial = (uint8_t *)malloc(length);
+                if (!partial) {
+                    send_reply(client_fd, handle, NBD_EIO);
+                    break;
+                }
+                memcpy(partial, iobuf, length);
+
+                /* Read existing full pages */
+                int rc;
+                if (g_multithread) {
+                    rc = mt_io(IO_OP_READ, lba, count, iobuf);
+                } else {
+                    rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
+                }
                 if (rc != 0)
                     memset(iobuf, 0, full_bytes);
-                /* Overlay the write data */
-                memcpy(iobuf + byte_off, wbuf, length);
-                free(wbuf);
-                wbuf = NULL;
-            } else {
-                /* Aligned write — use client data directly */
-                memcpy(iobuf, wbuf, length);
-                free(wbuf);
-                wbuf = NULL;
+
+                /* Overlay the partial write data at the correct offset */
+                memcpy(iobuf + byte_off, partial, length);
+                free(partial);
             }
 
             int rc;
