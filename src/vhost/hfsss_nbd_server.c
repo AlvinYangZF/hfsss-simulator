@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <errno.h>
 #include <signal.h>
 #include <unistd.h>
@@ -89,6 +90,9 @@ static inline uint64_t hfsss_htonll(uint64_t v)
 #define NBD_CMD_DISC   2u
 #define NBD_CMD_FLUSH  3u
 #define NBD_CMD_TRIM   4u
+
+/* Verbose I/O logging (set via -v flag) */
+static int g_verbose = 0;
 
 /* NBD error codes (errno-compatible subset) */
 #define NBD_EIO   5u
@@ -334,6 +338,9 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
                 /* Unwritten pages: return zeros instead of error */
                 memset(iobuf, 0, full_bytes);
             }
+            if (g_verbose)
+                fprintf(stderr, "[NBD] READ  off=%-10" PRIu64 " len=%-6u lba=%-8" PRIu64 " cnt=%-4u rc=%d\n",
+                        offset, length, lba, count, rc);
             if (send_reply(client_fd, handle, 0) != 0)
                 goto done;
             /* Return only the requested slice */
@@ -375,6 +382,9 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
             }
 
             int rc = nvme_uspace_write(dev, 1, lba, count, iobuf);
+            if (g_verbose)
+                fprintf(stderr, "[NBD] WRITE off=%-10" PRIu64 " len=%-6u lba=%-8" PRIu64 " cnt=%-4u rc=%d\n",
+                        offset, length, lba, count, rc);
             if (rc != 0) {
                 fprintf(stderr, "[NBD] write failed rc=%d\n", rc);
                 if (send_reply(client_fd, handle, NBD_EIO) != 0)
@@ -473,9 +483,10 @@ int main(int argc, char *argv[])
 
     uint16_t port    = 10809;
     uint64_t size_mb = 512;
+    int verbose      = 0;
     int opt;
 
-    while ((opt = getopt(argc, argv, "p:s:h")) != -1) {
+    while ((opt = getopt(argc, argv, "p:s:vh")) != -1) {
         switch (opt) {
         case 'p':
             port = (uint16_t)atoi(optarg);
@@ -486,6 +497,10 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "ERROR: size must be 1-65536 MB\n");
                 return 1;
             }
+            break;
+        case 'v':
+            verbose = 1;
+            g_verbose = 1;
             break;
         case 'h':
             print_usage(argv[0]);
