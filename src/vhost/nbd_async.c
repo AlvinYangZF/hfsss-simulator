@@ -10,6 +10,7 @@
 #include <sched.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -112,6 +113,30 @@ static int send_exact(int fd, const void *buf, size_t len)
     return 0;
 }
 
+static int send_iov_exact(int fd, struct iovec *iov, int iovcnt)
+{
+    while (iovcnt > 0) {
+        ssize_t n = writev(fd, iov, iovcnt);
+        if (n <= 0) {
+            return -1;
+        }
+
+        size_t written = (size_t)n;
+        while (iovcnt > 0 && written >= iov[0].iov_len) {
+            written -= iov[0].iov_len;
+            iov++;
+            iovcnt--;
+        }
+
+        if (iovcnt > 0 && written > 0) {
+            iov[0].iov_base = (uint8_t *)iov[0].iov_base + written;
+            iov[0].iov_len -= written;
+        }
+    }
+
+    return 0;
+}
+
 /* -----------------------------------------------------------------------
  * NBD protocol helpers
  * ----------------------------------------------------------------------- */
@@ -157,6 +182,8 @@ static int send_nbd_reply(int fd, uint64_t handle, uint32_t error)
     rep.handle = handle;  /* verbatim */
     return send_exact(fd, &rep, sizeof(rep));
 }
+
+#define NBD_CQ_BATCH_MAX 16
 
 /* -----------------------------------------------------------------------
  * Submit Thread (SQ) — reads NBD requests, dispatches to FTL workers
@@ -265,20 +292,28 @@ static void *nbd_cq_thread_main(void *arg)
 {
     struct nbd_async_ctx *ctx = (struct nbd_async_ctx *)arg;
     struct io_completion cpl;
+    struct iovec iov[NBD_CQ_BATCH_MAX * 2];
+    struct inflight_slot *completed_slots[NBD_CQ_BATCH_MAX];
+    struct nbd_reply_hdr replies[NBD_CQ_BATCH_MAX];
     int idle_spins = 0;
 
     while (ctx->running) {
         bool found = false;
+        int batch_count = 0;
+        int iovcnt = 0;
 
         /* Poll all worker completion rings */
         for (int w = 0; w < FTL_NUM_WORKERS; w++) {
-            while (io_ring_pop(&ctx->mt->workers[w].completion_ring, &cpl)) {
+            while (batch_count < NBD_CQ_BATCH_MAX &&
+                   io_ring_pop(&ctx->mt->workers[w].completion_ring, &cpl)) {
                 found = true;
                 idle_spins = 0;
 
                 struct inflight_slot *slot = inflight_get(&ctx->pool,
                                                            (uint32_t)cpl.nbd_handle);
-                if (!slot) continue;
+                if (!slot) {
+                    continue;
+                }
 
                 uint32_t error = (cpl.status == 0) ? 0 : NBD_EIO;
 
@@ -288,24 +323,38 @@ static void *nbd_cq_thread_main(void *arg)
                     error = 0;  /* return zeros, not EIO */
                 }
 
-                /* Send NBD reply header */
-                if (send_nbd_reply(ctx->client_fd, slot->nbd_handle, error) != 0) {
-                    ctx->running = false;
-                    break;
-                }
+                replies[batch_count].magic = htonl(NBD_REPLY_MAGIC);
+                replies[batch_count].error = htonl(error);
+                replies[batch_count].handle = slot->nbd_handle;
+                iov[iovcnt].iov_base = &replies[batch_count];
+                iov[iovcnt].iov_len = sizeof(replies[batch_count]);
+                iovcnt++;
 
                 /* For READ: send data payload */
                 if (slot->nbd_cmd == NBD_CMD_READ && error == 0) {
-                    if (send_exact(ctx->client_fd,
-                                   slot->data + slot->byte_off,
-                                   slot->length) != 0) {
-                        ctx->running = false;
-                        break;
-                    }
+                    iov[iovcnt].iov_base = slot->data + slot->byte_off;
+                    iov[iovcnt].iov_len = slot->length;
+                    iovcnt++;
                 }
-
-                inflight_free(&ctx->pool, slot);
+                completed_slots[batch_count] = slot;
+                batch_count++;
             }
+
+            if (batch_count >= NBD_CQ_BATCH_MAX) {
+                break;
+            }
+        }
+
+        if (batch_count > 0) {
+            if (send_iov_exact(ctx->client_fd, iov, iovcnt) != 0) {
+                ctx->running = false;
+                break;
+            }
+
+            for (int i = 0; i < batch_count; i++) {
+                inflight_free(&ctx->pool, completed_slots[i]);
+            }
+            continue;
         }
 
         if (!found) {

@@ -1,6 +1,7 @@
 #ifndef __HFSSS_BLOCK_H
 #define __HFSSS_BLOCK_H
 
+#include <stdatomic.h>
 #include "common/common.h"
 #include "common/mutex.h"
 #include "ftl/mapping.h"
@@ -23,8 +24,8 @@ struct block_desc {
     u32 plane;
     u32 block_id;
     enum ftl_block_state state;
-    u32 valid_page_count;
-    u32 invalid_page_count;
+    _Atomic u32 valid_page_count;
+    _Atomic u32 invalid_page_count;
     u32 erase_count;
     u64 last_write_ts;
     u64 cost;
@@ -32,16 +33,26 @@ struct block_desc {
     struct block_desc *prev;
 };
 
+struct block_free_shard {
+    u32 channel;
+    u32 plane;
+    struct block_desc *free_list;
+    _Atomic u64 free_blocks;
+    struct mutex lock;
+};
+
 /* Block Manager */
 struct block_mgr {
     struct block_desc *blocks;
     u64 total_blocks;
-    u64 free_blocks;
-    u64 open_blocks;
-    u64 closed_blocks;
+    _Atomic u64 free_blocks;
+    _Atomic u64 open_blocks;
+    _Atomic u64 closed_blocks;
     struct block_desc *free_list;
     struct block_desc *open_list;
     struct block_desc *closed_list;
+    struct block_free_shard *free_shards;
+    u32 free_shard_count;
     /* Geometry — needed for O(1) coordinate-to-descriptor lookup */
     u32 channel_count;
     u32 chips_per_channel;
@@ -63,6 +74,8 @@ int block_mgr_init(struct block_mgr *mgr, u32 channel_count, u32 chips_per_chann
                    u32 dies_per_chip, u32 planes_per_die, u32 blocks_per_plane);
 void block_mgr_cleanup(struct block_mgr *mgr);
 struct block_desc *block_alloc(struct block_mgr *mgr);
+struct block_desc *block_alloc_for_channel_plane(struct block_mgr *mgr,
+                                                 u32 channel, u32 plane);
 int block_free(struct block_mgr *mgr, struct block_desc *block);
 int block_mark_closed(struct block_mgr *mgr, struct block_desc *block);
 int block_mark_gc(struct block_mgr *mgr, struct block_desc *block);
