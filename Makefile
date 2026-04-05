@@ -134,7 +134,7 @@ TEST_VHOST = $(BIN_DIR)/test_vhost_proto
 # Targets
 .PHONY: all clean directories test systest stress-long help \
 	coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage coverage-selftest \
-	qemu-blackbox qemu-blackbox-list qemu-blackbox-ci qemu-blackbox-soak
+	qemu-blackbox qemu-blackbox-list qemu-blackbox-ci qemu-blackbox-soak pre-checkin
 
 all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_VHOST) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_VHOST) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT)
 	@echo "========================================"
@@ -556,6 +556,10 @@ help:
 	@echo "  qemu-blackbox-ci   - Run the black-box suite with stable CI artifact paths"
 	@echo "  qemu-blackbox-soak - Run repeated black-box rounds in one isolated env"
 	@echo ""
+	@echo "Pre-checkin gate (MANDATORY before every commit/PR):"
+	@echo "  pre-checkin        - Run the full blackbox bundle w/ CRC32C verify (~8-12 min)"
+	@echo "                       See docs/PRE_CHECKIN_STANDARD.md"
+	@echo ""
 	@echo "Examples:"
 	@echo "  make all           - Build everything"
 	@echo "  make test          - Build and run tests"
@@ -563,6 +567,7 @@ help:
 	@echo "  make qemu-blackbox BLACKBOX_ARGS=\"--guest-dir /path/to/guest --case 001_nvme_cli_smoke.sh\""
 	@echo "  make qemu-blackbox-ci BLACKBOX_ARGS=\"--guest-dir /path/to/guest --skip-build\""
 	@echo "  make qemu-blackbox-soak BLACKBOX_ARGS=\"--guest-dir /path/to/guest --rounds 10\""
+	@echo "  make pre-checkin   - MANDATORY gate before committing (see CONTRIBUTING.md)"
 	@echo "  make clean         - Clean up"
 
 # Coverage targets
@@ -607,3 +612,48 @@ qemu-blackbox-ci:
 
 qemu-blackbox-soak:
 	@./scripts/run_qemu_blackbox_soak.sh $(BLACKBOX_ARGS)
+
+# --------------------------------------------------------------------------
+# pre-checkin: mandatory end-to-end gate for every PR and every agent.
+# See docs/PRE_CHECKIN_STANDARD.md and CONTRIBUTING.md for the full policy.
+# Runs the full blackbox bundle (nvme-cli smokes + fio read/write/trim +
+# the 014 mixed-rw stress case with CRC32C verification) through QEMU + NBD.
+# Expects guest assets under $(GUEST_DIR) or explicit BLACKBOX_ARGS override.
+# --------------------------------------------------------------------------
+GUEST_DIR ?= $(CURDIR)/guest
+pre-checkin:
+	@echo "========================================"
+	@echo "  HFSSS pre-checkin gate"
+	@echo "  Bundle: 001,002,003 nvme-cli + 010,011,012,013 fio + 014 stress + 900 spdk"
+	@echo "  Guest:  $(GUEST_DIR)"
+	@echo "========================================"
+	@ok=1; \
+	for f in "$(GUEST_DIR)/alpine-hfsss.qcow2" \
+	         "$(GUEST_DIR)/cidata.iso" \
+	         "$(GUEST_DIR)/ovmf_vars-saved.fd" \
+	         "$${HFSSS_QEMU_CODE_FD:-/opt/homebrew/share/qemu/edk2-aarch64-code.fd}"; do \
+		if [ ! -f "$$f" ]; then \
+			echo "ERROR: required asset missing: $$f"; \
+			ok=0; \
+		fi; \
+	done; \
+	if [ $$ok -eq 0 ]; then \
+		echo "       See docs/PRE_CHECKIN_STANDARD.md for setup. No skipping allowed."; \
+		echo "       Override UEFI code path with HFSSS_QEMU_CODE_FD=/path/to/edk2-aarch64-code.fd"; \
+		exit 1; \
+	fi
+	@HFSSS_CASE_TIMEOUT_S=1800 ./scripts/run_qemu_blackbox_ci.sh --guest-dir "$(GUEST_DIR)" \
+		--size-mb 2048 --mode async \
+		--case 001_nvme_cli_smoke.sh \
+		--case 002_nvme_namespace_info.sh \
+		--case 003_nvme_flush_smoke.sh \
+		--case 010_fio_randwrite_verify.sh \
+		--case 011_fio_randrw_verify.sh \
+		--case 012_fio_seqwrite_verify.sh \
+		--case 013_fio_trim_verify.sh \
+		--case 014_fio_pre_checkin_stress.sh \
+		--case 900_spdk_nvme_identify.sh \
+		$(BLACKBOX_ARGS)
+	@echo "========================================"
+	@echo "  pre-checkin PASS — ready to commit"
+	@echo "========================================"
