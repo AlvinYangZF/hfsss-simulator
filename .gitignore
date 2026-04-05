@@ -36,3 +36,9 @@ core
 *.bak
 *.backup
 guest/
+
+# Coverage build output
+build-cov/
+*.gcno
+*.gcda
+.coverage-baseline.json.bak

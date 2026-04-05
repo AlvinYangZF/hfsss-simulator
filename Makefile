@@ -12,6 +12,16 @@ else
     LDFLAGS = -lpthread
 endif
 
+# Coverage build variant (GCC --coverage instrumentation)
+COVERAGE ?= 0
+ifeq ($(COVERAGE),1)
+    CFLAGS := $(filter-out -O2, $(CFLAGS)) --coverage -O0
+    LDFLAGS += --coverage
+    BUILD_DIR = build-cov
+else
+    BUILD_DIR = build
+endif
+
 # Directories
 SRC_DIR = src
 COMMON_SRC = $(SRC_DIR)/common
@@ -22,7 +32,6 @@ CTRL_SRC = $(SRC_DIR)/controller
 PCIE_SRC = $(SRC_DIR)/pcie
 SSSIM_SRC = $(SRC_DIR)
 TEST_DIR = tests
-BUILD_DIR = build
 LIB_DIR = $(BUILD_DIR)/lib
 BIN_DIR = $(BUILD_DIR)/bin
 
@@ -123,7 +132,7 @@ HFSSS_NBD = $(BIN_DIR)/hfsss-nbd-server
 TEST_VHOST = $(BIN_DIR)/test_vhost_proto
 
 # Targets
-.PHONY: all clean directories test systest stress-long help
+.PHONY: all clean directories test systest stress-long help coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage coverage-selftest
 
 all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_VHOST) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_VHOST) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT)
 	@echo "========================================"
@@ -532,3 +541,34 @@ help:
 	@echo "  make all    - Build everything"
 	@echo "  make test   - Build and run tests"
 	@echo "  make clean  - Clean up"
+
+# Coverage targets
+coverage-build:
+	@$(MAKE) COVERAGE=1 all
+
+coverage-clean:
+	@echo "  CLEAN   build-cov/"
+	@rm -rf build-cov
+	@find . -name '*.gcda' -delete 2>/dev/null || true
+	@echo "Coverage clean complete!"
+
+coverage-ut: coverage-build
+	@bash scripts/coverage/run_ut_coverage.sh
+
+coverage-e2e: coverage-build
+	@bash scripts/coverage/run_e2e_coverage.sh
+
+coverage-merge:
+	@bash scripts/coverage/merge_reports.sh
+
+# Full local flow: UT + E2E + merge
+coverage: coverage-ut coverage-e2e coverage-merge
+
+coverage-selftest: coverage-ut coverage-e2e
+	@echo "Running coverage self-tests..."
+	@bash scripts/coverage/tests/test_build.sh
+	@bash scripts/coverage/tests/test_reset.sh
+	@bash scripts/coverage/tests/test_exclusion.sh
+	@bash scripts/coverage/tests/test_merge.sh
+	@bash scripts/coverage/tests/test_ratchet.sh
+	@echo "All coverage self-tests passed!"
