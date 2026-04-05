@@ -1,7 +1,7 @@
 # CI Test Framework Roadmap — Design Spec
 
 **Date:** 2026-04-05
-**Status:** Draft — awaiting review
+**Status:** Draft rev 2 — addressing review feedback
 **Scope:** Strategic — defines the end-state CI quality-monitoring system for HFSSS and the incremental path to get there
 
 ---
@@ -20,37 +20,13 @@ This spec defines:
 
 ---
 
-## 2. Current State Assessment (as of 2026-04-05)
+## 2. Baseline Snapshot
 
-### 2.1 CI workflows
+> **This section is a time-stamped snapshot**, not a live inventory. It anchors the motivation at the time of writing (commit `b41a663`, 2026-04-05) and will go stale as adjacent PRs land. Future readers should run `ls .github/workflows/` and `grep "^test:\\|^systest:\\|^coverage" Makefile` locally for current state; use this section only to understand the delta the roadmap was designed to close.
 
-| Workflow | Triggers | What it runs |
-|----------|----------|-------------|
-| `.github/workflows/build.yml` | push, PR | ubuntu-latest build, macos-latest build, Linux kernel module build |
-| `.github/workflows/coverage.yml` (PR #38) | push, PR | `make coverage-build` + `make coverage-ut` + ratchet check + PR comment |
+**At commit `b41a663` the project had two CI workflows** (`build.yml`, `coverage.yml`) exercising compilation and UT coverage ratchet, and **five testing dimensions with no CI execution**: `make test` (UT binaries), `make systest`, `make stress-long`, `make coverage-e2e`, and the pending `make qemu-blackbox-ci` (PR #39). Performance regression, sanitizer builds, static analysis, and code-format enforcement all lived outside CI entirely. Two independent E2E harnesses (`run_e2e_coverage.sh` and blackbox `env.sh`) boot QEMU+NBD+fio on separate code paths.
 
-### 2.2 Available Make targets
-
-| Target | Runs | In CI? | Duration |
-|--------|------|--------|----------|
-| `make test` | 37 UT binaries | ❌ build-only | ~30 s |
-| `make systest` | 3 systest binaries (~616 assertions) | ❌ | ~2 min |
-| `make stress-long` | stress_stability | ❌ | 10–60 min |
-| `make coverage-ut` | UT suite instrumented | ✅ | 2–3 min |
-| `make coverage-e2e` | QEMU + fio instrumented | ❌ local only | 10–15 min |
-| `make coverage-merge` | Union UT+E2E | ❌ | 5 s |
-| `make qemu-blackbox-ci` (PR #39 pending) | 8 blackbox cases | ❌ no workflow | 8–15 min |
-
-### 2.3 Gaps
-
-- **No CI execution of `make test`** — builds produce binaries that are never run on PRs.
-- **No `make systest` in CI** — system-level assertions unvalidated.
-- **No blackbox E2E in CI** — PR #39 adds the framework but no workflow wires it.
-- **No performance regression tracking** — `scripts/fio_verify_suite.sh` exists, blackbox fio cases produce JSON, but numbers are never compared across commits.
-- **No sanitizer builds** — ASan / UBSan / TSan are widely available but unused.
-- **No static analysis** — `cppcheck`, `clang-tidy`, `scan-build` not integrated.
-- **No code-format enforcement** — contributor style drift.
-- **Duplicate E2E harnesses** — PR #38's `run_e2e_coverage.sh` and PR #39's `env.sh` both boot QEMU + NBD + fio independently.
+The sprints in Section 4 are designed to close these specific gaps; gap descriptions will not be kept current as the roadmap executes.
 
 ---
 
@@ -101,55 +77,84 @@ Each sprint is a set of independent PRs delivering one vertical capability. Spri
 
 ### Sprint 1 — Wire the existing assets into CI
 
-**Goal:** Make every already-written test actually run on every PR.
+**Goal:** Make every already-written test actually run somewhere in CI, with an explicit split between fast per-PR gates and slower nightly observation.
+
+**Trigger discipline (important):**
+
+| Trigger | Scope | Budget |
+|---------|-------|--------|
+| **Per-PR (`pull_request`)** | `make test`, `make systest`, **blackbox smoke subset only** (nvme-cli cases + minimal fio smoke) | ≤ 15 min total added CI time |
+| **Nightly / master-push** | Full blackbox matrix (all cases × all NBD modes), `make stress-long`, soak runs | Up to 60+ min; not in PR critical path |
+| **Manual `workflow_dispatch`** | Any subset, for on-demand debugging | N/A |
+
+The full blackbox matrix and soak are **deliberately excluded from per-PR CI** — their cost and flakiness would become the dominant source of CI friction before the signal is mature.
 
 | PR | Deliverable | Prerequisite |
 |----|-------------|--------------|
 | S1-P1 | Add `make test` step to `.github/workflows/build.yml` (UT execution, not just build) | none |
 | S1-P2 | Add `.github/workflows/systest.yml` running `make systest` on ubuntu-latest | S1-P1 |
-| S1-P3 | Complete PR #39 + add `.github/workflows/blackbox.yml` (smoke subset only, per PR) | PR #39 merged |
+| S1-P3 | Complete PR #39 + add `.github/workflows/blackbox.yml` with **two jobs**: `blackbox-smoke` (per-PR, nvme-cli subset only) and `blackbox-full` (schedule-triggered, all cases × all modes) | PR #39 merged |
 | S1-P4 | Per-case timeout + namespace reset in blackbox `run.sh` | PR #39 merged |
 | S1-P5 | Guest image publishing pipeline (GitHub Release + download step) | S1-P3 |
 | S1-P6 | QEMU architecture abstraction (`HFSSS_QEMU_ARCH` / `HFSSS_QEMU_ACCEL`) for Linux CI runners | S1-P3 |
 
 **Sprint 1 success criteria:**
-- Every PR to master triggers `make test`, `make systest`, and blackbox smoke in CI.
+- Every PR to master triggers `make test`, `make systest`, and blackbox **smoke subset** in CI.
 - All three must pass to merge.
-- Total added CI time: ≤ 15 min per PR.
+- Full blackbox matrix runs on a nightly schedule (not per-PR).
+- Total added per-PR CI time: ≤ 15 min.
 
-### Sprint 2 — Performance regression
+### Sprint 2 — Performance regression (two-phase rollout)
 
-**Goal:** Prevent silent IOPS / latency regressions.
+**Goal:** Prevent silent IOPS / latency regressions, introduced carefully so the signal is trusted before it becomes a gate.
+
+**Why two phases:** a brand-new perf harness has unknown noise floor, guest-side variance, and baseline calibration challenges. Turning on a hard PR gate before that is measured would produce unexplained red builds and train contributors to ignore the signal.
+
+**Phase 2a — Observation (nightly + warn-only PR comment)**
 
 | PR | Deliverable |
 |----|-------------|
-| S2-P1 | `scripts/perf/parse_fio_json.sh` — extract iops / lat_mean / p99 from blackbox fio output |
-| S2-P2 | `scripts/perf/ratchet_check.sh` — compare parsed metrics against `.perf-baseline.json`, reuse PR #38 ratchet pattern |
-| S2-P3 | `.perf-baseline.json` seeded from master (4 fio workloads × 3 modes = 12 metrics) |
-| S2-P4 | `post_perf_summary.sh` — PR comment with perf delta (reuses PR #38 marker idempotency) |
-| S2-P5 | Extend `.github/workflows/blackbox.yml` with perf-ratchet step |
-| S2-P6 | Nightly soak workflow (`.github/workflows/nightly.yml`) running full blackbox matrix |
+| S2a-P1 | `scripts/perf/parse_fio_json.sh` — extract iops / lat_mean / p99 from blackbox fio output |
+| S2a-P2 | Nightly workflow (`.github/workflows/nightly.yml`) runs full blackbox matrix and writes daily `perf-trend.json` |
+| S2a-P3 | `.perf-baseline.json` seeded from master after ≥ 2 weeks of nightly data so noise floor is known |
+| S2a-P4 | `post_perf_summary.sh` — PR comment with perf delta, **warn-only; never blocks merge** |
+| S2a-P5 | Document measured noise floor (p95 run-to-run variance) in `docs/PERF_BASELINE.md` |
 
-**Sprint 2 success criteria:**
-- PR IOPS regression > 20 % blocks merge.
-- Regression 10–20 % warns in PR comment.
-- Nightly soak runs 40 rounds × full matrix and emits trend report.
+**Phase 2a success criteria:**
+- Nightly perf numbers are published for ≥ 4 weeks.
+- PR comments show perf delta but do not fail CI.
+- Noise floor documented; thresholds calibrated empirically, not guessed.
+
+**Phase 2b — Gate (promote after calibration)**
+
+| PR | Deliverable |
+|----|-------------|
+| S2b-P1 | `scripts/perf/ratchet_check.sh` — compare parsed metrics against `.perf-baseline.json`, thresholds derived from measured noise floor (typically 2 × noise) |
+| S2b-P2 | Extend `.github/workflows/blackbox.yml` with perf-ratchet step — blocks merge on regressions beyond threshold |
+| S2b-P3 | Exemption mechanism (see Section 6.5) for intentional perf trade-offs |
+
+**Phase 2b success criteria:**
+- Per-PR perf regression beyond calibrated threshold blocks merge.
+- Contributors can override with a documented exemption (Section 6.5).
+- Promotion from Phase 2a to 2b requires ≥ 4 weeks of stable observation and explicit reviewer sign-off.
 
 ### Sprint 3 — Couple coverage and blackbox
 
-**Goal:** Eliminate duplicate E2E harnesses and automate E2E coverage.
+**Goal:** Converge on a **single shared QEMU lifecycle** for E2E testing so coverage and blackbox stop maintaining parallel harness code. The specific interface shape (whether that's a flag, an env var, a new entry-point script, or refactoring one to consume the other) is left to the implementation PRs — this sprint specifies the *shared lifecycle* as the outcome, not the syntax.
 
-| PR | Deliverable |
+The lifecycle concerns being unified: port allocation, workspace isolation (PR #42), QEMU launch parameters, guest SSH readiness detection, graceful shutdown ordering (kill QEMU before NBD to flush `.gcda`).
+
+| PR | Deliverable (shape TBD by implementer) |
 |----|-------------|
-| S3-P1 | Add `--coverage` flag to blackbox `run.sh` — switches to `build-cov/bin/hfsss-nbd-server`, runs lcov after suite |
-| S3-P2 | Retire or wrap `scripts/coverage/run_e2e_coverage.sh` on top of blackbox framework |
-| S3-P3 | New-code coverage ratchet — parse `git diff` + `diff_cover` against `ut.info` |
+| S3-P1 | Shared QEMU+NBD lifecycle library consumed by both `run_e2e_coverage.sh` and blackbox `env.sh`. Builds on PR #42's `scripts/lib/run_isolation.sh` |
+| S3-P2 | One of: migrate `run_e2e_coverage.sh` to call into the blackbox framework, or extract a common lifecycle layer both scripts consume, or extend blackbox runner to optionally emit coverage data |
+| S3-P3 | New-code coverage ratchet — parse `git diff` + tool like `diff_cover` or equivalent against the UT `.info` |
 | S3-P4 | Merge coverage + blackbox PR comments into one unified quality comment |
 | S3-P5 | Nightly merged coverage report (UT + E2E) uploaded as CI artifact |
 
 **Sprint 3 success criteria:**
-- `make coverage-e2e` and blackbox framework share the same QEMU lifecycle code.
-- PR new code must be ≥ 80 % line-covered (in addition to the absolute ratchet).
+- Only **one** place in the repo launches QEMU+NBD for automated tests. Changes to QEMU flags / guest lifecycle / port handling touch one file, not two.
+- PR new code line coverage target: ≥ 80 % (with exemption path per Section 6.5 — strictly required thresholds are documented as aspirational targets, not absolute gates, until coverage infra has matured).
 - Single PR comment shows: UT coverage %, new-code coverage %, blackbox pass/fail, perf delta.
 
 ### Sprint 4 — Defensive quality pillar
@@ -211,6 +216,46 @@ All CI jobs MUST produce standardized artifacts for audit and debugging:
 - Performance delta vs baseline
 - ASan / TSan / UBSan verdicts
 - Links to all artifacts
+
+---
+
+## 6.5 Exemption Paths — Escape Hatches for Gated CI
+
+Universal thresholds are not practical for every PR. Dead-code removal legitimately drops coverage; adding a safety check legitimately costs IOPS; a refactor may trip a cppcheck false positive; TSan may flag a benign race in a scheduler loop. Every gate in this roadmap **must** ship with a documented exemption path, or contributors will either work around it by disabling CI entirely or treat red builds as normal.
+
+### Exemption mechanism
+
+**Per-PR exemption:** add a signed-off commit trailer on the PR's commit(s), recognized by the corresponding ratchet script:
+
+| Trailer | Scope | Who can grant |
+|---------|-------|--------------|
+| `CI-Exempt-Coverage: <reason>` | Skip UT coverage ratchet and new-code coverage gate | PR author + 1 reviewer sign-off in PR body |
+| `CI-Exempt-Perf: <reason>` | Skip perf regression gate | PR author + 1 reviewer sign-off |
+| `CI-Exempt-Sanitizer: <asan\|tsan\|ubsan> <reason>` | Skip one specific sanitizer check | PR author + 1 reviewer sign-off |
+| `CI-Exempt-Static: <cppcheck\|clang-tidy> <reason>` | Skip one static analyzer | PR author + 1 reviewer sign-off |
+
+**Format example:**
+```
+CI-Exempt-Coverage: removing 340 lines of dead GC debug code
+Reviewed-by: <reviewer>
+```
+
+### Ratchet-script responsibility
+
+Each ratchet script (`scripts/coverage/ratchet_check.sh`, `scripts/perf/ratchet_check.sh`, sanitizer wrappers) **must**:
+
+1. Parse the PR's commit trailers when running under `pull_request` event.
+2. If matching exemption present, skip the threshold check but **still emit the measured delta** to the PR comment for auditability.
+3. Log the exemption in the workflow summary with the reason text.
+
+### What exemptions do NOT skip
+
+- The underlying test still runs and produces artifacts — exemption only skips the *gate decision*.
+- Functional correctness gates (unit / systest / blackbox pass/fail) are **never exempt** — they are not ratchets, they are pass/fail correctness checks.
+
+### Review-time discipline
+
+When approving an exempt PR, reviewers should verify the exemption reason is substantiated in the PR description. Abuse (e.g., "CI-Exempt-Coverage: flaky" with no investigation) is a reviewer responsibility to catch, not a tooling responsibility.
 
 ---
 
