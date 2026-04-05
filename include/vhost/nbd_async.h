@@ -17,11 +17,14 @@ enum slot_state {
 
 struct inflight_slot {
     _Atomic int       state;
+    _Atomic uint32_t  pending_reqs;
     uint32_t          slot_id;      /* index in pool */
     uint64_t          nbd_handle;   /* echoed back to NBD client */
     uint16_t          nbd_cmd;      /* NBD_CMD_READ / WRITE / TRIM / FLUSH */
     uint32_t          byte_off;     /* sub-page offset for READ slicing */
     uint32_t          length;       /* original NBD request length */
+    uint32_t          total_reqs;   /* Number of worker requests issued */
+    int               completion_status;
     int               status;       /* FTL result code */
     uint8_t           data[NBD_ASYNC_SLOT_BUFSZ];
 };

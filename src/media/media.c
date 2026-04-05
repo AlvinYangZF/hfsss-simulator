@@ -3,7 +3,8 @@
 #include <string.h>
 
 /* Forward declarations */
-static void media_wait_until_available(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane);
+static void media_wait_until_available(struct media_ctx *ctx, enum op_type op,
+                                       u32 ch, u32 chip, u32 die, u32 plane);
 static void media_inject_bit_errors(struct media_ctx *ctx, struct nand_page *page, void *data, void *spare, u32 page_size, u32 spare_size);
 
 /* Page metadata structure for persistence */
@@ -157,14 +158,15 @@ void media_cleanup(struct media_ctx *ctx)
     mutex_cleanup(&ctx->lock);
 }
 
-static void media_wait_until_available(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane)
+static void media_wait_until_available(struct media_ctx *ctx, enum op_type op,
+                                       u32 ch, u32 chip, u32 die, u32 plane)
 {
     u64 eat;
     u64 now;
     u64 remaining;
 
     /* Get the earliest available time */
-    eat = eat_get_max(ctx->eat, ch, chip, die, plane);
+    eat = eat_get_max(ctx->eat, op, ch, chip, die, plane);
     now = get_time_ns();
 
     if (eat > now) {
@@ -238,7 +240,7 @@ int media_nand_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
     }
 
     /* Wait for the plane/die/chip/channel to be available */
-    media_wait_until_available(ctx, ch, chip, die, plane);
+    media_wait_until_available(ctx, OP_READ, ch, chip, die, plane);
 
     /* Get the page */
     nand_page = nand_get_page(ctx->nand, ch, chip, die, plane, block, page);
@@ -256,7 +258,7 @@ int media_nand_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
     start_time = get_time_ns();
 
     /* Update EAT */
-    eat_update(ctx->eat, ch, chip, die, plane, latency);
+    eat_update(ctx->eat, OP_READ, ch, chip, die, plane, latency);
 
     /* Copy data with potential bit errors */
     media_inject_bit_errors(ctx, nand_page, data, spare, ctx->config.page_size, ctx->config.spare_size);
@@ -301,7 +303,7 @@ int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
     }
 
     /* Wait for the plane/die/chip/channel to be available */
-    media_wait_until_available(ctx, ch, chip, die, plane);
+    media_wait_until_available(ctx, OP_PROGRAM, ch, chip, die, plane);
 
     /* Get the page */
     nand_page = nand_get_page(ctx->nand, ch, chip, die, plane, block, page);
@@ -314,7 +316,7 @@ int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
     start_time = get_time_ns();
 
     /* Update EAT */
-    eat_update(ctx->eat, ch, chip, die, plane, latency);
+    eat_update(ctx->eat, OP_PROGRAM, ch, chip, die, plane, latency);
 
     /* Write data to NAND */
     memcpy(nand_page->data, data, ctx->config.page_size);
@@ -378,7 +380,7 @@ int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
     }
 
     /* Wait for the plane/die/chip/channel to be available */
-    media_wait_until_available(ctx, ch, chip, die, plane);
+    media_wait_until_available(ctx, OP_ERASE, ch, chip, die, plane);
 
     /* Get the block */
     nand_block = nand_get_block(ctx->nand, ch, chip, die, plane, block);
@@ -391,7 +393,7 @@ int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
     start_time = get_time_ns();
 
     /* Update EAT */
-    eat_update(ctx->eat, ch, chip, die, plane, latency);
+    eat_update(ctx->eat, OP_ERASE, ch, chip, die, plane, latency);
 
     /* Erase all pages in the block */
     for (u32 page = 0; page < nand_block->page_count; page++) {
