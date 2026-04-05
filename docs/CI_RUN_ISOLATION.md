@@ -1,9 +1,38 @@
 # CI Run Isolation
 
 This document describes how HFSSS supports **concurrent CI execution** on a
-single host (Mac Studio, Linux runner, developer laptop) without interference
-between runs. Any script that boots QEMU, starts the NBD server, or produces
-per-run artifacts should use the isolation primitives described here.
+single host without interference between runs. Any script that boots QEMU,
+starts the NBD server, or produces per-run artifacts should use the
+isolation primitives described here.
+
+## Scope and non-goals
+
+The isolation primitives here cover **runtime resources** (QEMU processes,
+NBD servers, ports, logs, UEFI vars, pid files). Two workflows that both
+allocate their own ports via `hfsss_run_alloc_port` and tag their QEMU
+with `$HFSSS_RUN_QEMU_NAME` can coexist on one host.
+
+They do **not** isolate:
+
+- **Coverage capture** (`.gcda` counters) — gcov writes `.gcda` files at
+  the compile-time build path, so two concurrent coverage runs would race
+  on counter updates. `scripts/coverage/run_e2e_coverage.sh` therefore
+  **serializes** via a mutex (`build-cov/coverage/.e2e.lock`). This is the
+  intentional model: a single canonical coverage measurement per commit.
+- **Build artifacts** (`build/`, `build-cov/`) — concurrent `make` calls
+  into the same `BUILD_DIR` would corrupt each other. Serialize builds or
+  set `BUILD_DIR=build-$RUN_ID` per run.
+
+## Platform support
+
+- **Isolation primitives** (`scripts/lib/run_isolation.sh`): platform-agnostic
+  POSIX shell + `python3`. Runs on macOS and Linux.
+- **QEMU execution path** in `scripts/coverage/run_e2e_coverage.sh`: hardcodes
+  macOS-aarch64 defaults (HVF accel, aarch64, Homebrew OVMF). Override with:
+  - `QEMU_BIN=qemu-system-x86_64`
+  - `QEMU_ACCEL=kvm` (or `tcg`)
+  - `OVMF_CODE_FW=/usr/share/OVMF/OVMF_CODE.fd`
+  A Linux-native coverage path is not exercised in CI today.
 
 ## Why
 
@@ -55,9 +84,17 @@ After `hfsss_run_init`, these env vars are exported:
 
 ### `hfsss_run_alloc_port <var_name>`
 
-Asks the OS for a free TCP port via `python3 socket.bind(('127.0.0.1', 0))`.
-This is atomic (no TOCTOU race) and gives a port guaranteed unused at bind time.
-Use this for **both** the NBD server port and the QEMU SSH forward port.
+Asks the OS for a free TCP port via `python3 socket.bind(('127.0.0.1', 0))`,
+reads the port number, closes the socket, returns. **This is best-effort,
+not atomic** — there is a brief TOCTOU window between the socket close and
+the downstream service's bind during which another process may claim the
+same port.
+
+This is still a significant improvement over hardcoded 10809/2222 (which
+_guaranteed_ collision under concurrency), but callers must handle bind
+failure themselves. See `scripts/coverage/run_e2e_coverage.sh` for the
+retry pattern: allocate → try bind → if service dies within 2s, reallocate
+and retry up to 3 times.
 
 ### `hfsss_run_kill_pidfile <pid_file> [timeout_s]`
 
@@ -118,8 +155,13 @@ CI workflows should upload `build/runs/$RUN_ID/` as an artifact for failed runs.
 ## What this does NOT isolate
 
 This module deliberately scopes to **runtime** isolation (QEMU, NBD server,
-ports, logs). The following remain shared:
+ports, logs). The following remain shared (see "Scope and non-goals" above
+for the rationale):
 
+- **`.gcda` coverage counters** — gcov writes to compile-time build paths,
+  so coverage runs are serialized via `build-cov/coverage/.e2e.lock`. Two
+  concurrent calls to `run_e2e_coverage.sh` will result in the second
+  failing fast with a clear error until the first releases the lock.
 - `build/` and `build-cov/` — concurrent `make all` would corrupt each other.
   Serialize builds or give each run a unique `BUILD_DIR=build-$RUN_ID`.
 - `.coverage-baseline.json` — single ratchet file, only written when explicitly
@@ -127,3 +169,6 @@ ports, logs). The following remain shared:
 - SSH key at `/tmp/hfsss_qemu_key` — shared, read-only after first creation.
 - `guest/alpine-hfsss.qcow2` — read-only guest image, used with
   `snapshot=on` so QEMU writes go to an ephemeral overlay.
+
+A blackbox suite and an e2e coverage run can execute **concurrently** (they
+touch independent resources). Two e2e coverage runs **cannot** — by design.

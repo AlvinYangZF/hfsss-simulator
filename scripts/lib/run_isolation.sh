@@ -6,7 +6,7 @@
 #
 #   - Stable, unique RUN_ID per invocation
 #   - Per-run workspace directory under build/runs/$RUN_ID/
-#   - OS-allocated free ports (no TOCTOU race)
+#   - OS-allocated free ports (best-effort — see TOCTOU note on alloc_port)
 #   - Unique QEMU process name for safe filtering
 #   - PID-based cleanup (no pkill broadcast)
 #
@@ -80,9 +80,19 @@ pid=$$
 EOF
 }
 
-# Allocate a free TCP port using the OS.
+# Allocate a free TCP port using the OS (BEST-EFFORT, NOT ATOMIC).
+#
+# This asks the OS for an unused port via socket.bind(('127.0.0.1', 0)),
+# reads the port number, closes the socket, and returns. There is a brief
+# TOCTOU window between close and the downstream service's bind during
+# which another process on the host may claim the same port.
+#
+# This is a real improvement over hardcoded 10809/2222 (which guaranteed
+# collision under concurrency), but callers still need to handle bind
+# failure — see hfsss_run_alloc_port_retry for a retry wrapper.
+#
 # Usage: hfsss_run_alloc_port <var_name>
-#        sets $var_name to an available port
+#        sets $var_name to an available port (at the time of call)
 hfsss_run_alloc_port() {
     local var_name="$1"
     local port
@@ -97,6 +107,22 @@ s.close()' 2>/dev/null)"
     fi
     printf -v "$var_name" '%s' "$port"
     export "$var_name"
+}
+
+# Check if a TCP port is currently bindable on 127.0.0.1.
+# Returns 0 if bindable, non-zero otherwise.
+hfsss_run_port_is_free() {
+    local port="$1"
+    python3 -c "
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(('127.0.0.1', int('$port')))
+    s.close()
+    sys.exit(0)
+except OSError:
+    sys.exit(1)
+" 2>/dev/null
 }
 
 # Kill a process whose PID is stored in a file.
