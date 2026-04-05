@@ -4,8 +4,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../../.."
 
-# Clean any prior state
-rm -rf build-cov
+# Clean any prior state (but preserve coverage .info files for downstream tests)
+if [ -d build-cov ]; then
+    # Save coverage reports if they exist
+    if [ -d build-cov/coverage ]; then
+        cp -r build-cov/coverage /tmp/hfsss_cov_backup_$$ 2>/dev/null || true
+    fi
+    rm -rf build-cov
+    # Restore coverage reports
+    if [ -d /tmp/hfsss_cov_backup_$$ ]; then
+        mkdir -p build-cov
+        mv /tmp/hfsss_cov_backup_$$ build-cov/coverage
+    fi
+fi
 find . -name '*.gcda' -delete 2>/dev/null || true
 
 # Record pre-build state of build/ (for parallel-variant isolation check)

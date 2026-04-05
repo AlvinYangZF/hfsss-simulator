@@ -551,3 +551,24 @@ coverage-clean:
 	@rm -rf build-cov
 	@find . -name '*.gcda' -delete 2>/dev/null || true
 	@echo "Coverage clean complete!"
+
+coverage-ut: coverage-build
+	@bash scripts/coverage/run_ut_coverage.sh
+
+coverage-e2e: coverage-build
+	@bash scripts/coverage/run_e2e_coverage.sh
+
+coverage-merge:
+	@bash scripts/coverage/merge_reports.sh
+
+# Full local flow: UT + E2E + merge
+coverage: coverage-ut coverage-e2e coverage-merge
+
+coverage-selftest: coverage-ut coverage-e2e
+	@echo "Running coverage self-tests..."
+	@bash scripts/coverage/tests/test_build.sh
+	@bash scripts/coverage/tests/test_reset.sh
+	@bash scripts/coverage/tests/test_exclusion.sh
+	@bash scripts/coverage/tests/test_merge.sh
+	@bash scripts/coverage/tests/test_ratchet.sh
+	@echo "All coverage self-tests passed!"
