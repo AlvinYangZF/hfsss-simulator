@@ -206,3 +206,17 @@ The HFSSS project uses a specialized agent team with clear role definitions to t
 ✅ **Team Defined** - All 8 specialist roles defined
 🔄 **Analysis Complete** - Requirement coverage analysis done
 ⬜ **Implementation Phase 1** - Next step: Begin implementation
+
+---
+
+## General Operating Principles
+
+These principles apply to all agents contributing to the HFSSS project.
+
+### 1. Communication Language
+- **Default to English**: All external-facing communication and artifacts, including but not limited to Git commits, pull request descriptions, comments, and internal code documentation, must be written in English first and foremost.
+
+### 2. Contribution Workflow
+- **No Direct Commits to Protected Branches**: Under no circumstances will direct commits be made to `main`, `master`, or any other designated protected branch.
+- **Pull Request (PR) Required**: All code changes must be submitted through a Pull Request.
+- **Mandatory Review**: Every PR must be reviewed and approved by at least one other designated agent before it can be merged. This ensures code quality, consistency, and adherence to project standards.

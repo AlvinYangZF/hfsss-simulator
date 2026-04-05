@@ -88,108 +88,54 @@ All test documents provide quantifiable test result metrics and support quick-ve
 
 ## 4. Test Execution Flow
 
-### 4.1 Before Check In Flow
+### 4.1 Implemented Build & Test Flow
+
+The current test execution is orchestrated by the root `Makefile`.
 
 ```
-Development complete
+Developer runs "make test"
     |
-Run static code analysis (cppcheck/clang-analyzer)
-    |
-Run quick unit tests
-    |
-Run quick functional tests
-    |
-Check code format (clang-format)
-    |
-Check compiler warnings
-    |
-All passed?
-    | Yes
-Submit code
-```
++---1. Build Static Libraries: All source files in `src/*` are compiled
+|      into static libraries (e.g., `libhfsss-ftl.a`) in `build/lib/`.
+|
++---2. Build Test Executables: Each `tests/test_*.c` and `tests/systest_*.c`
+|      file is compiled into a separate executable in `build/bin/`,
+|      linking against the required static libraries.
+|
++---3. Run Test Executables: The `test` target in the Makefile executes
+       each test program sequentially (e.g., `build/bin/test_common`,
+       `build/bin/test_ftl`, etc.).
 
-### 4.2 Daily Build Flow
-
-```
-Code submitted to repository
-    |
-Automatically trigger CI/CD pipeline
-    |
-Compile code (with coverage)
-    |
-Run full unit tests
-    |
-Run full functional tests
-    |
-Run integration tests
-    |
-Generate code coverage report
-    |
-Send test report email
-```
-
-### 4.3 Weekly Build Flow
-
-```
-Daily build passed
-    |
-Triggered every Friday
-    |
-Run full performance tests
-    |
-Run stress tests (24 hours)
-    |
-Generate performance benchmark report
-    |
-Compare with previous week's results
-    |
-Send weekly report
+Each test executable prints its results to standard output and exits with a
+non-zero status code upon failure, which halts the `make` process.
 ```
 
 ---
 
 ## 5. Test Toolchain
 
-### 5.1 Unit Test Frameworks
+### 5.1 Implemented Toolchain
 
-| Language | Framework | Purpose |
-|----------|-----------|---------|
-| C | CUnit | C language unit testing |
-| C | Google Test (GTest) | C++ unit testing |
-| Python | pytest | Python testing / integration testing |
-
-### 5.2 Code Coverage Tools
+The core test system relies on a minimal set of standard build tools.
 
 | Tool | Purpose |
 |------|---------|
-| gcov | GCC coverage statistics |
-| lcov | Generate HTML coverage reports |
-| gcovr | Generate XML/JSON coverage reports |
+| `make` | The primary test runner and build orchestrator. |
+| `gcc` | Compiles the source code and test executables. |
+| `ar` | Creates the static libraries for each module. |
+| Internal C Macros | A simple, custom `TEST_ASSERT` macro within each test file is used for assertions. |
 
-### 5.3 Static Code Analysis Tools
+### 5.2 Aspirational Toolchain
 
-| Tool | Purpose |
-|------|---------|
-| cppcheck | C/C++ static analysis |
-| clang-analyzer | Clang static analysis |
-| Coverity | Advanced static analysis (optional) |
-
-### 5.4 Performance Test Tools
+_The following tools are listed in project planning documents but are **not** currently integrated into the automated `make test` flow. They represent future goals for improving the test infrastructure._
 
 | Tool | Purpose |
 |------|---------|
-| fio | IO performance benchmarking |
-| nvme-cli | NVMe management and testing |
-| perf | Linux performance analysis |
-| trace-cmd | Trace analysis |
-
-### 5.5 CI/CD Tools
-
-| Tool | Purpose |
-|------|---------|
-| Jenkins | CI/CD pipeline |
-| GitLab CI | CI/CD pipeline (if using GitLab) |
-| GitHub Actions | CI/CD pipeline (if using GitHub) |
+| CUnit/GTest | Standardized unit test frameworks. |
+| gcov/lcov | Code coverage reporting. |
+| cppcheck/clang-analyzer | Static analysis tools. |
+| fio/perf | Performance and I/O benchmarking tools. |
+| Jenkins/GitHub Actions | Continuous Integration (CI/CD) pipelines. |
 
 ---
 
