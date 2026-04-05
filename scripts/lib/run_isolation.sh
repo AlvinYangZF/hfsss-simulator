@@ -89,7 +89,9 @@ EOF
 #
 # This is a real improvement over hardcoded 10809/2222 (which guaranteed
 # collision under concurrency), but callers still need to handle bind
-# failure — see hfsss_run_alloc_port_retry for a retry wrapper.
+# failure. See scripts/coverage/run_e2e_coverage.sh (start_nbd_with_retry)
+# for the recommended retry pattern: allocate → start service → if it dies
+# within 2s, reallocate and retry up to N times.
 #
 # Usage: hfsss_run_alloc_port <var_name>
 #        sets $var_name to an available port (at the time of call)

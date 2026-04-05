@@ -165,7 +165,12 @@ bash "$ROOT/scripts/fio_verify_suite.sh" "$COV_SSH_PORT" /dev/nvme0n1 || {
 
 echo "Shutting down..."
 hfsss_run_cleanup
-trap - EXIT INT TERM
+# Runtime cleanup is done, but lcov/genhtml still need to run. Replace the
+# trap with a lock-only release so: (a) if lcov/genhtml fails, the lock is
+# still released; (b) on normal exit, the trap fires and releases the lock.
+# This is what closes the "stale lock left on success" path that earlier
+# relied on dead-PID reclamation.
+trap 'release_coverage_lock' EXIT INT TERM
 sleep 1
 
 echo "========================================"
