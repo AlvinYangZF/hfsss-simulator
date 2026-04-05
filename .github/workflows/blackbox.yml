@@ -56,7 +56,7 @@ on:
         required: false
         default: "mt"
       case_filter:
-        description: "Substring filter on case name (e.g. 001_nvme_cli_smoke). Empty = all nvme-cli cases."
+        description: "Substring filter on case name (e.g. 001_nvme_cli_smoke). Empty = default PR smoke bundle."
         required: false
         default: ""
 
@@ -111,10 +111,16 @@ jobs:
           FILTER="${{ github.event.inputs.case_filter }}"
           CASES=()
           if [ -z "$FILTER" ]; then
-            # Default smoke subset: all nvme-cli cases (fast, no perf load)
-            while IFS= read -r c; do
-              CASES+=("$(basename "$c")")
-            done < <(ls scripts/qemu_blackbox/cases/nvme/*.sh)
+            # Default PR smoke subset:
+            #   - lightweight nvme-cli admin / identify checks
+            #   - two GB-scale fio verify cases to cover real read/write data paths
+            CASES=(
+              "001_nvme_cli_smoke.sh"
+              "002_nvme_namespace_info.sh"
+              "003_nvme_flush_smoke.sh"
+              "020_fio_pr_smoke_seqwrite_verify.sh"
+              "021_fio_pr_smoke_randwrite_verify.sh"
+            )
           else
             # Filter mode: include only cases whose name contains FILTER
             while IFS= read -r c; do
