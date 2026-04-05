@@ -17,6 +17,34 @@ HFSSS is a high-fidelity SSD simulator written in C that models a complete SSD s
 
 ---
 
+## Host Interface Backends
+
+While the core simulator is a self-contained library, it exposes its functionality to the outside world (e.g., QEMU) via two primary host interface backends. These backends act as servers, translating standard block protocols into calls to the simulator's internal `nvme_uspace` API.
+
+```
+┌──────────────────┐   (Unix Socket)   ┌───────────────────┐
+│  QEMU via        ├───────────────────►  hfsss-vhost-blk  │
+│ vhost-user-blk-pci │                   │ (vhost_user_blk.c)│
+└──────────────────┘                   └────────┬──────────┘
+                                                  │
+┌──────────────────┐   (TCP Socket)    ┌───────────────────┐
+│  QEMU via NBD    ├───────────────────►  hfsss-nbd-server │
+└──────────────────┘                   │ (hfsss_nbd_server.c)│
+                                         └────────┬──────────┘
+                                                  │
+                               ┌──────────────────▼──────────────────┐
+                               │      nvme_uspace_dev Interface      │
+                               │ (read, write, flush, trim)          │
+                               └──────────────────┬──────────────────┘
+                                                  │
+                               ┌──────────────────▼──────────────────┐
+                               │         Core SSD Simulator          │
+                               │ (FTL, HAL, Media)                   │
+                               └─────────────────────────────────────┘
+```
+
+---
+
 ## Actual Implemented Architecture
 
 ```
@@ -108,6 +136,18 @@ Utility modules used by all other layers:
 - **Message Queue**: Thread-safe queue for inter-component communication
 - **Semaphore**: Counting semaphore implementation
 - **Mutex**: Recursive mutex implementation
+
+### 6. Vhost-user Backend (`src/vhost/hfsss_vhost_main.c`)
+Exposes the simulator as a `vhost-user-blk` device over a Unix socket, designed for high-performance integration with QEMU.
+- **Protocol**: Implemented by linking against an external system library (from QEMU or DPDK development packages).
+- **Architecture**: Runs as a separate backend process. QEMU connects as a client using a standard `vhost-user-blk-pci` device.
+- **Performance**: Enables zero-copy data transfers between the QEMU guest and the simulator, providing high throughput and low latency.
+
+### 7. NBD Backend (`src/vhost/hfsss_nbd_server.c`)
+Exposes the simulator as a standard Network Block Device (NBD) over a TCP socket.
+- **Protocol**: A self-contained, from-scratch implementation of the NBD "new-style" handshake and command protocol.
+- **Architecture**: Runs as a single-threaded, iterative server that handles one client at a time.
+- **Features**: Supports read, write, flush, and trim operations. Includes logic to handle unaligned I/O requests via a read-modify-write process. Can leverage the FTL's multi-threaded I/O submission path.
 
 ---
 
