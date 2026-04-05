@@ -442,7 +442,7 @@ stress-long: all
 
 # System-level tests (Tier 1)
 .PHONY: systest
-systest: all
+systest: $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB)
 	@echo "========================================"
 	@echo "Running system-level tests..."
 	@echo "========================================"
