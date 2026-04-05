@@ -132,7 +132,9 @@ HFSSS_NBD = $(BIN_DIR)/hfsss-nbd-server
 TEST_VHOST = $(BIN_DIR)/test_vhost_proto
 
 # Targets
-.PHONY: all clean directories test systest stress-long help coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage coverage-selftest
+.PHONY: all clean directories test systest stress-long help \
+	coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage coverage-selftest \
+	qemu-blackbox qemu-blackbox-list qemu-blackbox-ci qemu-blackbox-soak
 
 all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_VHOST) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_VHOST) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT)
 	@echo "========================================"
@@ -548,10 +550,19 @@ help:
 	@echo "  coverage-selftest  - Run all 5 coverage infra self-tests"
 	@echo "  coverage-clean     - Clean build-cov/ + remove stale .gcda files"
 	@echo ""
+	@echo "QEMU black-box targets:"
+	@echo "  qemu-blackbox-list - List guest-visible QEMU/NVMe black-box cases"
+	@echo "  qemu-blackbox      - Run the QEMU/NVMe black-box suite"
+	@echo "  qemu-blackbox-ci   - Run the black-box suite with stable CI artifact paths"
+	@echo "  qemu-blackbox-soak - Run repeated black-box rounds in one isolated env"
+	@echo ""
 	@echo "Examples:"
 	@echo "  make all           - Build everything"
 	@echo "  make test          - Build and run tests"
 	@echo "  make coverage-ut   - Build instrumented + run UT + open build-cov/coverage/ut/index.html"
+	@echo "  make qemu-blackbox BLACKBOX_ARGS=\"--guest-dir /path/to/guest --case 001_nvme_cli_smoke.sh\""
+	@echo "  make qemu-blackbox-ci BLACKBOX_ARGS=\"--guest-dir /path/to/guest --skip-build\""
+	@echo "  make qemu-blackbox-soak BLACKBOX_ARGS=\"--guest-dir /path/to/guest --rounds 10\""
 	@echo "  make clean         - Clean up"
 
 # Coverage targets
@@ -584,3 +595,15 @@ coverage-selftest: coverage-ut coverage-e2e
 	@bash scripts/coverage/tests/test_merge.sh
 	@bash scripts/coverage/tests/test_ratchet.sh
 	@echo "All coverage self-tests passed!"
+
+qemu-blackbox-list:
+	@./scripts/run_qemu_blackbox_tests.sh --list
+
+qemu-blackbox:
+	@./scripts/run_qemu_blackbox_tests.sh $(BLACKBOX_ARGS)
+
+qemu-blackbox-ci:
+	@./scripts/run_qemu_blackbox_ci.sh $(BLACKBOX_ARGS)
+
+qemu-blackbox-soak:
+	@./scripts/run_qemu_blackbox_soak.sh $(BLACKBOX_ARGS)

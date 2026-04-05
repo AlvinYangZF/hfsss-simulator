@@ -290,6 +290,18 @@ update workflow, full scope details, and troubleshooting.
 
 The simulator can be exposed as a real `/dev/nvme0n1` block device inside a QEMU virtual machine. **Every I/O goes through the full simulator FTL/NAND stack** — this is not a static disk image, but the live simulator processing each read, write, trim, and flush.
 
+### QEMU Black-Box Soak
+
+The repository includes reusable guest-visible black-box runners for `nvme-cli` and `fio`:
+
+```bash
+make qemu-blackbox-list
+make qemu-blackbox BLACKBOX_ARGS="--guest-dir /path/to/guest --case nvme/001_nvme_cli_smoke.sh"
+make qemu-blackbox-soak BLACKBOX_ARGS="--guest-dir /path/to/guest --rounds 10 --nbd-port 10840 --ssh-port 10040"
+```
+
+The soak runner starts one isolated `QEMU + hfsss-nbd-server` environment, reuses it across rounds, and stores per-round artifacts under `build/blackbox-tests/...` so intermittent end-to-end failures can be diagnosed after the run.
+
 ### Architecture
 
 ```
@@ -436,6 +448,23 @@ cp guest/ovmf_vars.fd guest/ovmf_vars-saved.fd
 ```
 
 The `start_nvme_test.sh` script uses `snapshot=on` so the base image stays clean between runs.
+
+### Extensible Guest Black-Box Test Runner
+
+For repeatable guest-visible NVMe regression testing, use the black-box runner:
+
+```bash
+./scripts/run_qemu_blackbox_tests.sh --list
+./scripts/run_qemu_blackbox_tests.sh --guest-dir /path/to/guest --mode mt
+./scripts/run_qemu_blackbox_tests.sh --guest-dir /path/to/guest --case nvme/001_nvme_cli_smoke.sh
+./scripts/run_qemu_blackbox_ci.sh --guest-dir /path/to/guest --skip-build
+```
+
+This framework starts `hfsss-nbd-server`, boots QEMU, runs discovered guest-side test cases, and stores per-case artifacts under `build/blackbox-tests/`.
+
+If the default test ports are busy because other environments are running, the runner will automatically choose the next free ports and record the resolved values in `environment.txt` inside the suite artifact directory.
+
+See [docs/QEMU_BLACKBOX_TESTING.md](docs/QEMU_BLACKBOX_TESTING.md) for the framework layout and how to add new `nvme-cli`, `fio`, or future `SPDK` cases.
 
 ## CI/CD
 
