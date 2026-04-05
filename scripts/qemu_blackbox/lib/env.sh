@@ -7,6 +7,11 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$LIB_DIR/common.sh"
 
 hfsss_blackbox_init_defaults() {
+    local host_os host_arch
+
+    host_os="$(uname -s)"
+    host_arch="$(uname -m)"
+
     HFSSS_PROJECT_DIR="${HFSSS_PROJECT_DIR:-$(cd "$LIB_DIR/../../.." && pwd)}"
     HFSSS_BLACKBOX_ROOT="${HFSSS_BLACKBOX_ROOT:-$(cd "$LIB_DIR/.." && pwd)}"
     HFSSS_NBD_PORT="${HFSSS_NBD_PORT:-10820}"
@@ -20,6 +25,23 @@ hfsss_blackbox_init_defaults() {
     HFSSS_SSH_KEY="${HFSSS_SSH_KEY:-/tmp/hfsss_qemu_key}"
     HFSSS_ARTIFACT_ROOT="${HFSSS_ARTIFACT_ROOT:-$HFSSS_PROJECT_DIR/build/blackbox-tests/$(hfsss_timestamp)}"
     HFSSS_QEMU_CODE_FD="${HFSSS_QEMU_CODE_FD:-/opt/homebrew/share/qemu/edk2-aarch64-code.fd}"
+    HFSSS_QEMU_BIN="${HFSSS_QEMU_BIN:-qemu-system-aarch64}"
+    HFSSS_QEMU_MACHINE="${HFSSS_QEMU_MACHINE:-virt,gic-version=3}"
+    if [ -z "${HFSSS_QEMU_ACCEL+x}" ]; then
+        if [ "$host_os" = "Darwin" ] && [ "$host_arch" = "arm64" ]; then
+            HFSSS_QEMU_ACCEL="hvf"
+        else
+            HFSSS_QEMU_ACCEL="tcg"
+        fi
+    fi
+    if [ -z "${HFSSS_QEMU_CPU+x}" ]; then
+        if [ "$HFSSS_QEMU_ACCEL" = "hvf" ] && [ "$host_os" = "Darwin" ] && [ "$host_arch" = "arm64" ]; then
+            HFSSS_QEMU_CPU="host"
+        else
+            HFSSS_QEMU_CPU="max"
+        fi
+    fi
+    HFSSS_CASE_TIMEOUT_S="${HFSSS_CASE_TIMEOUT_S:-300}"
     HFSSS_GUEST_DIR="${HFSSS_GUEST_DIR:-}"
     HFSSS_BUILD_NBD="${HFSSS_BUILD_NBD:-0}"
     HFSSS_KEEP_ENV="${HFSSS_KEEP_ENV:-0}"
@@ -70,14 +92,23 @@ hfsss_blackbox_prepare_dirs() {
 
 hfsss_blackbox_write_manifest() {
     local manifest="$HFSSS_ARTIFACT_ROOT/environment.txt"
+    local git_sha="unknown"
+
+    git_sha="$(git -C "$HFSSS_PROJECT_DIR" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 
     {
         printf 'nbd_port=%s\n' "$HFSSS_NBD_PORT"
         printf 'ssh_port=%s\n' "$HFSSS_SSH_PORT"
         printf 'nbd_mode=%s\n' "$HFSSS_NBD_MODE"
         printf 'nbd_size_mb=%s\n' "$HFSSS_NBD_SIZE_MB"
+        printf 'case_timeout_s=%s\n' "$HFSSS_CASE_TIMEOUT_S"
         printf 'guest_nvme_dev=%s\n' "$HFSSS_GUEST_NVME_DEV"
         printf 'guest_nvme_ctrl=%s\n' "$HFSSS_GUEST_NVME_CTRL"
+        printf 'qemu_bin=%s\n' "$HFSSS_QEMU_BIN"
+        printf 'qemu_machine=%s\n' "$HFSSS_QEMU_MACHINE"
+        printf 'qemu_accel=%s\n' "$HFSSS_QEMU_ACCEL"
+        printf 'qemu_cpu=%s\n' "$HFSSS_QEMU_CPU"
+        printf 'git_sha=%s\n' "$git_sha"
         printf 'artifacts_dir=%s\n' "$HFSSS_ARTIFACT_ROOT"
         if [ -n "${HFSSS_NBD_PID:-}" ]; then
             printf 'nbd_pid=%s\n' "$HFSSS_NBD_PID"
@@ -221,11 +252,18 @@ hfsss_guest_has_tool() {
 
 hfsss_guest_wait_for_ssh() {
     local attempts="${1:-90}"
+    local required_successes="${2:-3}"
     local i
+    local successes=0
 
     for i in $(seq 1 "$attempts"); do
         if hfsss_guest_run "true" >/dev/null 2>&1; then
-            return 0
+            successes=$((successes + 1))
+            if [ "$successes" -ge "$required_successes" ]; then
+                return 0
+            fi
+        else
+            successes=0
         fi
         sleep 1
     done
@@ -237,14 +275,21 @@ hfsss_blackbox_wait_for_guest_ready() {
     local qemu_pid="$1"
     local attempts="${2:-90}"
     local i
+    local successes=0
 
     for i in $(seq 1 "$attempts"); do
         if ! kill -0 "$qemu_pid" 2>/dev/null; then
             hfsss_die "QEMU exited early; see $HFSSS_ARTIFACT_ROOT/qemu-launch.log and $HFSSS_QEMU_CONSOLE_LOG"
         fi
 
-        if hfsss_guest_run "true" >/dev/null 2>&1; then
-            return 0
+        if hfsss_guest_run "true" >/dev/null 2>&1 && \
+           hfsss_guest_run "test -b $HFSSS_GUEST_NVME_DEV" >/dev/null 2>&1; then
+            successes=$((successes + 1))
+            if [ "$successes" -ge 3 ]; then
+                return 0
+            fi
+        else
+            successes=0
         fi
 
         sleep 1
@@ -266,7 +311,7 @@ hfsss_blackbox_start_env() {
     local nbd_flag
     local ovmf_run="$HFSSS_ARTIFACT_ROOT/ovmf_vars-run.fd"
 
-    hfsss_require_cmd qemu-system-aarch64 ssh lsof make
+    hfsss_require_cmd "$HFSSS_QEMU_BIN" ssh lsof make
     hfsss_blackbox_resolve_guest_dir
     hfsss_blackbox_validate_guest_assets
     hfsss_blackbox_prepare_dirs
@@ -289,14 +334,14 @@ hfsss_blackbox_start_env() {
     hfsss_blackbox_wait_for_nbd_ready "$HFSSS_NBD_PID" "$HFSSS_NBD_LOG" "$HFSSS_NBD_PORT" 30
 
     hfsss_log "starting QEMU guest"
-    qemu-system-aarch64 \
-        -M virt,gic-version=3 -accel hvf -cpu host \
+    "$HFSSS_QEMU_BIN" \
+        -M "$HFSSS_QEMU_MACHINE" -accel "$HFSSS_QEMU_ACCEL" -cpu "$HFSSS_QEMU_CPU" \
         -m "$HFSSS_QEMU_MEM" -smp "$HFSSS_QEMU_SMP" \
         -drive if=pflash,format=raw,file="$HFSSS_QEMU_CODE_FD",readonly=on \
         -drive if=pflash,format=raw,file="$ovmf_run" \
         -drive file="$HFSSS_GUEST_DIR/alpine-hfsss.qcow2",if=virtio,format=qcow2,snapshot=on \
         -drive file="$HFSSS_GUEST_DIR/cidata.iso",if=virtio,media=cdrom \
-        -drive "driver=nbd,server.type=inet,server.host=127.0.0.1,server.port=$HFSSS_NBD_PORT,if=none,id=nvm0" \
+        -drive "driver=nbd,server.type=inet,server.host=127.0.0.1,server.port=$HFSSS_NBD_PORT,if=none,id=nvm0,discard=unmap" \
         -device nvme,serial=HFSSS0001,drive=nvm0 \
         -netdev "user,id=net0,hostfwd=tcp::${HFSSS_SSH_PORT}-:22" \
         -device virtio-net-pci,netdev=net0 \
@@ -313,7 +358,7 @@ hfsss_blackbox_start_env() {
 hfsss_blackbox_verify_existing_env() {
     hfsss_require_cmd ssh
     hfsss_blackbox_prepare_ssh_key
-    hfsss_guest_wait_for_ssh 10 || hfsss_die "existing guest is not reachable over SSH"
+    hfsss_guest_wait_for_ssh 10 3 || hfsss_die "existing guest is not reachable over SSH"
     hfsss_guest_run "test -b $HFSSS_GUEST_NVME_DEV" >/dev/null \
         || hfsss_die "guest block device not found: $HFSSS_GUEST_NVME_DEV"
 }

@@ -10,6 +10,9 @@ It is designed to expand guest-side validation without changing the simulator da
 - per-case artifact capture
 - case discovery by file name
 - reusable guest helpers for `nvme-cli`, `fio`, and future `SPDK` tools
+- stable result files for local CI/nightly wrappers
+
+The default QEMU runtime is tuned for Apple Silicon macOS. For Linux or other local environments, override `HFSSS_QEMU_BIN`, `HFSSS_QEMU_ACCEL`, and `HFSSS_QEMU_CPU`.
 
 ## Entry Points
 
@@ -130,6 +133,7 @@ Helpers are exposed by `scripts/qemu_blackbox/lib/case.sh`:
 - `hfsss_case_require_guest_tool`
 - `hfsss_case_guest_run`
 - `hfsss_case_run_fio_json`
+- `hfsss_case_assert_file_contains`
 - `hfsss_case_skip`
 
 ## Adding a New Case

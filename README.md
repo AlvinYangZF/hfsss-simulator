@@ -393,7 +393,7 @@ qemu-system-aarch64 \
     -drive if=pflash,format=raw,file=guest/ovmf_vars.fd \
     -drive file=guest/alpine-hfsss.qcow2,if=virtio,format=qcow2,snapshot=on \
     -drive file=guest/cidata.iso,if=virtio,media=cdrom \
-    -drive "driver=nbd,server.type=inet,server.host=127.0.0.1,server.port=10809,if=none,id=nvm0" \
+    -drive "driver=nbd,server.type=inet,server.host=127.0.0.1,server.port=10809,if=none,id=nvm0,discard=unmap" \
     -device nvme,serial=HFSSS0001,drive=nvm0 \
     -netdev user,id=net0,hostfwd=tcp::2222-:22 \
     -device virtio-net-pci,netdev=net0 \
@@ -461,6 +461,8 @@ For repeatable guest-visible NVMe regression testing, use the black-box runner:
 ```
 
 This framework starts `hfsss-nbd-server`, boots QEMU, runs discovered guest-side test cases, and stores per-case artifacts under `build/blackbox-tests/`.
+
+The default QEMU runtime is tuned for Apple Silicon macOS. For Linux or other local environments, override `HFSSS_QEMU_BIN`, `HFSSS_QEMU_ACCEL`, and `HFSSS_QEMU_CPU` instead of editing the cases.
 
 If the default test ports are busy because other environments are running, the runner will automatically choose the next free ports and record the resolved values in `environment.txt` inside the suite artifact directory.
 

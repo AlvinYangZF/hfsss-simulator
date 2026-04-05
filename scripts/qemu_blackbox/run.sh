@@ -183,11 +183,12 @@ for case_path in "${CASE_PATHS[@]}"; do
     export HFSSS_GUEST_NVME_DEV
     export HFSSS_GUEST_NVME_CTRL
     export HFSSS_ARTIFACT_ROOT
+    export HFSSS_CASE_TIMEOUT_S
 
     hfsss_log "running $case_name"
     hfsss_guest_run "dmesg -C || true" >/dev/null 2>&1 || true
 
-    if "$case_path" >"$case_dir/case.stdout.log" 2>"$case_dir/case.stderr.log"; then
+    if hfsss_run_with_timeout "$HFSSS_CASE_TIMEOUT_S" "$case_path" >"$case_dir/case.stdout.log" 2>"$case_dir/case.stderr.log"; then
         status="PASS"
         PASS=$((PASS + 1))
     else
@@ -195,6 +196,10 @@ for case_path in "${CASE_PATHS[@]}"; do
         if [ "$rc" -eq 2 ]; then
             status="SKIP"
             SKIP=$((SKIP + 1))
+        elif [ "$rc" -eq 124 ]; then
+            printf '[hfsss-blackbox] ERROR: case timed out after %ss\n' "$HFSSS_CASE_TIMEOUT_S" >>"$case_dir/case.stderr.log"
+            status="FAIL"
+            FAIL=$((FAIL + 1))
         else
             status="FAIL"
             FAIL=$((FAIL + 1))
