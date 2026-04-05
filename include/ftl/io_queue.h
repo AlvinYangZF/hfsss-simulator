@@ -18,12 +18,18 @@ struct io_request {
     u64            lba;
     u32            count;       /* Number of pages */
     u8            *data;        /* Pointer to caller buffer */
+    u32            lba_stride;  /* LBA delta between pages in this request */
+    u32            data_stride; /* Buffer delta between pages in this request */
+    u32            data_offset; /* Offset within the parent request buffer */
+    u32            byte_len;    /* Bytes covered by this sub-request */
     u64            nbd_handle;  /* Echoed back in completion */
 };
 
 /* I/O completion — returned from FTL worker to dispatch */
 struct io_completion {
     u64  nbd_handle;
+    u32  data_offset;
+    u32  byte_len;
     int  status;
 };
 

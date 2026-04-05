@@ -87,22 +87,24 @@ static int test_eat(void)
     TEST_ASSERT(eat_get_for_chip(&ctx, 0, 0) == 0, "initial chip EAT should be 0");
     TEST_ASSERT(eat_get_for_die(&ctx, 0, 0, 0) == 0, "initial die EAT should be 0");
     TEST_ASSERT(eat_get_for_plane(&ctx, 0, 0, 0, 0) == 0, "initial plane EAT should be 0");
-    TEST_ASSERT(eat_get_max(&ctx, 0, 0, 0, 0) == 0, "initial max EAT should be 0");
+    TEST_ASSERT(eat_get_max(&ctx, OP_PROGRAM, 0, 0, 0, 0) == 0, "initial max EAT should be 0");
 
     /* Update EAT */
-    eat_update(&ctx, 0, 0, 0, 0, 1000000);
-    u64 max_eat = eat_get_max(&ctx, 0, 0, 0, 0);
+    eat_update(&ctx, OP_PROGRAM, 0, 0, 0, 0, 1000000);
+    u64 max_eat = eat_get_max(&ctx, OP_PROGRAM, 0, 0, 0, 0);
     TEST_ASSERT(max_eat > 0, "EAT should be updated");
 
-    /* All levels should have been updated */
-    TEST_ASSERT(eat_get_for_channel(&ctx, 0) == max_eat, "channel EAT should match");
+    /* Program operations should serialize the target chip/die/plane, but
+     * should not hold the entire channel busy for the full tPROG interval.
+     */
+    TEST_ASSERT(eat_get_for_channel(&ctx, 0) == 0, "channel EAT should remain free for program");
     TEST_ASSERT(eat_get_for_chip(&ctx, 0, 0) == max_eat, "chip EAT should match");
     TEST_ASSERT(eat_get_for_die(&ctx, 0, 0, 0) == max_eat, "die EAT should match");
     TEST_ASSERT(eat_get_for_plane(&ctx, 0, 0, 0, 0) == max_eat, "plane EAT should match");
 
     /* Reset EAT */
     eat_reset(&ctx);
-    TEST_ASSERT(eat_get_max(&ctx, 0, 0, 0, 0) == 0, "EAT should be 0 after reset");
+    TEST_ASSERT(eat_get_max(&ctx, OP_PROGRAM, 0, 0, 0, 0) == 0, "EAT should be 0 after reset");
 
     eat_ctx_cleanup(&ctx);
 

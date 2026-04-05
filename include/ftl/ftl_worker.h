@@ -7,7 +7,10 @@
 #include "ftl/io_queue.h"
 #include <pthread.h>
 
-#define FTL_NUM_WORKERS 4
+/* Match the default 4-channel / 2-plane geometry so aligned sequential I/O
+ * can fan out across channel+plane targets instead of only channel targets.
+ */
+#define FTL_NUM_WORKERS 8
 
 /* FTL Worker Context — one per worker thread */
 struct ftl_worker {

@@ -45,29 +45,35 @@ static void *ftl_worker_main(void *arg)
         switch (req.opcode) {
         case IO_OP_READ: {
             u32 page_size = w->ftl->config.page_size;
+            u32 lba_step = req.lba_stride ? req.lba_stride : 1;
+            u32 data_step = req.data_stride ? req.data_stride : page_size;
             u8 *ptr = req.data;
             for (u32 i = 0; i < req.count; i++) {
                 rc = ftl_read_page_mt(w->ftl, w->taa,
-                                      req.lba + i, ptr);
+                                      req.lba + (u64)i * lba_step, ptr);
                 if (rc != HFSSS_OK) break;
-                ptr += page_size;
+                ptr += data_step;
             }
             break;
         }
         case IO_OP_WRITE: {
             u32 page_size = w->ftl->config.page_size;
+            u32 lba_step = req.lba_stride ? req.lba_stride : 1;
+            u32 data_step = req.data_stride ? req.data_stride : page_size;
             const u8 *ptr = req.data;
             for (u32 i = 0; i < req.count; i++) {
                 rc = ftl_write_page_mt(w->ftl, w->taa,
-                                       req.lba + i, ptr);
+                                       req.lba + (u64)i * lba_step, ptr);
                 if (rc != HFSSS_OK) break;
-                ptr += page_size;
+                ptr += data_step;
             }
             break;
         }
         case IO_OP_TRIM: {
+            u32 lba_step = req.lba_stride ? req.lba_stride : 1;
             for (u32 i = 0; i < req.count; i++) {
-                rc = ftl_trim_page_mt(w->ftl, w->taa, req.lba + i);
+                rc = ftl_trim_page_mt(w->ftl, w->taa,
+                                      req.lba + (u64)i * lba_step);
                 if (rc != HFSSS_OK) break;
             }
             break;
@@ -81,6 +87,8 @@ static void *ftl_worker_main(void *arg)
         }
 
         cpl.nbd_handle = req.nbd_handle;
+        cpl.data_offset = req.data_offset;
+        cpl.byte_len = req.byte_len;
         cpl.status = rc;
         w->ops_completed++;
         if (rc != HFSSS_OK) w->ops_failed++;

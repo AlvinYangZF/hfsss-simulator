@@ -58,17 +58,43 @@ static void sb_list_add_head(struct block_desc **list, struct block_desc *block)
     *list = block;
 }
 
+static struct block_free_shard *sb_get_free_shard(struct block_mgr *mgr,
+                                                  u32 channel, u32 plane)
+{
+    u32 idx;
+
+    if (!mgr || !mgr->free_shards) {
+        return NULL;
+    }
+    if (channel >= mgr->channel_count || plane >= mgr->planes_per_die) {
+        return NULL;
+    }
+
+    idx = channel * mgr->planes_per_die + plane;
+    if (idx >= mgr->free_shard_count) {
+        return NULL;
+    }
+
+    return &mgr->free_shards[idx];
+}
+
 /* Rebuild free / open / closed lists from block state after recovery. */
 static void sb_rebuild_block_lists(struct block_mgr *mgr)
 {
     u64 i;
+    u32 shard_idx;
 
     mgr->free_list   = NULL;
     mgr->open_list   = NULL;
     mgr->closed_list = NULL;
-    mgr->free_blocks   = 0;
-    mgr->open_blocks   = 0;
-    mgr->closed_blocks = 0;
+    atomic_store_explicit(&mgr->free_blocks, 0, memory_order_relaxed);
+    atomic_store_explicit(&mgr->open_blocks, 0, memory_order_relaxed);
+    atomic_store_explicit(&mgr->closed_blocks, 0, memory_order_relaxed);
+    for (shard_idx = 0; shard_idx < mgr->free_shard_count; shard_idx++) {
+        mgr->free_shards[shard_idx].free_list = NULL;
+        atomic_store_explicit(&mgr->free_shards[shard_idx].free_blocks,
+                              0, memory_order_relaxed);
+    }
 
     for (i = 0; i < mgr->total_blocks; i++) {
         struct block_desc *bd = &mgr->blocks[i];
@@ -77,16 +103,25 @@ static void sb_rebuild_block_lists(struct block_mgr *mgr)
 
         switch (bd->state) {
         case FTL_BLOCK_FREE:
-            sb_list_add_head(&mgr->free_list, bd);
-            mgr->free_blocks++;
+        {
+            struct block_free_shard *shard =
+                sb_get_free_shard(mgr, bd->channel, bd->plane);
+            if (!shard) {
+                continue;
+            }
+            sb_list_add_head(&shard->free_list, bd);
+            atomic_fetch_add_explicit(&shard->free_blocks, 1,
+                                      memory_order_relaxed);
+            atomic_fetch_add_explicit(&mgr->free_blocks, 1, memory_order_relaxed);
             break;
+        }
         case FTL_BLOCK_OPEN:
             sb_list_add_head(&mgr->open_list, bd);
-            mgr->open_blocks++;
+            atomic_fetch_add_explicit(&mgr->open_blocks, 1, memory_order_relaxed);
             break;
         case FTL_BLOCK_CLOSED:
             sb_list_add_head(&mgr->closed_list, bd);
-            mgr->closed_blocks++;
+            atomic_fetch_add_explicit(&mgr->closed_blocks, 1, memory_order_relaxed);
             break;
         default:
             /* RESERVED, BAD, GC — not on any list */
@@ -730,8 +765,8 @@ int sb_recover(struct superblock_ctx *sb, struct mapping_ctx *mapping,
     for (i = 0; i < mgr->total_blocks; i++) {
         struct block_desc *bd = &mgr->blocks[i];
         if (bd->state != FTL_BLOCK_RESERVED && bd->state != FTL_BLOCK_BAD) {
-            bd->valid_page_count   = 0;
-            bd->invalid_page_count = 0;
+            atomic_store_explicit(&bd->valid_page_count, 0, memory_order_relaxed);
+            atomic_store_explicit(&bd->invalid_page_count, 0, memory_order_relaxed);
         }
     }
 
@@ -743,7 +778,8 @@ int sb_recover(struct superblock_ctx *sb, struct mapping_ctx *mapping,
                 mgr, ppn.bits.channel, ppn.bits.chip, ppn.bits.die,
                 ppn.bits.plane, ppn.bits.block);
             if (bd) {
-                bd->valid_page_count++;
+                atomic_fetch_add_explicit(&bd->valid_page_count, 1,
+                                          memory_order_relaxed);
             }
         }
     }
@@ -754,7 +790,7 @@ int sb_recover(struct superblock_ctx *sb, struct mapping_ctx *mapping,
         if (bd->state == FTL_BLOCK_RESERVED || bd->state == FTL_BLOCK_BAD) {
             continue;
         }
-        if (bd->valid_page_count > 0) {
+        if (atomic_load_explicit(&bd->valid_page_count, memory_order_relaxed) > 0) {
             bd->state = FTL_BLOCK_CLOSED;
         } else {
             bd->state = FTL_BLOCK_FREE;

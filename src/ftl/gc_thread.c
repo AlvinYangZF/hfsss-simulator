@@ -12,7 +12,8 @@ void *gc_thread_main(void *arg)
         /* Wait for signal from FTL workers or periodic timeout */
         pthread_mutex_lock(&mt->gc_mutex);
         while (mt->gc_running &&
-               !gc_should_trigger(&ftl->gc, ftl->block_mgr.free_blocks)) {
+               !gc_should_trigger(&ftl->gc,
+                                  block_get_free_count(&ftl->block_mgr))) {
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
             ts.tv_sec += 1;  /* Check every 1 second even without signal */

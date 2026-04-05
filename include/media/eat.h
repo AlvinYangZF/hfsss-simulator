@@ -30,8 +30,10 @@ u64 eat_get_for_plane(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane)
 u64 eat_get_for_die(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die);
 u64 eat_get_for_chip(struct eat_ctx *ctx, u32 ch, u32 chip);
 u64 eat_get_for_channel(struct eat_ctx *ctx, u32 ch);
-u64 eat_get_max(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane);
-void eat_update(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u64 duration);
+u64 eat_get_max(struct eat_ctx *ctx, enum op_type op,
+                u32 ch, u32 chip, u32 die, u32 plane);
+void eat_update(struct eat_ctx *ctx, enum op_type op,
+                u32 ch, u32 chip, u32 die, u32 plane, u64 duration);
 void eat_reset(struct eat_ctx *ctx);
 
 #endif /* __HFSSS_EAT_H */

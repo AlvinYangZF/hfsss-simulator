@@ -10,6 +10,7 @@
 #include <sched.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -62,6 +63,10 @@ struct inflight_slot *inflight_alloc(struct inflight_pool *pool)
         int expected = SLOT_FREE;
         if (atomic_compare_exchange_strong(&pool->slots[idx].state,
                                             &expected, SLOT_SUBMITTED)) {
+            atomic_store(&pool->slots[idx].pending_reqs, 0);
+            pool->slots[idx].total_reqs = 0;
+            pool->slots[idx].completion_status = HFSSS_OK;
+            pool->slots[idx].status = HFSSS_OK;
             atomic_fetch_add(&pool->in_use, 1);
             return &pool->slots[idx];
         }
@@ -112,6 +117,30 @@ static int send_exact(int fd, const void *buf, size_t len)
     return 0;
 }
 
+static int send_iov_exact(int fd, struct iovec *iov, int iovcnt)
+{
+    while (iovcnt > 0) {
+        ssize_t n = writev(fd, iov, iovcnt);
+        if (n <= 0) {
+            return -1;
+        }
+
+        size_t written = (size_t)n;
+        while (iovcnt > 0 && written >= iov[0].iov_len) {
+            written -= iov[0].iov_len;
+            iov++;
+            iovcnt--;
+        }
+
+        if (iovcnt > 0 && written > 0) {
+            iov[0].iov_base = (uint8_t *)iov[0].iov_base + written;
+            iov[0].iov_len -= written;
+        }
+    }
+
+    return 0;
+}
+
 /* -----------------------------------------------------------------------
  * NBD protocol helpers
  * ----------------------------------------------------------------------- */
@@ -158,6 +187,41 @@ static int send_nbd_reply(int fd, uint64_t handle, uint32_t error)
     return send_exact(fd, &rep, sizeof(rep));
 }
 
+#define NBD_CQ_BATCH_MAX 16
+
+static bool nbd_async_is_aligned_page_io(uint16_t cmd, uint32_t byte_off,
+                                         uint32_t length, uint32_t count,
+                                         uint32_t lba_size)
+{
+    if (cmd != NBD_CMD_READ && cmd != NBD_CMD_WRITE && cmd != NBD_CMD_TRIM) {
+        return false;
+    }
+
+    return byte_off == 0 && length == count * lba_size;
+}
+
+static void nbd_async_init_slot(struct inflight_slot *slot, uint64_t handle,
+                                uint16_t cmd, uint32_t byte_off,
+                                uint32_t length, uint32_t total_reqs)
+{
+    slot->nbd_handle = handle;
+    slot->nbd_cmd = cmd;
+    slot->byte_off = byte_off;
+    slot->length = length;
+    slot->total_reqs = total_reqs;
+    slot->completion_status = HFSSS_OK;
+    slot->status = HFSSS_OK;
+    atomic_store(&slot->pending_reqs, total_reqs);
+}
+
+static void nbd_async_submit_req(struct nbd_async_ctx *ctx,
+                                 const struct io_request *io_req)
+{
+    while (ctx->running && !ftl_mt_submit(ctx->mt, io_req)) {
+        sched_yield();
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Submit Thread (SQ) — reads NBD requests, dispatches to FTL workers
  * ----------------------------------------------------------------------- */
@@ -202,6 +266,16 @@ static void *nbd_sq_thread_main(void *arg)
         uint64_t end_byte = offset + length;
         uint64_t end_lba  = (end_byte + lba_size - 1) / lba_size;
         uint32_t count    = (uint32_t)(end_lba - lba);
+        uint32_t full_bytes = count * lba_size;
+        bool split_read = type == NBD_CMD_READ &&
+                          count > 1 &&
+                          nbd_async_is_aligned_page_io(type, byte_off,
+                                                       length, count, lba_size);
+        bool split_strided = (type == NBD_CMD_WRITE || type == NBD_CMD_TRIM) &&
+                             count > 1 &&
+                             nbd_async_is_aligned_page_io(type, byte_off,
+                                                          length, count, lba_size);
+        u32 total_reqs = 1;
 
         /* Alloc inflight slot (spin if pool exhausted = backpressure) */
         struct inflight_slot *slot = NULL;
@@ -212,11 +286,19 @@ static void *nbd_sq_thread_main(void *arg)
         }
         if (!slot) break;
 
-        slot->nbd_handle = handle;
-        slot->nbd_cmd    = type;
-        slot->byte_off   = byte_off;
-        slot->length     = length;
-        slot->status     = 0;
+        if (full_bytes > NBD_ASYNC_SLOT_BUFSZ) {
+            send_nbd_reply(ctx->client_fd, handle, NBD_EIO);
+            inflight_free(&ctx->pool, slot);
+            continue;
+        }
+
+        if (split_read) {
+            total_reqs = count;
+        } else if (split_strided) {
+            total_reqs = count < FTL_NUM_WORKERS ? count : FTL_NUM_WORKERS;
+        }
+
+        nbd_async_init_slot(slot, handle, type, byte_off, length, total_reqs);
 
         /* For WRITE: read payload into slot buffer */
         if (type == NBD_CMD_WRITE) {
@@ -231,13 +313,10 @@ static void *nbd_sq_thread_main(void *arg)
              * bs>=4K always generates aligned writes. */
         }
 
-        /* Build io_request and submit to FTL worker */
+        /* Build io_request(s) and submit to FTL worker(s). */
         struct io_request io_req;
         memset(&io_req, 0, sizeof(io_req));
         io_req.nbd_handle = slot->slot_id;  /* slot_id flows through */
-        io_req.lba   = lba;
-        io_req.count = count;
-        io_req.data  = slot->data;
 
         switch (type) {
         case NBD_CMD_READ:  io_req.opcode = IO_OP_READ;  break;
@@ -249,8 +328,49 @@ static void *nbd_sq_thread_main(void *arg)
             continue;
         }
 
-        while (!ftl_mt_submit(ctx->mt, &io_req)) {
-            sched_yield();
+        if (split_read) {
+            for (u32 i = 0; i < count; i++) {
+                io_req.lba = lba + i;
+                io_req.count = 1;
+                io_req.lba_stride = 1;
+                io_req.data_stride = lba_size;
+                io_req.data_offset = i * lba_size;
+                io_req.byte_len = lba_size;
+                io_req.data = slot->data + io_req.data_offset;
+                nbd_async_submit_req(ctx, &io_req);
+            }
+        } else if (split_strided) {
+            u32 first_wid = (u32)(lba % FTL_NUM_WORKERS);
+
+            for (u32 worker_slot = 0; worker_slot < total_reqs; worker_slot++) {
+                u32 page_idx = worker_slot;
+                u32 wid = (first_wid + worker_slot) % FTL_NUM_WORKERS;
+                u32 pages_for_worker;
+
+                (void)wid;
+                if (page_idx >= count) {
+                    break;
+                }
+
+                pages_for_worker = 1 + (count - page_idx - 1) / FTL_NUM_WORKERS;
+                io_req.lba = lba + page_idx;
+                io_req.count = pages_for_worker;
+                io_req.lba_stride = FTL_NUM_WORKERS;
+                io_req.data_stride = lba_size * FTL_NUM_WORKERS;
+                io_req.data_offset = page_idx * lba_size;
+                io_req.byte_len = pages_for_worker * lba_size;
+                io_req.data = slot->data + io_req.data_offset;
+                nbd_async_submit_req(ctx, &io_req);
+            }
+        } else {
+            io_req.lba = lba;
+            io_req.count = count;
+            io_req.data = slot->data;
+            io_req.lba_stride = 1;
+            io_req.data_stride = lba_size;
+            io_req.data_offset = 0;
+            io_req.byte_len = full_bytes;
+            nbd_async_submit_req(ctx, &io_req);
         }
     }
 
@@ -265,47 +385,75 @@ static void *nbd_cq_thread_main(void *arg)
 {
     struct nbd_async_ctx *ctx = (struct nbd_async_ctx *)arg;
     struct io_completion cpl;
+    struct iovec iov[NBD_CQ_BATCH_MAX * 2];
+    struct inflight_slot *completed_slots[NBD_CQ_BATCH_MAX];
+    struct nbd_reply_hdr replies[NBD_CQ_BATCH_MAX];
     int idle_spins = 0;
 
     while (ctx->running) {
         bool found = false;
+        int batch_count = 0;
+        int iovcnt = 0;
 
         /* Poll all worker completion rings */
         for (int w = 0; w < FTL_NUM_WORKERS; w++) {
-            while (io_ring_pop(&ctx->mt->workers[w].completion_ring, &cpl)) {
+            while (batch_count < NBD_CQ_BATCH_MAX &&
+                   io_ring_pop(&ctx->mt->workers[w].completion_ring, &cpl)) {
                 found = true;
                 idle_spins = 0;
 
                 struct inflight_slot *slot = inflight_get(&ctx->pool,
                                                            (uint32_t)cpl.nbd_handle);
-                if (!slot) continue;
+                if (!slot) {
+                    continue;
+                }
 
-                uint32_t error = (cpl.status == 0) ? 0 : NBD_EIO;
-
-                /* For READ: unmapped pages return zeros (not error) */
                 if (slot->nbd_cmd == NBD_CMD_READ && cpl.status != 0) {
-                    memset(slot->data, 0, slot->length);
-                    error = 0;  /* return zeros, not EIO */
+                    memset(slot->data + cpl.data_offset, 0, cpl.byte_len);
+                } else if (cpl.status != HFSSS_OK &&
+                           slot->completion_status == HFSSS_OK) {
+                    slot->completion_status = cpl.status;
                 }
 
-                /* Send NBD reply header */
-                if (send_nbd_reply(ctx->client_fd, slot->nbd_handle, error) != 0) {
-                    ctx->running = false;
-                    break;
+                if (atomic_fetch_sub(&slot->pending_reqs, 1) != 1) {
+                    continue;
                 }
+
+                slot->status = slot->completion_status;
+                uint32_t error = (slot->status == HFSSS_OK) ? 0 : NBD_EIO;
+
+                replies[batch_count].magic = htonl(NBD_REPLY_MAGIC);
+                replies[batch_count].error = htonl(error);
+                replies[batch_count].handle = slot->nbd_handle;
+                iov[iovcnt].iov_base = &replies[batch_count];
+                iov[iovcnt].iov_len = sizeof(replies[batch_count]);
+                iovcnt++;
 
                 /* For READ: send data payload */
-                if (slot->nbd_cmd == NBD_CMD_READ && error == 0) {
-                    if (send_exact(ctx->client_fd,
-                                   slot->data + slot->byte_off,
-                                   slot->length) != 0) {
-                        ctx->running = false;
-                        break;
-                    }
+                if (slot->nbd_cmd == NBD_CMD_READ) {
+                    iov[iovcnt].iov_base = slot->data + slot->byte_off;
+                    iov[iovcnt].iov_len = slot->length;
+                    iovcnt++;
                 }
-
-                inflight_free(&ctx->pool, slot);
+                completed_slots[batch_count] = slot;
+                batch_count++;
             }
+
+            if (batch_count >= NBD_CQ_BATCH_MAX) {
+                break;
+            }
+        }
+
+        if (batch_count > 0) {
+            if (send_iov_exact(ctx->client_fd, iov, iovcnt) != 0) {
+                ctx->running = false;
+                break;
+            }
+
+            for (int i = 0; i < batch_count; i++) {
+                inflight_free(&ctx->pool, completed_slots[i]);
+            }
+            continue;
         }
 
         if (!found) {
@@ -324,8 +472,11 @@ static void *nbd_cq_thread_main(void *arg)
             struct inflight_slot *slot = inflight_get(&ctx->pool,
                                                        (uint32_t)cpl.nbd_handle);
             if (slot) {
-                send_nbd_reply(ctx->client_fd, slot->nbd_handle, NBD_EIO);
-                inflight_free(&ctx->pool, slot);
+                slot->completion_status = NBD_EIO;
+                if (atomic_fetch_sub(&slot->pending_reqs, 1) == 1) {
+                    send_nbd_reply(ctx->client_fd, slot->nbd_handle, NBD_EIO);
+                    inflight_free(&ctx->pool, slot);
+                }
             }
         }
     }

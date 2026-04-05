@@ -74,7 +74,8 @@ u64 eat_get_for_channel(struct eat_ctx *ctx, u32 ch)
     return ctx->channel_eat[ch];
 }
 
-u64 eat_get_max(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane)
+u64 eat_get_max(struct eat_ctx *ctx, enum op_type op,
+                u32 ch, u32 chip, u32 die, u32 plane)
 {
     u64 max_eat = 0;
     u64 eat;
@@ -83,8 +84,20 @@ u64 eat_get_max(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane)
         return 0;
     }
 
-    eat = eat_get_for_channel(ctx, ch);
-    if (eat > max_eat) max_eat = eat;
+    switch (op) {
+    case OP_READ:
+    case OP_PROGRAM:
+    case OP_ERASE:
+        /* Reads/programs/erases should not serialize an entire channel for the
+         * full NAND busy time. The bus transfer component is not modeled
+         * separately here, so only serialize the chip/die/plane resources.
+         */
+        break;
+    default:
+        eat = eat_get_for_channel(ctx, ch);
+        if (eat > max_eat) max_eat = eat;
+        break;
+    }
 
     eat = eat_get_for_chip(ctx, ch, chip);
     if (eat > max_eat) max_eat = eat;
@@ -98,7 +111,8 @@ u64 eat_get_max(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane)
     return max_eat;
 }
 
-void eat_update(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u64 duration)
+void eat_update(struct eat_ctx *ctx, enum op_type op,
+                u32 ch, u32 chip, u32 die, u32 plane, u64 duration)
 {
     u64 current_time;
     u64 new_eat;
@@ -118,8 +132,16 @@ void eat_update(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u64 d
     /* Update all levels - the new EAT is current time + duration */
     new_eat = current_time + duration;
 
-    if (new_eat > ctx->channel_eat[ch]) {
-        ctx->channel_eat[ch] = new_eat;
+    switch (op) {
+    case OP_READ:
+    case OP_PROGRAM:
+    case OP_ERASE:
+        break;
+    default:
+        if (new_eat > ctx->channel_eat[ch]) {
+            ctx->channel_eat[ch] = new_eat;
+        }
+        break;
     }
 
     if (new_eat > ctx->chip_eat[ch][chip]) {

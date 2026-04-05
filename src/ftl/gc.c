@@ -56,17 +56,7 @@ void gc_cleanup(struct gc_ctx *ctx)
 
 bool gc_should_trigger(struct gc_ctx *ctx, u64 free_blocks)
 {
-    if (!ctx) {
-        return false;
-    }
-
-    mutex_lock(&ctx->lock, 0);
-
-    bool should_trigger = (free_blocks <= ctx->threshold);
-
-    mutex_unlock(&ctx->lock);
-
-    return should_trigger;
+    return ctx && free_blocks <= ctx->threshold;
 }
 
 /*
@@ -209,7 +199,9 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
                     block_mark_closed(block_mgr, ctx->dst_block);
                     ctx->dst_block = NULL;
                 }
-                ctx->dst_block = block_alloc(block_mgr);
+                ctx->dst_block = block_alloc_for_channel_plane(block_mgr,
+                                                               victim->channel,
+                                                               victim->plane);
                 if (!ctx->dst_block) {
                     /*
                      * No free blocks available for a new destination.
@@ -270,7 +262,8 @@ int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *
             union ppn old_ppn;
             mapping_update(mapping_ctx, lba, dst_ppn, &old_ppn);
 
-            ctx->dst_block->valid_page_count++;
+            atomic_fetch_add_explicit(&ctx->dst_block->valid_page_count, 1,
+                                      memory_order_relaxed);
             ctx->dst_page++;
             moved++;
         }
@@ -349,8 +342,8 @@ erase_and_free:
     ctx->gc_write_pages += moved;
 
     /* Return victim block to the free pool. */
-    victim->valid_page_count   = 0;
-    victim->invalid_page_count = 0;
+    atomic_store_explicit(&victim->valid_page_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&victim->invalid_page_count, 0, memory_order_relaxed);
     ret = block_free(block_mgr, victim);
     if (ret == HFSSS_OK) {
         reclaimed = 1;
@@ -450,7 +443,9 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
                 block_mark_closed(block_mgr, ctx->dst_block);
                 ctx->dst_block = NULL;
             }
-            ctx->dst_block = block_alloc(block_mgr);
+            ctx->dst_block = block_alloc_for_channel_plane(block_mgr,
+                                                           victim->channel,
+                                                           victim->plane);
             if (!ctx->dst_block) {
                 reloc_aborted = true;
                 break;
@@ -497,7 +492,8 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
         union ppn old_ppn;
         taa_update(taa, lba, dst_ppn, &old_ppn);
 
-        ctx->dst_block->valid_page_count++;
+        atomic_fetch_add_explicit(&ctx->dst_block->valid_page_count, 1,
+                                  memory_order_relaxed);
         ctx->dst_page++;
         moved++;
     }
@@ -534,8 +530,8 @@ erase_and_free_mt:
     }
 
     ctx->gc_write_pages += moved;
-    victim->valid_page_count   = 0;
-    victim->invalid_page_count = 0;
+    atomic_store_explicit(&victim->valid_page_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&victim->invalid_page_count, 0, memory_order_relaxed);
     ret = block_free(block_mgr, victim);
     if (ret == HFSSS_OK) {
         reclaimed = 1;

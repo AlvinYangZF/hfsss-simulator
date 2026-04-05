@@ -67,7 +67,7 @@ static int ftl_allocate_cwb(struct ftl_ctx *ctx, u32 channel, u32 plane)
     }
 
     /* Allocate a new block */
-    block = block_alloc(&ctx->block_mgr);
+    block = block_alloc_for_channel_plane(&ctx->block_mgr, channel, plane);
     if (!block) {
         return HFSSS_ERR_NOSPC;
     }
@@ -113,11 +113,10 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
 
     /*
      * Use the block descriptor's physical coordinates for all NAND I/O and
-     * PPN encoding.  block_alloc() returns blocks from a shared free pool
-     * without regard for channel, so cwb->block->channel may differ from the
-     * logical channel derived from the LBA.  Encoding the PPN from the block
-     * descriptor keeps L2P consistent with what GC sees when it scans the
-     * victim block.
+     * PPN encoding.  The allocator now prefers the caller's channel/plane
+     * shard, but it may still fall back to a different shard when the local
+     * pool is empty.  Encoding the PPN from the block descriptor keeps L2P
+     * consistent with what GC sees when it scans the victim block.
      */
     u32 phys_ch    = cwb->block->channel;
     u32 phys_chip  = cwb->block->chip;
@@ -192,7 +191,8 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
     /* Update CWB */
     cwb->current_page++;
     cwb->last_write_ts = get_time_ns();
-    cwb->block->valid_page_count++;
+    atomic_fetch_add_explicit(&cwb->block->valid_page_count, 1,
+                              memory_order_relaxed);
     cwb->block->last_write_ts = get_time_ns();
 
     /* Track host write pages for WAF */
@@ -797,7 +797,8 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     /* Update CWB */
     cwb->current_page++;
     cwb->last_write_ts = get_time_ns();
-    cwb->block->valid_page_count++;
+    atomic_fetch_add_explicit(&cwb->block->valid_page_count, 1,
+                              memory_order_relaxed);
     cwb->block->last_write_ts = get_time_ns();
 
     /* Track host write pages for WAF */
