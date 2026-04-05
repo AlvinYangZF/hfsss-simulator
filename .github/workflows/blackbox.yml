@@ -32,9 +32,21 @@ name: QEMU Blackbox (manual scaffold)
 #     push: { branches: [master] }
 # and (optionally) pull_request: { branches: [master] }.
 #
-# Runner choice: macos-latest (Apple Silicon, macOS 14+) has native HVF
-# acceleration for aarch64 guests, matching the existing guest image.
-# A Linux x86_64 runner would need a separate x86_64 guest image (future).
+# Runner choice: this scaffold targets a SELF-HOSTED runner tagged with
+# the `hfsss-blackbox` label. The job needs guest assets
+# (alpine-hfsss.qcow2, cidata.iso, ovmf_vars-saved.fd) to be present on
+# the runner host under ./guest/, which a clean GitHub-hosted runner
+# cannot satisfy. An operator must register a self-hosted runner on a
+# macOS + Apple Silicon host with QEMU installed and guest assets
+# pre-provisioned, then attach the `hfsss-blackbox` label. Until such a
+# runner is registered, `workflow_dispatch` invocations sit queued —
+# that's intentional (dormant-scaffold behaviour).
+#
+# Once Release-based guest-asset download lands, the runner can shift
+# to a plain hosted `macos-latest` in a single diff. Historic note:
+# pre-revision drafts of this workflow declared `runs-on: macos-latest`,
+# but that was a mismatch with the asset model — hosted runners cannot
+# carry pre-provisioned guest assets.
 
 on:
   workflow_dispatch:
@@ -50,14 +62,23 @@ on:
 
 jobs:
   blackbox-smoke:
-    runs-on: macos-latest
+    # Self-hosted runner required — see top-of-file comment. Register a
+    # runner on a macOS+Apple-Silicon host with QEMU and guest assets
+    # pre-provisioned, then attach the `hfsss-blackbox` label to it.
+    runs-on: [self-hosted, hfsss-blackbox]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install QEMU
+      - name: Verify QEMU toolchain available on runner
+        # Self-hosted runners with the `hfsss-blackbox` label are expected
+        # to have QEMU (aarch64 system + HVF) pre-provisioned. This step
+        # fails the job early if the runner is mis-configured, instead of
+        # letting a cryptic "qemu-system-aarch64: not found" surface later.
         run: |
-          brew install qemu
+          command -v qemu-system-aarch64 >/dev/null \
+            || { echo "::error::qemu-system-aarch64 not on PATH — runner not provisioned correctly"; exit 1; }
+          qemu-system-aarch64 --version | head -n 1
 
       - name: Build HFSSS (targeted — NBD server only)
         # The blackbox runner only needs hfsss-nbd-server (env.sh itself uses
