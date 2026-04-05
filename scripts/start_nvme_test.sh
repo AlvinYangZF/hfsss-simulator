@@ -89,7 +89,7 @@ qemu-system-aarch64 \
     -drive if=pflash,format=raw,file=guest/ovmf_vars-run.fd \
     -drive file=guest/alpine-hfsss.qcow2,if=virtio,format=qcow2,snapshot=on \
     -drive file=guest/cidata.iso,if=virtio,media=cdrom \
-    -drive "driver=nbd,server.type=inet,server.host=127.0.0.1,server.port=$NBD_PORT,if=none,id=nvm0" \
+    -drive "driver=nbd,server.type=inet,server.host=127.0.0.1,server.port=$NBD_PORT,if=none,id=nvm0,discard=unmap" \
     -device nvme,serial=HFSSS0001,drive=nvm0 \
     -netdev "user,id=net0,hostfwd=tcp::${SSH_PORT}-:22" \
     -device virtio-net-pci,netdev=net0 \
