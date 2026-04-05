@@ -65,6 +65,21 @@ hfsss_case_assert_file_contains() {
     fi
 }
 
+hfsss_case_assert_any_file_contains() {
+    local pattern="$1"
+    shift
+    local path
+
+    for path in "$@"; do
+        if [ -f "$path" ] && grep -E -q "$pattern" "$path"; then
+            return 0
+        fi
+    done
+
+    hfsss_case_log "ASSERT FAIL: pattern '$pattern' not found in any of: $*"
+    return 1
+}
+
 hfsss_case_require_spdk_tool() {
     local tool
 
