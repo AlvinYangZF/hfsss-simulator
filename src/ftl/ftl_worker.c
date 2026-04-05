@@ -18,22 +18,16 @@ static void *ftl_worker_main(void *arg)
     struct ftl_worker *w = (struct ftl_worker *)arg;
     struct io_request req;
     struct io_completion cpl;
-    int idle_spins = 0;
 
     while (w->running) {
         if (!io_ring_pop(&w->request_ring, &req)) {
-            if (idle_spins < 64) {
-                sched_yield();
-            } else if (idle_spins < 256) {
-                usleep(1);
-            } else {
-                usleep(10);
+            pthread_mutex_lock(&w->request_lock);
+            while (w->running && io_ring_is_empty(&w->request_ring)) {
+                pthread_cond_wait(&w->request_cond, &w->request_lock);
             }
-            idle_spins++;
+            pthread_mutex_unlock(&w->request_lock);
             continue;
         }
-
-        idle_spins = 0;
 
         if (req.opcode == IO_OP_STOP) {
             w->running = false;
@@ -142,6 +136,7 @@ int ftl_mt_init(struct ftl_mt_ctx *ctx, struct ftl_config *config,
         w->running = false;
         w->ops_completed = 0;
         w->ops_failed = 0;
+        w->request_sync_initialized = false;
 
         ret = io_ring_init(&w->request_ring, sizeof(struct io_request),
                            IO_RING_DEFAULT_CAPACITY);
@@ -150,6 +145,20 @@ int ftl_mt_init(struct ftl_mt_ctx *ctx, struct ftl_config *config,
         ret = io_ring_init(&w->completion_ring, sizeof(struct io_completion),
                            IO_RING_DEFAULT_CAPACITY);
         if (ret != HFSSS_OK) goto fail;
+
+        ret = pthread_mutex_init(&w->request_lock, NULL);
+        if (ret != 0) {
+            ret = HFSSS_ERR_INVAL;
+            goto fail;
+        }
+
+        ret = pthread_cond_init(&w->request_cond, NULL);
+        if (ret != 0) {
+            pthread_mutex_destroy(&w->request_lock);
+            ret = HFSSS_ERR_INVAL;
+            goto fail;
+        }
+        w->request_sync_initialized = true;
     }
 
     ctx->initialized = true;
@@ -169,6 +178,10 @@ void ftl_mt_cleanup(struct ftl_mt_ctx *ctx)
     for (int i = 0; i < FTL_NUM_WORKERS; i++) {
         io_ring_cleanup(&ctx->workers[i].request_ring);
         io_ring_cleanup(&ctx->workers[i].completion_ring);
+        if (ctx->workers[i].request_sync_initialized) {
+            pthread_mutex_destroy(&ctx->workers[i].request_lock);
+            pthread_cond_destroy(&ctx->workers[i].request_cond);
+        }
     }
 
     taa_cleanup(&ctx->taa);
@@ -244,6 +257,9 @@ void ftl_mt_stop(struct ftl_mt_ctx *ctx)
             while (!io_ring_push(&ctx->workers[i].request_ring, &stop)) {
                 sched_yield();
             }
+            pthread_mutex_lock(&ctx->workers[i].request_lock);
+            pthread_cond_signal(&ctx->workers[i].request_cond);
+            pthread_mutex_unlock(&ctx->workers[i].request_lock);
             pthread_join(ctx->workers[i].thread, NULL);
             ctx->workers[i].running = false;
         }
@@ -256,7 +272,14 @@ bool ftl_mt_submit(struct ftl_mt_ctx *ctx, const struct io_request *req)
 
     /* Route by LBA to worker: worker_id = lba % NUM_WORKERS */
     u32 wid = (u32)(req->lba % FTL_NUM_WORKERS);
-    return io_ring_push(&ctx->workers[wid].request_ring, req);
+    if (!io_ring_push(&ctx->workers[wid].request_ring, req)) {
+        return false;
+    }
+
+    pthread_mutex_lock(&ctx->workers[wid].request_lock);
+    pthread_cond_signal(&ctx->workers[wid].request_cond);
+    pthread_mutex_unlock(&ctx->workers[wid].request_lock);
+    return true;
 }
 
 bool ftl_mt_poll_completion(struct ftl_mt_ctx *ctx,

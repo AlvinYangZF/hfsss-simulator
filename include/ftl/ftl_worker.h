@@ -18,6 +18,9 @@ struct ftl_worker {
     pthread_t       thread;
     struct io_ring  request_ring;    /* SPSC: dispatch → worker */
     struct io_ring  completion_ring; /* SPSC: worker → dispatch */
+    pthread_mutex_t request_lock;
+    pthread_cond_t  request_cond;
+    bool            request_sync_initialized;
     struct ftl_ctx *ftl;
     struct taa_ctx *taa;
     bool            running;
