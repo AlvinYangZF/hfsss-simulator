@@ -464,12 +464,22 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
                     (unsigned long long)offset, length,
                     (unsigned long long)lba, count);
 
-            struct nvme_dsm_range range;
-            memset(&range, 0, sizeof(range));
-            range.slba  = lba;
-            range.nlb   = count;
-
-            int rc = nvme_uspace_trim(dev, 1, &range, 1);
+            /* In MT mode, READ/WRITE traverse the TAA shard cache via
+             * mt_io(), so TRIM must do the same — otherwise trim mutates
+             * only the global L2P mapping while TAA shards keep the old
+             * PPN, and subsequent reads return stale NAND contents
+             * (dlfeat=1 zero-after-trim contract silently broken).
+             * The async path already does this via nbd_async.c. */
+            int rc;
+            if (g_multithread) {
+                rc = mt_io(IO_OP_TRIM, lba, count, NULL);
+            } else {
+                struct nvme_dsm_range range;
+                memset(&range, 0, sizeof(range));
+                range.slba  = lba;
+                range.nlb   = count;
+                rc = nvme_uspace_trim(dev, 1, &range, 1);
+            }
             uint32_t err = (rc != 0) ? NBD_EIO : 0;
             if (send_reply(client_fd, handle, err) != 0)
                 goto done;
