@@ -199,6 +199,38 @@ nvme_uspace_set_features(&dev, fid, value);
 | systest_nvme_compliance | 48 | Identify, Features, SMART log, FW update, queue stress, boundary IO, edge cases, multi-range trim |
 | systest_error_boundary | 536 | NOSPC recovery, min/max geometry, low OP (5%), all NAND types (SLC/MLC/TLC/QLC), edge LBA values |
 
+## Code Coverage
+
+Coverage measurement is driven by `gcov + lcov` through a parallel `build-cov/` build variant
+(`-O0 --coverage`) that does not interfere with the production `-O2` build. Three HTML reports
+are produced (UT-only, E2E-only, merged) scoped to HFSSS **firmware** only — `src/vhost/`,
+`src/kernel/`, `src/tools/`, `tests/`, and system headers are filtered out via `lcov --remove`.
+
+### Quick start
+
+```bash
+# Install lcov (one-time)
+brew install lcov         # macOS
+sudo apt install lcov     # Linux
+
+# UT coverage only (fast — 1-3 min)
+make coverage-ut
+open build-cov/coverage/ut/index.html
+
+# Full flow: UT + E2E + merged report (slow — 10-20 min, needs QEMU image)
+make coverage
+
+# Run the coverage infrastructure self-tests
+make coverage-selftest
+```
+
+### CI ratchet
+
+`.coverage-baseline.json` tracks the reference coverage. Every PR runs `make coverage-ut` in CI
+(`.github/workflows/coverage.yml`) and **fails** if line, function, or branch coverage drops more
+than 2 percentage points below the baseline. See [docs/coverage.md](docs/coverage.md) for baseline
+update workflow, full scope details, and troubleshooting.
+
 ## Project Structure
 
 ```
