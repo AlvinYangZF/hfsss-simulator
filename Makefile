@@ -98,6 +98,7 @@ TEST_MEDIA = $(BIN_DIR)/test_media
 TEST_HAL = $(BIN_DIR)/test_hal
 TEST_FTL = $(BIN_DIR)/test_ftl
 TEST_CTRL = $(BIN_DIR)/test_controller
+TEST_SHMEM_IF = $(BIN_DIR)/test_shmem_if
 TEST_PCIE = $(BIN_DIR)/test_pcie_nvme
 TEST_SSSIM = $(BIN_DIR)/test_sssim
 TEST_NVME_USPACE = $(BIN_DIR)/test_nvme_uspace
@@ -163,7 +164,8 @@ TEST_VHOST = $(BIN_DIR)/test_vhost_proto
 COVERAGE_BIN_DIR = build-cov/bin
 COVERAGE_UT_BINS = $(COVERAGE_BIN_DIR)/test_common $(COVERAGE_BIN_DIR)/test_media \
 	$(COVERAGE_BIN_DIR)/test_hal $(COVERAGE_BIN_DIR)/test_ftl \
-	$(COVERAGE_BIN_DIR)/test_controller $(COVERAGE_BIN_DIR)/test_pcie_nvme \
+	$(COVERAGE_BIN_DIR)/test_controller $(COVERAGE_BIN_DIR)/test_shmem_if \
+	$(COVERAGE_BIN_DIR)/test_pcie_nvme \
 	$(COVERAGE_BIN_DIR)/test_sssim $(COVERAGE_BIN_DIR)/test_nvme_uspace \
 	$(COVERAGE_BIN_DIR)/test_boot $(COVERAGE_BIN_DIR)/test_nor_flash \
 	$(COVERAGE_BIN_DIR)/test_ftl_reliability $(COVERAGE_BIN_DIR)/test_rt_services \
@@ -192,7 +194,7 @@ COVERAGE_BINS = $(COVERAGE_UT_BINS) $(COVERAGE_E2E_BINS)
 	coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage coverage-selftest \
 	qemu-blackbox qemu-blackbox-list qemu-blackbox-ci qemu-blackbox-soak pre-checkin
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_SHMEM_IF) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -306,6 +308,10 @@ $(TEST_SSSIM): $(TEST_DIR)/test_sssim.c $(LIBHFSSS_SSSIM) $(LIBHFSSS_FTL) $(LIBH
 $(TEST_CTRL): $(TEST_DIR)/test_controller.c $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common $(LDFLAGS)
+
+$(TEST_SHMEM_IF): $(TEST_DIR)/test_shmem_if.c $(LIBHFSSS_CTRL) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-controller -lhfsss-common $(LDFLAGS)
 
 $(TEST_PCIE): $(TEST_DIR)/test_pcie_nvme.c $(LIBHFSSS_PCIE) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
@@ -526,6 +532,8 @@ test: all
 	@$(TEST_FTL)
 	@echo ""
 	@$(TEST_CTRL)
+	@echo ""
+	@$(TEST_SHMEM_IF)
 	@echo ""
 	@$(TEST_PCIE)
 	@echo ""
