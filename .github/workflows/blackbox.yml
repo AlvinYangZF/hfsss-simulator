@@ -7,7 +7,11 @@ name: QEMU Blackbox
 #   blackbox-smoke  — per-PR gate, nvme-cli + lightweight fio (~8 min)
 #   blackbox-full   — nightly full matrix, all cases × async mode (~30 min)
 #
-# Runner: macos-latest (Apple Silicon M1, HVF acceleration).
+# Runner: macos-latest (Apple Silicon M1). HVF may not be available on
+# GitHub hosted runners, so we force TCG (software emulation) via
+# HFSSS_QEMU_ACCEL=tcg. Slower but reliable. env.sh picks up the
+# override and selects cpu=max accordingly.
+#
 # Guest assets downloaded from GitHub Release `guest-assets-v1`.
 
 on:
@@ -29,8 +33,14 @@ on:
         required: false
         default: ""
 
+permissions:
+  contents: read
+
 env:
   GUEST_ASSET_TAG: guest-assets-v1
+  # Force TCG on hosted runners — HVF is not available on GitHub macos runners
+  HFSSS_QEMU_ACCEL: tcg
+  HFSSS_QEMU_CPU: max
 
 jobs:
   blackbox-smoke:
@@ -45,6 +55,11 @@ jobs:
 
       - name: Install QEMU
         run: brew install qemu
+
+      - name: Set UEFI firmware path
+        run: |
+          QEMU_PREFIX="$(brew --prefix qemu)"
+          echo "HFSSS_QEMU_CODE_FD=${QEMU_PREFIX}/share/qemu/edk2-aarch64-code.fd" >> "$GITHUB_ENV"
 
       - name: Download guest assets
         run: |
@@ -119,6 +134,11 @@ jobs:
 
       - name: Install QEMU
         run: brew install qemu
+
+      - name: Set UEFI firmware path
+        run: |
+          QEMU_PREFIX="$(brew --prefix qemu)"
+          echo "HFSSS_QEMU_CODE_FD=${QEMU_PREFIX}/share/qemu/edk2-aarch64-code.fd" >> "$GITHUB_ENV"
 
       - name: Download guest assets
         run: |
