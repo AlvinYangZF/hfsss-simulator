@@ -22,6 +22,7 @@ fi
 
 [ -f "$INFO" ] || { echo "ERROR: $INFO not found"; exit 1; }
 command -v lcov >/dev/null || { echo "ERROR: lcov not installed"; exit 1; }
+command -v jq >/dev/null || { echo "ERROR: jq not installed"; exit 1; }
 
 # Extract line/function/branch % from lcov --summary
 summary=$(lcov --summary "$INFO" --rc branch_coverage=1 --ignore-errors deprecated,inconsistent,inconsistent,format,empty 2>&1)
@@ -85,9 +86,9 @@ EOF
 fi
 
 # Compare against baseline floors
-floor_line=$(grep -A1 '"line"' "$BASELINE" | grep '"floor"' | grep -oE '[0-9]+\.[0-9]+' | head -1)
-floor_func=$(grep -A1 '"function"' "$BASELINE" | grep '"floor"' | grep -oE '[0-9]+\.[0-9]+' | head -1)
-floor_branch=$(grep -A1 '"branch"' "$BASELINE" | grep '"floor"' | grep -oE '[0-9]+\.[0-9]+' | head -1)
+floor_line=$(jq -r '.metrics.line.floor' "$BASELINE")
+floor_func=$(jq -r '.metrics.function.floor' "$BASELINE")
+floor_branch=$(jq -r '.metrics.branch.floor' "$BASELINE")
 
 fail=0
 compare() {
