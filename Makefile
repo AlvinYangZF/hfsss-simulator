@@ -604,6 +604,7 @@ help:
 
 # Coverage targets
 coverage-build:
+	@bash scripts/coverage/check_target_set.sh
 	@$(MAKE) COVERAGE=1 directories $(COVERAGE_BINS)
 
 coverage-clean:
