@@ -22,6 +22,22 @@ else
     BUILD_DIR = build
 endif
 
+# AddressSanitizer build variant
+ASAN ?= 0
+ifeq ($(ASAN),1)
+    CFLAGS += -fsanitize=address -fno-omit-frame-pointer -O1
+    LDFLAGS += -fsanitize=address
+    BUILD_DIR := $(BUILD_DIR)-asan
+endif
+
+# UndefinedBehaviorSanitizer build variant
+UBSAN ?= 0
+ifeq ($(UBSAN),1)
+    CFLAGS += -fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
+    LDFLAGS += -fsanitize=undefined
+    BUILD_DIR := $(BUILD_DIR)-ubsan
+endif
+
 # Directories
 SRC_DIR = src
 COMMON_SRC = $(SRC_DIR)/common
