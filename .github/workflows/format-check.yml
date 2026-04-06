@@ -1,0 +1,40 @@
+name: Format Check
+
+# Code style enforcement on changed files only. Does not require
+# reformatting the entire codebase — only new/modified C/H files
+# must pass clang-format.
+
+on:
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  clang-format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+
+      - name: Check format on changed files
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.sha }}"
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD" -- '*.c' '*.h' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No C/H files changed, skipping format check"
+            exit 0
+          fi
+          echo "Checking format on changed files:"
+          echo "$CHANGED"
+          echo "$CHANGED" | xargs clang-format --dry-run -Werror 2>&1 || {
+            echo "::error::Format check failed. Run: clang-format -i <files>"
+            exit 1
+          }
+          echo "Format check passed"
