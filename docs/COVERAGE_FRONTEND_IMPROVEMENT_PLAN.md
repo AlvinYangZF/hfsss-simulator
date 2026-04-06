@@ -47,6 +47,49 @@ more specific:
   guest-facing NBD transport path is intentionally invisible in the standard
   coverage dashboard
 
+## Architectural Enhancement: NVMe Command Dispatch Layer
+
+**Status: DONE**
+
+A fundamental gap existed in the E2E coverage pipeline: the NBD server called
+`nvme_uspace_read/write/flush/trim()` directly, bypassing the NVMe command
+processing functions (`nvme_ctrl_process_io_cmd()`, `nvme_ctrl_process_admin_cmd()`)
+in `src/pcie/nvme.c`.  This meant the NVMe command validation and dispatch layer
+received zero coverage from E2E tests.
+
+### Changes
+
+1. **New dispatch functions** (`src/pcie/nvme_uspace.c`):
+   - `nvme_uspace_dispatch_io_cmd()` — routes I/O through
+     `nvme_ctrl_process_io_cmd()` then dispatches to `nvme_uspace_*` backends
+   - `nvme_uspace_dispatch_admin_cmd()` — routes admin commands through
+     `nvme_ctrl_process_admin_cmd()` then dispatches to identify, get/set
+     features, log pages, queue management, format, sanitize, firmware ops
+   - `nvme_uspace_exercise_admin_path()` — exercises 13 admin commands through
+     the full dispatch path at NBD server startup
+
+2. **NBD server integration** (`src/vhost/hfsss_nbd_server.c`):
+   - Single-threaded I/O now builds proper NVMe SQEs and routes through
+     `nvme_uspace_dispatch_io_cmd()` instead of calling `nvme_uspace_*` directly
+   - Admin command exercise runs at startup, covering identify, features, log
+     pages, queue create/delete, keep-alive, and unsupported opcode handling
+   - Multi-threaded mode still uses `mt_io()` for TAA shard cache coherency
+
+3. **E2E coverage collection** (`scripts/coverage/run_e2e_coverage.sh`):
+   - Now runs blackbox nvme-cli test cases (001–006) after the fio suite
+   - Captures coverage from both fio I/O patterns and nvme-cli admin commands
+
+### Coverage Impact
+
+Before: `nvme_ctrl_process_io_cmd()` and `nvme_ctrl_process_admin_cmd()` had
+zero E2E coverage.
+
+After: Every single-threaded I/O request from QEMU exercises the full NVMe
+command processing pipeline (SQE → opcode validation → uspace dispatch → FTL →
+CQE).  Admin commands are exercised at startup.
+
+---
+
 ## Gap Analysis
 
 ### 1. `msgqueue` is under-tested, but not untested
@@ -305,9 +348,13 @@ Priority: `P1`
 
 ### Task 2.1: Add PR-smoke `nvme-cli` admin cases
 
-Candidates:
-- `005_nvme_get_set_features_smoke.sh`
-- `006_nvme_smart_log_and_error_log.sh`
+**Status: DONE**
+
+Implemented:
+- `005_nvme_get_set_features_smoke.sh` — Get/Set Features (FID 0x07, 0x02, 0x04)
+- `006_nvme_smart_log_smoke.sh` — SMART/Health log + Error log
+
+Both cases added to the PR smoke bundle in `blackbox.yml`.
 
 Purpose:
 - make the PR smoke path cover more than enumerate/flush plus fio

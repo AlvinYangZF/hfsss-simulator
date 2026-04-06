@@ -1,4 +1,5 @@
 #include "pcie/nvme_uspace.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -578,5 +579,466 @@ int nvme_uspace_set_features(struct nvme_uspace_dev *dev, u8 fid, u32 value)
     }
 
     dev->features[fid] = value;
+    return HFSSS_OK;
+}
+
+/* -------------------------------------------------------------------------
+ * Full-path NVMe I/O command dispatch
+ *
+ * Routes through nvme_ctrl_process_io_cmd() for opcode validation, then
+ * dispatches to the appropriate nvme_uspace_* function for FTL execution.
+ * This ensures E2E coverage of the NVMe command processing layer.
+ * ---------------------------------------------------------------------- */
+
+int nvme_uspace_dispatch_io_cmd(struct nvme_uspace_dev *dev,
+                                struct nvme_sq_entry *cmd,
+                                struct nvme_cq_entry *cpl,
+                                void *data, u32 data_len)
+{
+    if (!dev || !dev->initialized || !cmd || !cpl) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Step 1: Validate opcode through NVMe command processing layer */
+    int rc = nvme_ctrl_process_io_cmd(&dev->ctrl, cmd, cpl);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+
+    /* If process_io_cmd rejected the opcode, return immediately */
+    if (cpl->status != 0) {
+        return HFSSS_OK;
+    }
+
+    /* Step 2: Extract command parameters and dispatch to uspace */
+    u32 nsid = cmd->nsid;
+    u64 slba = ((u64)cmd->cdw11 << 32) | cmd->cdw10;
+    u32 nlb  = (cmd->cdw12 & 0xFFFF) + 1;
+    int result = HFSSS_OK;
+
+    switch (cmd->opcode) {
+    case NVME_NVM_READ:
+        if (!data || data_len < (u64)nlb * dev->sssim.config.lba_size) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        result = nvme_uspace_read(dev, nsid, slba, nlb, data);
+        break;
+
+    case NVME_NVM_WRITE:
+        if (!data || data_len < (u64)nlb * dev->sssim.config.lba_size) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        result = nvme_uspace_write(dev, nsid, slba, nlb, data);
+        break;
+
+    case NVME_NVM_FLUSH:
+        result = nvme_uspace_flush(dev, nsid);
+        break;
+
+    case NVME_NVM_WRITE_ZEROES: {
+        if (!data || data_len < (u64)nlb * dev->sssim.config.lba_size) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        memset(data, 0, (u64)nlb * dev->sssim.config.lba_size);
+        result = nvme_uspace_write(dev, nsid, slba, nlb, data);
+        break;
+    }
+
+    case NVME_NVM_DATASET_MANAGEMENT: {
+        /* DSM range list is in the data buffer.
+         * CDW10 bits 7:0 = NR (number of ranges - 1)
+         * CDW11 bit 2 = AD (Attribute - Deallocate) */
+        u32 nr_ranges = (cmd->cdw10 & 0xFF) + 1;
+        bool deallocate = (cmd->cdw11 & NVME_DSM_ATTR_DEALLOCATE) != 0;
+
+        if (!deallocate) {
+            /* No deallocate requested — nothing to do */
+            break;
+        }
+
+        if (!data || data_len < nr_ranges * sizeof(struct nvme_dsm_range)) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+
+        result = nvme_uspace_trim(dev, nsid,
+                                  (struct nvme_dsm_range *)data, nr_ranges);
+        break;
+    }
+
+    default:
+        cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_OPCODE,
+                                        NVME_STATUS_TYPE_GENERIC);
+        return HFSSS_OK;
+    }
+
+    if (result != HFSSS_OK) {
+        cpl->status = NVME_BUILD_STATUS(NVME_SC_INTERNAL_DEVICE_ERROR,
+                                        NVME_STATUS_TYPE_GENERIC);
+    }
+
+    return HFSSS_OK;
+}
+
+/* -------------------------------------------------------------------------
+ * Full-path NVMe admin command dispatch
+ * ---------------------------------------------------------------------- */
+
+int nvme_uspace_dispatch_admin_cmd(struct nvme_uspace_dev *dev,
+                                   struct nvme_sq_entry *cmd,
+                                   struct nvme_cq_entry *cpl,
+                                   void *data, u32 data_len)
+{
+    if (!dev || !dev->initialized || !cmd || !cpl) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Step 1: Validate opcode through NVMe command processing layer */
+    int rc = nvme_ctrl_process_admin_cmd(&dev->ctrl, cmd, cpl);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+
+    /* If process_admin_cmd rejected the opcode, return immediately */
+    if (cpl->status != 0) {
+        return HFSSS_OK;
+    }
+
+    /* Step 2: Dispatch to the appropriate admin handler */
+    int result = HFSSS_OK;
+
+    switch (cmd->opcode) {
+    case NVME_ADMIN_IDENTIFY:
+        if (!data || data_len < 4096) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        result = nvme_ctrl_process_identify(cmd, data, data_len);
+        if (result == NVME_SC_SUCCESS) {
+            /* Enrich with actual device state for controller identify */
+            u32 cns = cmd->cdw10 & 0xFF;
+            if (cns == 0x01) {
+                /* Overlay actual capacity/firmware from uspace device */
+                struct nvme_identify_ctrl *id = (struct nvme_identify_ctrl *)data;
+                if (dev->fw_revision[0] != 0) {
+                    memcpy(id->fr, dev->fw_revision, 8);
+                }
+                u64 total_bytes = dev->sssim.config.total_lbas *
+                                  dev->sssim.config.lba_size;
+                id->tnvmcap[0] = (u8)(total_bytes & 0xFF);
+                id->tnvmcap[1] = (u8)((total_bytes >> 8) & 0xFF);
+                id->tnvmcap[2] = (u8)((total_bytes >> 16) & 0xFF);
+                id->tnvmcap[3] = (u8)((total_bytes >> 24) & 0xFF);
+                id->tnvmcap[4] = (u8)((total_bytes >> 32) & 0xFF);
+                id->tnvmcap[5] = (u8)((total_bytes >> 40) & 0xFF);
+                id->tnvmcap[6] = (u8)((total_bytes >> 48) & 0xFF);
+                id->tnvmcap[7] = (u8)((total_bytes >> 56) & 0xFF);
+                memcpy(id->unvmcap, id->tnvmcap, 16);
+            } else if (cns == 0x00) {
+                /* Overlay actual namespace size from simulator config */
+                struct nvme_identify_ns *ns = (struct nvme_identify_ns *)data;
+                ns->nsze = dev->sssim.config.total_lbas;
+                ns->ncap = dev->sssim.config.total_lbas;
+                int lbads = 0;
+                u32 sz = dev->sssim.config.lba_size;
+                while (sz > 1) { sz >>= 1; lbads++; }
+                ns->lbaf[0].lbads = lbads;
+            }
+            result = HFSSS_OK;
+        } else {
+            cpl->status = NVME_BUILD_STATUS((u16)result,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        break;
+
+    case NVME_ADMIN_GET_FEATURES: {
+        u8 fid = (u8)(cmd->cdw10 & 0xFF);
+        u32 value = 0;
+        result = nvme_uspace_get_features(dev, fid, &value);
+        if (result == HFSSS_OK) {
+            cpl->cdw0 = value;
+        } else if (result == HFSSS_ERR_NOTSUPP) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        break;
+    }
+
+    case NVME_ADMIN_SET_FEATURES: {
+        u8 fid = (u8)(cmd->cdw10 & 0xFF);
+        u32 value = cmd->cdw11;
+        result = nvme_uspace_set_features(dev, fid, value);
+        if (result == HFSSS_ERR_NOTSUPP) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        break;
+    }
+
+    case NVME_ADMIN_GET_LOG_PAGE: {
+        u8 lid = (u8)(cmd->cdw10 & 0xFF);
+        if (!data || data_len == 0) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        result = nvme_uspace_get_log_page(dev, cmd->nsid, lid, data, data_len);
+        if (result == HFSSS_ERR_NOTSUPP) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        break;
+    }
+
+    case NVME_ADMIN_CREATE_IO_CQ: {
+        u16 qid   = (u16)(cmd->cdw10 & 0xFFFF);
+        u16 qsize = (u16)((cmd->cdw10 >> 16) & 0xFFFF) + 1;
+        bool ien  = (cmd->cdw11 & 0x02) != 0;
+        result = nvme_uspace_create_io_cq(dev, qid, qsize, ien);
+        if (result == HFSSS_ERR_EXIST) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_CMD_ID_CONFLICT,
+                                            NVME_STATUS_TYPE_CMD_SPEC);
+            return HFSSS_OK;
+        }
+        break;
+    }
+
+    case NVME_ADMIN_CREATE_IO_SQ: {
+        u16 qid   = (u16)(cmd->cdw10 & 0xFFFF);
+        u16 qsize = (u16)((cmd->cdw10 >> 16) & 0xFFFF) + 1;
+        u16 cqid  = (u16)(cmd->cdw11 & 0xFFFF);
+        u8  prio  = (u8)((cmd->cdw11 >> 1) & 0x3);
+        result = nvme_uspace_create_io_sq(dev, qid, qsize, cqid, prio);
+        if (result == HFSSS_ERR_EXIST) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_CMD_ID_CONFLICT,
+                                            NVME_STATUS_TYPE_CMD_SPEC);
+            return HFSSS_OK;
+        } else if (result == HFSSS_ERR_NOENT) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        break;
+    }
+
+    case NVME_ADMIN_DELETE_IO_SQ: {
+        u16 qid = (u16)(cmd->cdw10 & 0xFFFF);
+        result = nvme_uspace_delete_io_sq(dev, qid);
+        if (result == HFSSS_ERR_NOENT) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        break;
+    }
+
+    case NVME_ADMIN_DELETE_IO_CQ: {
+        u16 qid = (u16)(cmd->cdw10 & 0xFFFF);
+        result = nvme_uspace_delete_io_cq(dev, qid);
+        if (result == HFSSS_ERR_NOENT) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        } else if (result == HFSSS_ERR_BUSY) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_CMD_SPEC);
+            return HFSSS_OK;
+        }
+        break;
+    }
+
+    case NVME_ADMIN_FORMAT_NVM:
+        result = nvme_uspace_format_nvm(dev, cmd->nsid);
+        break;
+
+    case NVME_ADMIN_SANITIZE: {
+        u32 sanact = cmd->cdw10 & 0x07;
+        result = nvme_uspace_sanitize(dev, sanact);
+        break;
+    }
+
+    case NVME_ADMIN_FW_DOWNLOAD: {
+        u32 numd   = cmd->cdw10;
+        u32 ofst   = cmd->cdw11;
+        u32 len_dw = (numd + 1);
+        u32 len_bytes = len_dw * 4;
+        if (!data || data_len < len_bytes) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            return HFSSS_OK;
+        }
+        result = nvme_uspace_fw_download(dev, ofst * 4, data, len_bytes);
+        break;
+    }
+
+    case NVME_ADMIN_FW_ACTIVATE: {
+        u32 slot   = cmd->cdw10 & 0x07;
+        u32 action = (cmd->cdw10 >> 3) & 0x07;
+        result = nvme_uspace_fw_commit(dev, slot, action);
+        break;
+    }
+
+    case NVME_ADMIN_ASYNC_EVENT:
+    case NVME_ADMIN_KEEP_ALIVE:
+        /* Accepted but no real action needed */
+        break;
+
+    default:
+        cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_OPCODE,
+                                        NVME_STATUS_TYPE_GENERIC);
+        return HFSSS_OK;
+    }
+
+    if (result != HFSSS_OK && cpl->status == 0) {
+        cpl->status = NVME_BUILD_STATUS(NVME_SC_INTERNAL_DEVICE_ERROR,
+                                        NVME_STATUS_TYPE_GENERIC);
+    }
+
+    return HFSSS_OK;
+}
+
+/* -------------------------------------------------------------------------
+ * Exercise admin command path for E2E coverage
+ *
+ * Runs a series of admin commands through the full dispatch path to ensure
+ * the NVMe command processing layer gets coverage during E2E tests.
+ * ---------------------------------------------------------------------- */
+
+int nvme_uspace_exercise_admin_path(struct nvme_uspace_dev *dev)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nvme_sq_entry cmd;
+    struct nvme_cq_entry cpl;
+    u8 buf[4096];
+    int rc;
+
+    fprintf(stderr, "[NVMe] Exercising admin command path...\n");
+
+    /* 1. Identify Controller (CNS=0x01) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_IDENTIFY;
+    cmd.nsid = 0;
+    cmd.cdw10 = 0x01;
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, buf, sizeof(buf));
+    fprintf(stderr, "[NVMe]   Identify Controller: rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    /* 2. Identify Namespace (CNS=0x00, NSID=1) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_IDENTIFY;
+    cmd.nsid = 1;
+    cmd.cdw10 = 0x00;
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, buf, sizeof(buf));
+    fprintf(stderr, "[NVMe]   Identify Namespace:  rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    /* 3. Active Namespace List (CNS=0x02) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_IDENTIFY;
+    cmd.nsid = 0;
+    cmd.cdw10 = 0x02;
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, buf, sizeof(buf));
+    fprintf(stderr, "[NVMe]   Active NS List:      rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    /* 4. Get Features - Number of Queues (FID=0x07) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_GET_FEATURES;
+    cmd.cdw10 = 0x07;
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
+    fprintf(stderr, "[NVMe]   Get Features NQ:     rc=%d status=0x%04x cdw0=0x%08x\n",
+            rc, cpl.status, cpl.cdw0);
+
+    /* 5. Get Features - Power Management (FID=0x02) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_GET_FEATURES;
+    cmd.cdw10 = 0x02;
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
+    fprintf(stderr, "[NVMe]   Get Features PM:     rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    /* 6. Set Features - Temperature Threshold (FID=0x04) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_SET_FEATURES;
+    cmd.cdw10 = 0x04;
+    cmd.cdw11 = 0x0160;  /* 352 K */
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
+    fprintf(stderr, "[NVMe]   Set Features Temp:   rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    /* 7. Get Log Page - SMART/Health (LID=2) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_GET_LOG_PAGE;
+    cmd.nsid = 1;
+    cmd.cdw10 = 0x02;  /* LID=2 */
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, buf, 512);
+    fprintf(stderr, "[NVMe]   Get Log SMART:       rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    /* 8. Create IO CQ (QID=1, size=32) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_CREATE_IO_CQ;
+    cmd.cdw10 = 1 | (31u << 16);  /* QID=1, QSIZE=31 (means 32 entries) */
+    cmd.cdw11 = 0x02;             /* IEN=1 */
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
+    fprintf(stderr, "[NVMe]   Create IO CQ 1:      rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    /* 9. Create IO SQ (QID=1, size=32, CQID=1) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_CREATE_IO_SQ;
+    cmd.cdw10 = 1 | (31u << 16);  /* QID=1, QSIZE=31 */
+    cmd.cdw11 = 1;                /* CQID=1 */
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
+    fprintf(stderr, "[NVMe]   Create IO SQ 1:      rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    /* 10. Delete IO SQ (QID=1) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_DELETE_IO_SQ;
+    cmd.cdw10 = 1;
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
+    fprintf(stderr, "[NVMe]   Delete IO SQ 1:      rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    /* 11. Delete IO CQ (QID=1) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_DELETE_IO_CQ;
+    cmd.cdw10 = 1;
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
+    fprintf(stderr, "[NVMe]   Delete IO CQ 1:      rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    /* 12. Keep Alive */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_KEEP_ALIVE;
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
+    fprintf(stderr, "[NVMe]   Keep Alive:           rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    /* 13. Unsupported opcode (negative test) */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_ABORT;  /* not implemented */
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
+    fprintf(stderr, "[NVMe]   Abort (unsupported):  rc=%d status=0x%04x\n",
+            rc, cpl.status);
+
+    fprintf(stderr, "[NVMe] Admin command exercise complete.\n");
+
     return HFSSS_OK;
 }

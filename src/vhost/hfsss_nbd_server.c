@@ -309,7 +309,29 @@ static int mt_io(enum io_opcode op, uint64_t lba, uint32_t count,
 }
 
 /* -------------------------------------------------------------------------
+ * Build an NVMe SQE from NBD request parameters.
+ * This allows the NBD server to route I/O through the full NVMe command
+ * processing path, exercising nvme_ctrl_process_io_cmd() end-to-end.
+ * ---------------------------------------------------------------------- */
+
+static void build_nvme_io_sqe(struct nvme_sq_entry *sqe, uint8_t opcode,
+                               uint32_t nsid, uint64_t slba, uint32_t nlb)
+{
+    memset(sqe, 0, sizeof(*sqe));
+    sqe->opcode = opcode;
+    sqe->nsid   = nsid;
+    sqe->cdw10  = (uint32_t)(slba & 0xFFFFFFFF);
+    sqe->cdw11  = (uint32_t)(slba >> 32);
+    sqe->cdw12  = (nlb > 0) ? (nlb - 1) : 0;  /* NLB is 0-based */
+}
+
+/* -------------------------------------------------------------------------
  * NBD transmission phase — serve I/O until disconnect or error
+ *
+ * Routes all I/O through nvme_uspace_dispatch_io_cmd() to exercise the
+ * full NVMe command processing path (SQE → opcode validation → uspace
+ * dispatch → FTL → CQE), except in MT mode which must use the worker
+ * pool for TAA shard cache coherency.
  * ---------------------------------------------------------------------- */
 
 static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
@@ -317,6 +339,7 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
 {
     uint8_t *iobuf = NULL;
     size_t   iobuf_cap = 0;
+    static uint16_t cmd_id = 0;
 
     for (;;) {
         struct nbd_request req;
@@ -364,14 +387,21 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
         switch (type) {
 
         /* ----------------------------------------------------------------
-         * READ — read full pages, return only the requested byte range
+         * READ — route through NVMe dispatch for full-path coverage
          * ---------------------------------------------------------------- */
         case NBD_CMD_READ: {
             int rc;
             if (g_multithread) {
                 rc = mt_io(IO_OP_READ, lba, count, iobuf);
             } else {
-                rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
+                struct nvme_sq_entry sqe;
+                struct nvme_cq_entry cqe;
+                build_nvme_io_sqe(&sqe, NVME_NVM_READ, 1, lba, count);
+                sqe.command_id = cmd_id++;
+                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe,
+                                                 iobuf, full_bytes);
+                if (rc == 0 && cqe.status != 0)
+                    rc = -1;
             }
             if (rc != 0) {
                 /* Unwritten pages: return zeros instead of error */
@@ -389,7 +419,7 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
         }
 
         /* ----------------------------------------------------------------
-         * WRITE — for sub-page writes, do read-modify-write
+         * WRITE — route through NVMe dispatch for full-path coverage
          * ---------------------------------------------------------------- */
         case NBD_CMD_WRITE: {
             /* Read client write data directly into iobuf */
@@ -412,7 +442,14 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
                 if (g_multithread) {
                     rc = mt_io(IO_OP_READ, lba, count, iobuf);
                 } else {
-                    rc = nvme_uspace_read(dev, 1, lba, count, iobuf);
+                    struct nvme_sq_entry sqe;
+                    struct nvme_cq_entry cqe;
+                    build_nvme_io_sqe(&sqe, NVME_NVM_READ, 1, lba, count);
+                    sqe.command_id = cmd_id++;
+                    rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe,
+                                                     iobuf, full_bytes);
+                    if (rc == 0 && cqe.status != 0)
+                        rc = -1;
                 }
                 if (rc != 0)
                     memset(iobuf, 0, full_bytes);
@@ -426,7 +463,14 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
             if (g_multithread) {
                 rc = mt_io(IO_OP_WRITE, lba, count, iobuf);
             } else {
-                rc = nvme_uspace_write(dev, 1, lba, count, iobuf);
+                struct nvme_sq_entry sqe;
+                struct nvme_cq_entry cqe;
+                build_nvme_io_sqe(&sqe, NVME_NVM_WRITE, 1, lba, count);
+                sqe.command_id = cmd_id++;
+                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe,
+                                                 iobuf, full_bytes);
+                if (rc == 0 && cqe.status != 0)
+                    rc = -1;
             }
             if (g_verbose)
                 fprintf(stderr, "[NBD] WRITE off=%-10" PRIu64 " len=%-6u lba=%-8" PRIu64 " cnt=%-4u rc=%d\n",
@@ -443,12 +487,26 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
         }
 
         /* ----------------------------------------------------------------
-         * FLUSH
+         * FLUSH — route through NVMe dispatch
          * ---------------------------------------------------------------- */
         case NBD_CMD_FLUSH: {
             fprintf(stderr, "[NBD] FLUSH\n");
 
-            int rc = nvme_uspace_flush(dev, 1);
+            int rc;
+            if (g_multithread) {
+                /* MT mode: flush goes through uspace directly since
+                 * there is no per-shard state for flush. */
+                rc = nvme_uspace_flush(dev, 1);
+            } else {
+                struct nvme_sq_entry sqe;
+                struct nvme_cq_entry cqe;
+                build_nvme_io_sqe(&sqe, NVME_NVM_FLUSH, 1, 0, 0);
+                sqe.command_id = cmd_id++;
+                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe,
+                                                 NULL, 0);
+                if (rc == 0 && cqe.status != 0)
+                    rc = -1;
+            }
             uint32_t err = (rc != 0) ? NBD_EIO : 0;
             if (send_reply(client_fd, handle, err) != 0)
                 goto done;
@@ -456,7 +514,7 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
         }
 
         /* ----------------------------------------------------------------
-         * TRIM (discard)
+         * TRIM (discard) — route through NVMe dispatch
          * ---------------------------------------------------------------- */
         case NBD_CMD_TRIM: {
             fprintf(stderr,
@@ -478,7 +536,18 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
                 memset(&range, 0, sizeof(range));
                 range.slba  = lba;
                 range.nlb   = count;
-                rc = nvme_uspace_trim(dev, 1, &range, 1);
+
+                struct nvme_sq_entry sqe;
+                struct nvme_cq_entry cqe;
+                build_nvme_io_sqe(&sqe, NVME_NVM_DATASET_MANAGEMENT,
+                                  1, 0, 0);
+                sqe.cdw10 = 0;  /* NR = 0 means 1 range */
+                sqe.cdw11 = NVME_DSM_ATTR_DEALLOCATE;
+                sqe.command_id = cmd_id++;
+                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe,
+                                                 &range, sizeof(range));
+                if (rc == 0 && cqe.status != 0)
+                    rc = -1;
             }
             uint32_t err = (rc != 0) ? NBD_EIO : 0;
             if (send_reply(client_fd, handle, err) != 0)
@@ -653,6 +722,12 @@ int main(int argc, char *argv[])
         nvme_uspace_dev_cleanup(&dev);
         return 1;
     }
+
+    /* Exercise the NVMe admin command processing path through the full
+     * dispatch layer.  This generates E2E coverage for admin commands
+     * (identify, get/set features, log pages, queue management) that
+     * cannot be reached through the NBD I/O protocol. */
+    nvme_uspace_exercise_admin_path(&dev);
 
     /* ------------------------------------------------------------------ */
     /* Initialize multi-threaded FTL (if -m flag)                          */
