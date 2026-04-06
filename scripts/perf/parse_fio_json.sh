@@ -25,13 +25,12 @@ jq -e '.jobs' "$INPUT" >/dev/null 2>&1 || {
     exit 1
 }
 
-TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
 jq --arg src "$(basename "$INPUT")" \
-   --arg ts "$TIMESTAMP" \
+   --arg parse_time "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
 '{
   source: $src,
-  timestamp: $ts,
+  fio_timestamp: (.timestamp // 0 | todate),
+  parsed_at: $parse_time,
   jobs: [.jobs[] | {
     jobname: .jobname,
     read_iops: (.read.iops // 0),
