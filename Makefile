@@ -131,6 +131,38 @@ HFSSS_IMG_EXPORT = $(BIN_DIR)/hfsss-img-export
 HFSSS_NBD = $(BIN_DIR)/hfsss-nbd-server
 TEST_VHOST = $(BIN_DIR)/test_vhost_proto
 
+# Coverage build set:
+# - UT coverage executes every built test_/systest_/stress_ binary
+# - E2E coverage requires hfsss-nbd-server
+# Do not pull in vhost targets here: the vhost-user-blk path is intentionally
+# outside the current UT/E2E coverage scope and is not buildable on mainline.
+COVERAGE_BIN_DIR = build-cov/bin
+COVERAGE_UT_BINS = $(COVERAGE_BIN_DIR)/test_common $(COVERAGE_BIN_DIR)/test_media \
+	$(COVERAGE_BIN_DIR)/test_hal $(COVERAGE_BIN_DIR)/test_ftl \
+	$(COVERAGE_BIN_DIR)/test_controller $(COVERAGE_BIN_DIR)/test_pcie_nvme \
+	$(COVERAGE_BIN_DIR)/test_sssim $(COVERAGE_BIN_DIR)/test_nvme_uspace \
+	$(COVERAGE_BIN_DIR)/test_boot $(COVERAGE_BIN_DIR)/test_nor_flash \
+	$(COVERAGE_BIN_DIR)/test_ftl_reliability $(COVERAGE_BIN_DIR)/test_rt_services \
+	$(COVERAGE_BIN_DIR)/test_oob $(COVERAGE_BIN_DIR)/test_config \
+	$(COVERAGE_BIN_DIR)/test_fault_inject $(COVERAGE_BIN_DIR)/test_reliability \
+	$(COVERAGE_BIN_DIR)/test_perf_validation $(COVERAGE_BIN_DIR)/test_dsm \
+	$(COVERAGE_BIN_DIR)/test_prp $(COVERAGE_BIN_DIR)/stress_rw \
+	$(COVERAGE_BIN_DIR)/stress_mixed $(COVERAGE_BIN_DIR)/stress_mixed_trim \
+	$(COVERAGE_BIN_DIR)/test_ftl_integrity $(COVERAGE_BIN_DIR)/stress_admin_mix \
+	$(COVERAGE_BIN_DIR)/test_superblock $(COVERAGE_BIN_DIR)/test_power_cycle \
+	$(COVERAGE_BIN_DIR)/test_foundation $(COVERAGE_BIN_DIR)/test_t10_pi \
+	$(COVERAGE_BIN_DIR)/systest_data_integrity $(COVERAGE_BIN_DIR)/systest_nvme_compliance \
+	$(COVERAGE_BIN_DIR)/systest_error_boundary $(COVERAGE_BIN_DIR)/test_uplp \
+	$(COVERAGE_BIN_DIR)/test_qos $(COVERAGE_BIN_DIR)/test_security \
+	$(COVERAGE_BIN_DIR)/test_multi_ns $(COVERAGE_BIN_DIR)/test_thermal_telemetry \
+	$(COVERAGE_BIN_DIR)/stress_enterprise $(COVERAGE_BIN_DIR)/test_proc_interface \
+	$(COVERAGE_BIN_DIR)/stress_stability $(COVERAGE_BIN_DIR)/test_large_capacity \
+	$(COVERAGE_BIN_DIR)/test_io_queue $(COVERAGE_BIN_DIR)/test_taa \
+	$(COVERAGE_BIN_DIR)/test_mt_ftl $(COVERAGE_BIN_DIR)/test_gc_mt \
+	$(COVERAGE_BIN_DIR)/test_inflight_pool
+COVERAGE_E2E_BINS = $(COVERAGE_BIN_DIR)/hfsss-nbd-server
+COVERAGE_BINS = $(COVERAGE_UT_BINS) $(COVERAGE_E2E_BINS)
+
 # Targets
 .PHONY: all clean directories test systest stress-long help \
 	coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage coverage-selftest \
@@ -572,7 +604,7 @@ help:
 
 # Coverage targets
 coverage-build:
-	@$(MAKE) COVERAGE=1 all
+	@$(MAKE) COVERAGE=1 directories $(COVERAGE_BINS)
 
 coverage-clean:
 	@echo "  CLEAN   build-cov/"
