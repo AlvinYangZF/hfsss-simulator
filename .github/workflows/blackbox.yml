@@ -31,6 +31,11 @@ on:
         required: false
         default: ""
 
+env:
+  # Guest assets live on the self-hosted runner at a fixed path.
+  # Override with runner-level env var HFSSS_GUEST_DIR if needed.
+  HFSSS_GUEST_DIR: /Users/zifengyang/Desktop/hfsss-simulator/guest
+
 jobs:
   blackbox-smoke:
     name: blackbox-smoke
@@ -47,10 +52,12 @@ jobs:
           command -v qemu-system-aarch64 >/dev/null \
             || { echo "::error::qemu-system-aarch64 not on PATH"; exit 1; }
           qemu-system-aarch64 --version | head -n 1
-          for f in guest/alpine-hfsss.qcow2 guest/cidata.iso guest/ovmf_vars-saved.fd; do
+          for f in "$HFSSS_GUEST_DIR/alpine-hfsss.qcow2" \
+                   "$HFSSS_GUEST_DIR/cidata.iso" \
+                   "$HFSSS_GUEST_DIR/ovmf_vars-saved.fd"; do
             [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
           done
-          echo "Guest assets OK"
+          echo "Guest assets OK at $HFSSS_GUEST_DIR"
 
       - name: Build HFSSS (NBD server)
         run: make directories build/bin/hfsss-nbd-server
@@ -87,7 +94,7 @@ jobs:
       - name: Run blackbox smoke
         run: |
           MODE="${{ github.event.inputs.mode || 'async' }}"
-          ARGS=(--guest-dir "$(pwd)/guest" --skip-build --mode "$MODE")
+          ARGS=(--guest-dir "$HFSSS_GUEST_DIR" --skip-build --mode "$MODE")
           while IFS= read -r c; do
             [ -n "$c" ] && ARGS+=(--case "$c")
           done < "$RUNNER_TEMP/cases.txt"
@@ -115,7 +122,9 @@ jobs:
         run: |
           command -v qemu-system-aarch64 >/dev/null \
             || { echo "::error::qemu-system-aarch64 not on PATH"; exit 1; }
-          for f in guest/alpine-hfsss.qcow2 guest/cidata.iso guest/ovmf_vars-saved.fd; do
+          for f in "$HFSSS_GUEST_DIR/alpine-hfsss.qcow2" \
+                   "$HFSSS_GUEST_DIR/cidata.iso" \
+                   "$HFSSS_GUEST_DIR/ovmf_vars-saved.fd"; do
             [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
           done
 
@@ -125,7 +134,7 @@ jobs:
       - name: Run full blackbox matrix (async mode)
         run: |
           bash scripts/run_qemu_blackbox_ci.sh \
-            --guest-dir "$(pwd)/guest" \
+            --guest-dir "$HFSSS_GUEST_DIR" \
             --skip-build \
             --mode async \
             --size-mb 2048
