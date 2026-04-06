@@ -78,3 +78,10 @@ the baseline.
 ## Design
 
 See `docs/superpowers/specs/2026-04-04-firmware-code-coverage-design.md`
+
+## Focused Follow-Up
+
+For the current front-end and control-plane coverage gap analysis, plus the
+recommended CI landing order for closing those gaps, see:
+
+- `docs/COVERAGE_FRONTEND_IMPROVEMENT_PLAN.md`
