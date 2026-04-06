@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "common/rt_services.h"
 #include "common/log.h"
 #include "common/common.h"
