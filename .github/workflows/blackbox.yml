@@ -7,12 +7,10 @@ name: QEMU Blackbox
 #   blackbox-smoke  — per-PR gate, nvme-cli + lightweight fio (~8 min)
 #   blackbox-full   — nightly full matrix, all cases × async mode (~30 min)
 #
-# Runner: macos-latest (Apple Silicon M1). HVF may not be available on
-# GitHub hosted runners, so we force TCG (software emulation) via
-# HFSSS_QEMU_ACCEL=tcg. Slower but reliable. env.sh picks up the
-# override and selects cpu=max accordingly.
-#
-# Guest assets downloaded from GitHub Release `guest-assets-v1`.
+# Runner: self-hosted Mac Studio (Apple Silicon, HVF acceleration).
+# Guest assets pre-provisioned under ./guest/ on the runner host.
+# Register a runner with the `hfsss-blackbox` label:
+#   https://docs.github.com/en/actions/hosting-your-own-runners
 
 on:
   pull_request:
@@ -33,45 +31,26 @@ on:
         required: false
         default: ""
 
-permissions:
-  contents: read
-
-env:
-  GUEST_ASSET_TAG: guest-assets-v1
-  # Force TCG on hosted runners — HVF is not available on GitHub macos runners
-  HFSSS_QEMU_ACCEL: tcg
-  HFSSS_QEMU_CPU: max
-
 jobs:
   blackbox-smoke:
-    name: blackbox-smoke (macos)
+    name: blackbox-smoke
     if: github.event_name != 'schedule'
-    runs-on: macos-latest
+    runs-on: [self-hosted, hfsss-blackbox]
     timeout-minutes: 25
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install QEMU
-        run: brew install qemu
-
-      - name: Set UEFI firmware path
+      - name: Verify QEMU + guest assets
         run: |
-          QEMU_PREFIX="$(brew --prefix qemu)"
-          echo "HFSSS_QEMU_CODE_FD=${QEMU_PREFIX}/share/qemu/edk2-aarch64-code.fd" >> "$GITHUB_ENV"
-
-      - name: Download guest assets
-        run: |
-          mkdir -p guest
-          gh release download "$GUEST_ASSET_TAG" \
-            --pattern "alpine-hfsss.qcow2" \
-            --pattern "cidata.iso" \
-            --pattern "ovmf_vars-saved.fd" \
-            --dir guest
-          ls -lh guest/
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          command -v qemu-system-aarch64 >/dev/null \
+            || { echo "::error::qemu-system-aarch64 not on PATH"; exit 1; }
+          qemu-system-aarch64 --version | head -n 1
+          for f in guest/alpine-hfsss.qcow2 guest/cidata.iso guest/ovmf_vars-saved.fd; do
+            [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
+          done
+          echo "Guest assets OK"
 
       - name: Build HFSSS (NBD server)
         run: make directories build/bin/hfsss-nbd-server
@@ -123,33 +102,22 @@ jobs:
           retention-days: 14
 
   blackbox-full:
-    name: blackbox-full (macos, nightly)
+    name: blackbox-full (nightly)
     if: github.event_name == 'schedule'
-    runs-on: macos-latest
+    runs-on: [self-hosted, hfsss-blackbox]
     timeout-minutes: 60
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install QEMU
-        run: brew install qemu
-
-      - name: Set UEFI firmware path
+      - name: Verify QEMU + guest assets
         run: |
-          QEMU_PREFIX="$(brew --prefix qemu)"
-          echo "HFSSS_QEMU_CODE_FD=${QEMU_PREFIX}/share/qemu/edk2-aarch64-code.fd" >> "$GITHUB_ENV"
-
-      - name: Download guest assets
-        run: |
-          mkdir -p guest
-          gh release download "$GUEST_ASSET_TAG" \
-            --pattern "alpine-hfsss.qcow2" \
-            --pattern "cidata.iso" \
-            --pattern "ovmf_vars-saved.fd" \
-            --dir guest
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          command -v qemu-system-aarch64 >/dev/null \
+            || { echo "::error::qemu-system-aarch64 not on PATH"; exit 1; }
+          for f in guest/alpine-hfsss.qcow2 guest/cidata.iso guest/ovmf_vars-saved.fd; do
+            [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
+          done
 
       - name: Build HFSSS (NBD server)
         run: make directories build/bin/hfsss-nbd-server
