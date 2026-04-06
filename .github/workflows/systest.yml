@@ -1,0 +1,34 @@
+name: System Tests
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  systest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Run system tests
+        env:
+          HFSSS_SYSTEST_ARTIFACT_DIR: ${{ github.workspace }}/build/ci/systest
+        run: |
+          bash scripts/ci/run_systest_ci.sh
+
+      - name: Upload system test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: systest-artifacts
+          path: build/ci/systest/
+          retention-days: 14
