@@ -33,7 +33,7 @@ endif
 # UndefinedBehaviorSanitizer build variant
 UBSAN ?= 0
 ifeq ($(UBSAN),1)
-    CFLAGS += -fsanitize=undefined -fno-omit-frame-pointer
+    CFLAGS += -fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
     LDFLAGS += -fsanitize=undefined
     BUILD_DIR := $(BUILD_DIR)-ubsan
 endif
