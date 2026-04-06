@@ -52,12 +52,15 @@ jobs:
           command -v qemu-system-aarch64 >/dev/null \
             || { echo "::error::qemu-system-aarch64 not on PATH"; exit 1; }
           qemu-system-aarch64 --version | head -n 1
+          UEFI_FD="${HFSSS_QEMU_CODE_FD:-/opt/homebrew/share/qemu/edk2-aarch64-code.fd}"
           for f in "$HFSSS_GUEST_DIR/alpine-hfsss.qcow2" \
                    "$HFSSS_GUEST_DIR/cidata.iso" \
-                   "$HFSSS_GUEST_DIR/ovmf_vars-saved.fd"; do
+                   "$HFSSS_GUEST_DIR/ovmf_vars-saved.fd" \
+                   "$UEFI_FD"; do
             [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
           done
           echo "Guest assets OK at $HFSSS_GUEST_DIR"
+          echo "UEFI firmware OK at $UEFI_FD"
 
       - name: Build HFSSS (NBD server)
         run: make directories build/bin/hfsss-nbd-server
@@ -122,9 +125,11 @@ jobs:
         run: |
           command -v qemu-system-aarch64 >/dev/null \
             || { echo "::error::qemu-system-aarch64 not on PATH"; exit 1; }
+          UEFI_FD="${HFSSS_QEMU_CODE_FD:-/opt/homebrew/share/qemu/edk2-aarch64-code.fd}"
           for f in "$HFSSS_GUEST_DIR/alpine-hfsss.qcow2" \
                    "$HFSSS_GUEST_DIR/cidata.iso" \
-                   "$HFSSS_GUEST_DIR/ovmf_vars-saved.fd"; do
+                   "$HFSSS_GUEST_DIR/ovmf_vars-saved.fd" \
+                   "$UEFI_FD"; do
             [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
           done
 
