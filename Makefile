@@ -38,6 +38,14 @@ ifeq ($(UBSAN),1)
     BUILD_DIR := $(BUILD_DIR)-ubsan
 endif
 
+# ThreadSanitizer build variant
+TSAN ?= 0
+ifeq ($(TSAN),1)
+    CFLAGS += -fsanitize=thread -fno-omit-frame-pointer -O1
+    LDFLAGS += -fsanitize=thread
+    BUILD_DIR := $(BUILD_DIR)-tsan
+endif
+
 # Directories
 SRC_DIR = src
 COMMON_SRC = $(SRC_DIR)/common

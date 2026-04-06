@@ -6,6 +6,7 @@
 #include "ftl/taa.h"
 #include "ftl/io_queue.h"
 #include <pthread.h>
+#include <stdatomic.h>
 
 /* Match the default 4-channel / 2-plane geometry so aligned sequential I/O
  * can fan out across channel+plane targets instead of only channel targets.
@@ -23,7 +24,7 @@ struct ftl_worker {
     bool            request_sync_initialized;
     struct ftl_ctx *ftl;
     struct taa_ctx *taa;
-    bool            running;
+    atomic_bool     running;
     u64             ops_completed;
     u64             ops_failed;
 };
@@ -39,11 +40,11 @@ struct ftl_mt_ctx {
     pthread_t          gc_thread;
     pthread_mutex_t    gc_mutex;
     pthread_cond_t     gc_cond;
-    bool               gc_running;
+    atomic_bool        gc_running;
 
     /* Background WL/Read Disturb thread */
     pthread_t          wl_thread;
-    bool               wl_running;
+    atomic_bool        wl_running;
 };
 
 /* Lifecycle */
