@@ -108,17 +108,46 @@ start_nbd_with_retry() {
         "$BIN_DIR/hfsss-nbd-server" -a -p "$COV_NBD_PORT" > "$HFSSS_RUN_NBD_LOG" 2>&1 &
         echo $! > "$HFSSS_RUN_NBD_PID_FILE"
         sleep 2
-        if kill -0 "$(cat "$HFSSS_RUN_NBD_PID_FILE")" 2>/dev/null; then
+        if ! kill -0 "$(cat "$HFSSS_RUN_NBD_PID_FILE")" 2>/dev/null; then
+            echo "WARN: NBD server died on startup (attempt $attempt). Log tail:"
+            tail -n 20 "$HFSSS_RUN_NBD_LOG" >&2 || true
+            if [ "$attempt" -lt 3 ]; then
+                hfsss_run_alloc_port COV_NBD_PORT
+                echo "Retrying on port $COV_NBD_PORT..."
+            fi
+            continue
+        fi
+
+        # The server may still be initializing after the process is alive.
+        # Wait until it advertises that it is ready to accept an NBD client
+        # before launching QEMU, otherwise QEMU can lose a startup race and
+        # exit on an early connection-refused.
+        local ready=0
+        local i
+        for i in $(seq 1 30); do
+            if grep -q 'Waiting for NBD client' "$HFSSS_RUN_NBD_LOG" 2>/dev/null; then
+                ready=1
+                break
+            fi
+            if ! kill -0 "$(cat "$HFSSS_RUN_NBD_PID_FILE")" 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+
+        if [ "$ready" -eq 1 ]; then
             return 0
         fi
-        echo "WARN: NBD server died on startup (attempt $attempt). Log tail:"
+
+        echo "WARN: NBD server did not become ready (attempt $attempt). Log tail:"
         tail -n 20 "$HFSSS_RUN_NBD_LOG" >&2 || true
         if [ "$attempt" -lt 3 ]; then
+            hfsss_run_kill_pidfile "$HFSSS_RUN_NBD_PID_FILE" 2
             hfsss_run_alloc_port COV_NBD_PORT
             echo "Retrying on port $COV_NBD_PORT..."
         fi
     done
-    echo "ERROR: NBD server failed to start after 3 attempts"
+    echo "ERROR: NBD server failed to become ready after 3 attempts"
     cat "$HFSSS_RUN_NBD_LOG"
     return 1
 }
