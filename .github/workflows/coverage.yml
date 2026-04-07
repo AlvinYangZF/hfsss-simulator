@@ -8,7 +8,7 @@ on:
 
 jobs:
   ut-coverage:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, hfsss-ci]
     permissions:
       contents: read
       pull-requests: write
@@ -19,8 +19,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y lcov build-essential jq
+          brew install lcov jq 2>/dev/null || true
 
       - name: Build instrumented firmware
         run: make coverage-build
