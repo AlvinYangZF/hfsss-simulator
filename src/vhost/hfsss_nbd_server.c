@@ -47,13 +47,16 @@
 #ifndef htonll
 static inline uint64_t hfsss_htonll(uint64_t v)
 {
-    union { uint64_t u64; uint32_t u32[2]; } s;
+    union {
+        uint64_t u64;
+        uint32_t u32[2];
+    } s;
     s.u32[0] = htonl((uint32_t)(v >> 32));
     s.u32[1] = htonl((uint32_t)(v & 0xffffffffU));
     return s.u64;
 }
 #define htonll hfsss_htonll
-#define ntohll hfsss_htonll   /* byte-swap is self-inverse */
+#define ntohll hfsss_htonll /* byte-swap is self-inverse */
 #endif
 
 /* -------------------------------------------------------------------------
@@ -61,38 +64,38 @@ static inline uint64_t hfsss_htonll(uint64_t v)
  * ---------------------------------------------------------------------- */
 
 /* Handshake magic numbers */
-#define NBD_MAGIC           UINT64_C(0x4e42444d41474943)  /* "NBDMAGIC" */
-#define NBD_IHAVEOPT        UINT64_C(0x49484156454f5054)  /* "IHAVEOPT" */
-#define NBD_OPT_REPLY_MAGIC UINT64_C(0x3e889045565a9)    /* option reply */
+#define NBD_MAGIC UINT64_C(0x4e42444d41474943)        /* "NBDMAGIC" */
+#define NBD_IHAVEOPT UINT64_C(0x49484156454f5054)     /* "IHAVEOPT" */
+#define NBD_OPT_REPLY_MAGIC UINT64_C(0x3e889045565a9) /* option reply */
 
 /* Handshake flags (server -> client) */
 #define NBD_FLAG_FIXED_NEWSTYLE (1u << 0)
-#define NBD_FLAG_NO_ZEROES      (1u << 1)
+#define NBD_FLAG_NO_ZEROES (1u << 1)
 
 /* Transmission flags sent with export info */
-#define NBD_FLAG_HAS_FLAGS      (1u << 0)
-#define NBD_FLAG_SEND_FLUSH     (1u << 2)
-#define NBD_FLAG_SEND_TRIM      (1u << 5)
-#define NBD_TRANSMISSION_FLAGS  (NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_FLUSH | NBD_FLAG_SEND_TRIM)
+#define NBD_FLAG_HAS_FLAGS (1u << 0)
+#define NBD_FLAG_SEND_FLUSH (1u << 2)
+#define NBD_FLAG_SEND_TRIM (1u << 5)
+#define NBD_TRANSMISSION_FLAGS (NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_FLUSH | NBD_FLAG_SEND_TRIM)
 
 /* Option types (client -> server) */
-#define NBD_OPT_EXPORT_NAME  1u
-#define NBD_OPT_ABORT        2u
+#define NBD_OPT_EXPORT_NAME 1u
+#define NBD_OPT_ABORT 2u
 
 /* Reply types (server -> client, for NBD_OPT_GO etc.) */
-#define NBD_REP_ACK     1u
-#define NBD_REP_ERR_UNSUP  (UINT32_C(0x80000001))
+#define NBD_REP_ACK 1u
+#define NBD_REP_ERR_UNSUP (UINT32_C(0x80000001))
 
 /* Transmission request magic */
-#define NBD_REQUEST_MAGIC  0x25609513u
-#define NBD_REPLY_MAGIC    0x67446698u
+#define NBD_REQUEST_MAGIC 0x25609513u
+#define NBD_REPLY_MAGIC 0x67446698u
 
 /* Command types */
-#define NBD_CMD_READ   0u
-#define NBD_CMD_WRITE  1u
-#define NBD_CMD_DISC   2u
-#define NBD_CMD_FLUSH  3u
-#define NBD_CMD_TRIM   4u
+#define NBD_CMD_READ 0u
+#define NBD_CMD_WRITE 1u
+#define NBD_CMD_DISC 2u
+#define NBD_CMD_FLUSH 3u
+#define NBD_CMD_TRIM 4u
 
 /* Verbose I/O logging (set via -v flag) */
 static int g_verbose = 0;
@@ -103,7 +106,7 @@ static int g_async = 0;
 static struct ftl_mt_ctx *g_mt = NULL;
 
 /* NBD error codes (errno-compatible subset) */
-#define NBD_EIO   5u
+#define NBD_EIO 5u
 #define NBD_EINVAL 22u
 
 /* -------------------------------------------------------------------------
@@ -112,19 +115,19 @@ static struct ftl_mt_ctx *g_mt = NULL;
 
 /* Request from client during transmission phase (28 bytes) */
 struct __attribute__((packed)) nbd_request {
-    uint32_t magic;     /* NBD_REQUEST_MAGIC */
+    uint32_t magic; /* NBD_REQUEST_MAGIC */
     uint16_t flags;
-    uint16_t type;      /* NBD_CMD_* */
-    uint64_t handle;    /* opaque, echo back */
-    uint64_t offset;    /* byte offset */
-    uint32_t length;    /* byte count */
+    uint16_t type;   /* NBD_CMD_* */
+    uint64_t handle; /* opaque, echo back */
+    uint64_t offset; /* byte offset */
+    uint32_t length; /* byte count */
 };
 
 /* Reply from server during transmission phase (16 bytes) */
 struct __attribute__((packed)) nbd_reply {
-    uint32_t magic;     /* NBD_REPLY_MAGIC */
-    uint32_t error;     /* 0 = success, else errno */
-    uint64_t handle;    /* from request */
+    uint32_t magic;  /* NBD_REPLY_MAGIC */
+    uint32_t error;  /* 0 = success, else errno */
+    uint64_t handle; /* from request */
 };
 
 /* -------------------------------------------------------------------------
@@ -132,7 +135,7 @@ struct __attribute__((packed)) nbd_reply {
  * ---------------------------------------------------------------------- */
 
 static volatile int g_running = 1;
-static int          g_listen_fd = -1;
+static int g_listen_fd = -1;
 
 static void handle_signal(int signo)
 {
@@ -157,7 +160,7 @@ static int read_exact(int fd, void *buf, size_t len)
                 continue;
             return -1;
         }
-        p   += (size_t)n;
+        p += (size_t)n;
         len -= (size_t)n;
     }
     return 0;
@@ -173,7 +176,7 @@ static int write_exact(int fd, const void *buf, size_t len)
                 continue;
             return -1;
         }
-        p   += (size_t)n;
+        p += (size_t)n;
         len -= (size_t)n;
     }
     return 0;
@@ -186,9 +189,9 @@ static int write_exact(int fd, const void *buf, size_t len)
 static int send_reply(int fd, uint64_t handle, uint32_t error)
 {
     struct nbd_reply rep;
-    rep.magic  = htonl(NBD_REPLY_MAGIC);
-    rep.error  = htonl(error);
-    rep.handle = handle;          /* handle already in wire byte order */
+    rep.magic = htonl(NBD_REPLY_MAGIC);
+    rep.error = htonl(error);
+    rep.handle = handle; /* handle already in wire byte order */
     return write_exact(fd, &rep, sizeof(rep));
 }
 
@@ -202,13 +205,13 @@ static int send_reply(int fd, uint64_t handle, uint32_t error)
 static int nbd_handshake(int client_fd, uint64_t export_size)
 {
     /* --- Server sends NBDMAGIC + IHAVEOPT + handshake_flags ----------- */
-    uint64_t magic_wire    = htonll(NBD_MAGIC);
+    uint64_t magic_wire = htonll(NBD_MAGIC);
     uint64_t ihaveopt_wire = htonll(NBD_IHAVEOPT);
-    uint16_t hflags_wire   = htons(NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES);
+    uint16_t hflags_wire = htons(NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES);
 
-    if (write_exact(client_fd, &magic_wire,    sizeof(magic_wire))    != 0 ||
+    if (write_exact(client_fd, &magic_wire, sizeof(magic_wire)) != 0 ||
         write_exact(client_fd, &ihaveopt_wire, sizeof(ihaveopt_wire)) != 0 ||
-        write_exact(client_fd, &hflags_wire,   sizeof(hflags_wire))   != 0)
+        write_exact(client_fd, &hflags_wire, sizeof(hflags_wire)) != 0)
         return -1;
 
     /* --- Client sends client_flags (4 bytes) -------------------------- */
@@ -225,12 +228,12 @@ static int nbd_handshake(int client_fd, uint64_t export_size)
         uint32_t opt_len_wire;
 
         if (read_exact(client_fd, &opt_magic_wire, sizeof(opt_magic_wire)) != 0 ||
-            read_exact(client_fd, &opt_type_wire,  sizeof(opt_type_wire))  != 0 ||
-            read_exact(client_fd, &opt_len_wire,   sizeof(opt_len_wire))   != 0)
+            read_exact(client_fd, &opt_type_wire, sizeof(opt_type_wire)) != 0 ||
+            read_exact(client_fd, &opt_len_wire, sizeof(opt_len_wire)) != 0)
             return -1;
 
         uint32_t opt_type = ntohl(opt_type_wire);
-        uint32_t opt_len  = ntohl(opt_len_wire);
+        uint32_t opt_len = ntohl(opt_len_wire);
 
         /* Drain any option data (we don't care about the export name) */
         if (opt_len > 0) {
@@ -255,10 +258,10 @@ static int nbd_handshake(int client_fd, uint64_t export_size)
              * Because we set NO_ZEROES in handshake_flags we do NOT
              * send the trailing 124 zero bytes.
              */
-            uint64_t esz_wire   = htonll(export_size);
+            uint64_t esz_wire = htonll(export_size);
             uint16_t tflags_wire = htons((uint16_t)NBD_TRANSMISSION_FLAGS);
 
-            if (write_exact(client_fd, &esz_wire,    sizeof(esz_wire))    != 0 ||
+            if (write_exact(client_fd, &esz_wire, sizeof(esz_wire)) != 0 ||
                 write_exact(client_fd, &tflags_wire, sizeof(tflags_wire)) != 0)
                 return -1;
 
@@ -269,14 +272,14 @@ static int nbd_handshake(int client_fd, uint64_t export_size)
         /* Unknown option: send NBD_REP_ERR_UNSUP and keep looping */
         {
             uint64_t reply_magic_wire = htonll(NBD_OPT_REPLY_MAGIC);
-            uint32_t opt_echo_wire    = opt_type_wire;   /* already big-endian */
-            uint32_t rep_type_wire    = htonl(NBD_REP_ERR_UNSUP);
-            uint32_t rep_len_wire     = htonl(0);
+            uint32_t opt_echo_wire = opt_type_wire; /* already big-endian */
+            uint32_t rep_type_wire = htonl(NBD_REP_ERR_UNSUP);
+            uint32_t rep_len_wire = htonl(0);
 
             if (write_exact(client_fd, &reply_magic_wire, sizeof(reply_magic_wire)) != 0 ||
-                write_exact(client_fd, &opt_echo_wire,    sizeof(opt_echo_wire))    != 0 ||
-                write_exact(client_fd, &rep_type_wire,    sizeof(rep_type_wire))    != 0 ||
-                write_exact(client_fd, &rep_len_wire,     sizeof(rep_len_wire))     != 0)
+                write_exact(client_fd, &opt_echo_wire, sizeof(opt_echo_wire)) != 0 ||
+                write_exact(client_fd, &rep_type_wire, sizeof(rep_type_wire)) != 0 ||
+                write_exact(client_fd, &rep_len_wire, sizeof(rep_len_wire)) != 0)
                 return -1;
         }
     }
@@ -286,8 +289,7 @@ static int nbd_handshake(int client_fd, uint64_t export_size)
  * Multi-threaded I/O helpers — submit to worker and wait for completion
  * ---------------------------------------------------------------------- */
 
-static int mt_io(enum io_opcode op, uint64_t lba, uint32_t count,
-                 uint8_t *data)
+static int mt_io(enum io_opcode op, uint64_t lba, uint32_t count, uint8_t *data)
 {
     struct io_request req;
     memset(&req, 0, sizeof(req));
@@ -314,15 +316,14 @@ static int mt_io(enum io_opcode op, uint64_t lba, uint32_t count,
  * processing path, exercising nvme_ctrl_process_io_cmd() end-to-end.
  * ---------------------------------------------------------------------- */
 
-static void build_nvme_io_sqe(struct nvme_sq_entry *sqe, uint8_t opcode,
-                               uint32_t nsid, uint64_t slba, uint32_t nlb)
+static void build_nvme_io_sqe(struct nvme_sq_entry *sqe, uint8_t opcode, uint32_t nsid, uint64_t slba, uint32_t nlb)
 {
     memset(sqe, 0, sizeof(*sqe));
     sqe->opcode = opcode;
-    sqe->nsid   = nsid;
-    sqe->cdw10  = (uint32_t)(slba & 0xFFFFFFFF);
-    sqe->cdw11  = (uint32_t)(slba >> 32);
-    sqe->cdw12  = (nlb > 0) ? (nlb - 1) : 0;  /* NLB is 0-based */
+    sqe->nsid = nsid;
+    sqe->cdw10 = (uint32_t)(slba & 0xFFFFFFFF);
+    sqe->cdw11 = (uint32_t)(slba >> 32);
+    sqe->cdw12 = (nlb > 0) ? (nlb - 1) : 0; /* NLB is 0-based */
 }
 
 /* -------------------------------------------------------------------------
@@ -334,24 +335,22 @@ static void build_nvme_io_sqe(struct nvme_sq_entry *sqe, uint8_t opcode,
  * pool for TAA shard cache coherency.
  * ---------------------------------------------------------------------- */
 
-static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
-                      uint32_t lba_size)
+static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev, uint32_t lba_size)
 {
     uint8_t *iobuf = NULL;
-    size_t   iobuf_cap = 0;
+    size_t iobuf_cap = 0;
     static uint16_t cmd_id = 0;
 
     for (;;) {
         struct nbd_request req;
         if (read_exact(client_fd, &req, sizeof(req)) != 0) {
             if (errno != 0)
-                fprintf(stderr, "[NBD] Read request failed: %s\n",
-                        strerror(errno));
+                fprintf(stderr, "[NBD] Read request failed: %s\n", strerror(errno));
             break;
         }
 
-        uint32_t magic  = ntohl(req.magic);
-        uint16_t type   = ntohs(req.type);
+        uint32_t magic = ntohl(req.magic);
+        uint16_t type = ntohs(req.type);
         uint64_t offset = ntohll(req.offset);
         uint32_t length = ntohl(req.length);
         uint64_t handle = req.handle; /* echo verbatim */
@@ -365,11 +364,11 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
          * The simulator works in lba_size units (4096B), but NBD clients
          * may request sub-page I/O (e.g. 512B).  We always read/write
          * full pages and slice/merge as needed. */
-        uint64_t lba        = offset / lba_size;
-        uint32_t byte_off   = (uint32_t)(offset % lba_size);  /* offset within first page */
-        uint64_t end_byte   = offset + length;
-        uint64_t end_lba    = (end_byte + lba_size - 1) / lba_size;
-        uint32_t count      = (uint32_t)(end_lba - lba);
+        uint64_t lba = offset / lba_size;
+        uint32_t byte_off = (uint32_t)(offset % lba_size); /* offset within first page */
+        uint64_t end_byte = offset + length;
+        uint64_t end_lba = (end_byte + lba_size - 1) / lba_size;
+        uint32_t count = (uint32_t)(end_lba - lba);
         uint32_t full_bytes = count * lba_size;
 
         /* Ensure iobuf is large enough for full-page I/O */
@@ -398,8 +397,7 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
                 struct nvme_cq_entry cqe;
                 build_nvme_io_sqe(&sqe, NVME_NVM_READ, 1, lba, count);
                 sqe.command_id = cmd_id++;
-                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe,
-                                                 iobuf, full_bytes);
+                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe, iobuf, full_bytes);
                 if (rc == 0 && cqe.status != 0)
                     rc = -1;
             }
@@ -408,8 +406,8 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
                 memset(iobuf, 0, full_bytes);
             }
             if (g_verbose)
-                fprintf(stderr, "[NBD] READ  off=%-10" PRIu64 " len=%-6u lba=%-8" PRIu64 " cnt=%-4u rc=%d\n",
-                        offset, length, lba, count, rc);
+                fprintf(stderr, "[NBD] READ  off=%-10" PRIu64 " len=%-6u lba=%-8" PRIu64 " cnt=%-4u rc=%d\n", offset,
+                        length, lba, count, rc);
             if (send_reply(client_fd, handle, 0) != 0)
                 goto done;
             /* Return only the requested slice */
@@ -446,8 +444,7 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
                     struct nvme_cq_entry cqe;
                     build_nvme_io_sqe(&sqe, NVME_NVM_READ, 1, lba, count);
                     sqe.command_id = cmd_id++;
-                    rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe,
-                                                     iobuf, full_bytes);
+                    rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe, iobuf, full_bytes);
                     if (rc == 0 && cqe.status != 0)
                         rc = -1;
                 }
@@ -467,14 +464,13 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
                 struct nvme_cq_entry cqe;
                 build_nvme_io_sqe(&sqe, NVME_NVM_WRITE, 1, lba, count);
                 sqe.command_id = cmd_id++;
-                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe,
-                                                 iobuf, full_bytes);
+                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe, iobuf, full_bytes);
                 if (rc == 0 && cqe.status != 0)
                     rc = -1;
             }
             if (g_verbose)
-                fprintf(stderr, "[NBD] WRITE off=%-10" PRIu64 " len=%-6u lba=%-8" PRIu64 " cnt=%-4u rc=%d\n",
-                        offset, length, lba, count, rc);
+                fprintf(stderr, "[NBD] WRITE off=%-10" PRIu64 " len=%-6u lba=%-8" PRIu64 " cnt=%-4u rc=%d\n", offset,
+                        length, lba, count, rc);
             if (rc != 0) {
                 fprintf(stderr, "[NBD] write failed rc=%d\n", rc);
                 if (send_reply(client_fd, handle, NBD_EIO) != 0)
@@ -502,8 +498,7 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
                 struct nvme_cq_entry cqe;
                 build_nvme_io_sqe(&sqe, NVME_NVM_FLUSH, 1, 0, 0);
                 sqe.command_id = cmd_id++;
-                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe,
-                                                 NULL, 0);
+                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe, NULL, 0);
                 if (rc == 0 && cqe.status != 0)
                     rc = -1;
             }
@@ -517,10 +512,8 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
          * TRIM (discard) — route through NVMe dispatch
          * ---------------------------------------------------------------- */
         case NBD_CMD_TRIM: {
-            fprintf(stderr,
-                    "[NBD] TRIM  offset=0x%016llx len=%u lba=%llu count=%u\n",
-                    (unsigned long long)offset, length,
-                    (unsigned long long)lba, count);
+            fprintf(stderr, "[NBD] TRIM  offset=0x%016llx len=%u lba=%llu count=%u\n", (unsigned long long)offset,
+                    length, (unsigned long long)lba, count);
 
             /* In MT mode, READ/WRITE traverse the TAA shard cache via
              * mt_io(), so TRIM must do the same — otherwise trim mutates
@@ -534,18 +527,16 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev,
             } else {
                 struct nvme_dsm_range range;
                 memset(&range, 0, sizeof(range));
-                range.slba  = lba;
-                range.nlb   = count;
+                range.slba = lba;
+                range.nlb = count;
 
                 struct nvme_sq_entry sqe;
                 struct nvme_cq_entry cqe;
-                build_nvme_io_sqe(&sqe, NVME_NVM_DATASET_MANAGEMENT,
-                                  1, 0, 0);
-                sqe.cdw10 = 0;  /* NR = 0 means 1 range */
+                build_nvme_io_sqe(&sqe, NVME_NVM_DATASET_MANAGEMENT, 1, 0, 0);
+                sqe.cdw10 = 0; /* NR = 0 means 1 range */
                 sqe.cdw11 = NVME_DSM_ATTR_DEALLOCATE;
                 sqe.command_id = cmd_id++;
-                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe,
-                                                 &range, sizeof(range));
+                rc = nvme_uspace_dispatch_io_cmd(dev, &sqe, &cqe, &range, sizeof(range));
                 if (rc == 0 && cqe.status != 0)
                     rc = -1;
             }
@@ -581,22 +572,22 @@ done:
 static void print_usage(const char *prog)
 {
     fprintf(stderr,
-        "Usage: %s [options]\n"
-        "\n"
-        "Expose HFSSS simulator as an NBD block device for QEMU.\n"
-        "\n"
-        "Options:\n"
-        "  -p <port>   TCP port to listen on (default: 10809)\n"
-        "  -s <MB>     Export size in MB (default: 512)\n"
-        "  -v          Verbose I/O logging\n"
-        "  -m          Multi-threaded FTL workers\n"
-        "  -a          Async NBD pipeline (SPDK-style SQ/CQ, implies -m)\n"
-        "  -h          Show this help\n"
-        "\n"
-        "Connect QEMU with:\n"
-        "  -drive driver=nbd,host=127.0.0.1,port=10809,id=nvm0\n"
-        "  -device nvme,serial=HFSSS0001,drive=nvm0\n",
-        prog);
+            "Usage: %s [options]\n"
+            "\n"
+            "Expose HFSSS simulator as an NBD block device for QEMU.\n"
+            "\n"
+            "Options:\n"
+            "  -p <port>   TCP port to listen on (default: 10809)\n"
+            "  -s <MB>     Export size in MB (default: 512)\n"
+            "  -v          Verbose I/O logging\n"
+            "  -m          Multi-threaded FTL workers\n"
+            "  -a          Async NBD pipeline (SPDK-style SQ/CQ, implies -m)\n"
+            "  -h          Show this help\n"
+            "\n"
+            "Connect QEMU with:\n"
+            "  -drive driver=nbd,host=127.0.0.1,port=10809,id=nvm0\n"
+            "  -device nvme,serial=HFSSS0001,drive=nvm0\n",
+            prog);
 }
 
 /* -------------------------------------------------------------------------
@@ -609,9 +600,9 @@ int main(int argc, char *argv[])
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
 
-    uint16_t port    = 10809;
+    uint16_t port = 10809;
     uint64_t size_mb = 512;
-    int verbose      = 0;
+    int verbose = 0;
     int opt;
 
     while ((opt = getopt(argc, argv, "p:s:vmah")) != -1) {
@@ -635,7 +626,7 @@ int main(int argc, char *argv[])
             break;
         case 'a':
             g_async = 1;
-            g_multithread = 1;  /* async implies multi-threaded */
+            g_multithread = 1; /* async implies multi-threaded */
             break;
         case 'h':
             print_usage(argv[0]);
@@ -646,16 +637,16 @@ int main(int argc, char *argv[])
         }
     }
 
-    const uint32_t lba_size   = 4096;
+    const uint32_t lba_size = 4096;
     const uint64_t export_size = size_mb * 1024ULL * 1024ULL;
-    const uint64_t total_lbas  = export_size / lba_size;
+    const uint64_t total_lbas = export_size / lba_size;
 
     /* ------------------------------------------------------------------ */
     /* Auto-size NAND geometry to fit requested export size                 */
     /* ------------------------------------------------------------------ */
-    const uint32_t page_size  = 4096;
+    const uint32_t page_size = 4096;
     const uint32_t spare_size = 64;
-    const uint32_t op_pct     = 7;  /* 7% over-provisioning */
+    const uint32_t op_pct = 7; /* 7% over-provisioning */
 
     /* Target raw pages: export + OP headroom */
     uint64_t pages_needed = (total_lbas * (100 + op_pct) + 99) / 100;
@@ -670,13 +661,31 @@ int main(int argc, char *argv[])
         uint64_t raw = (uint64_t)nch * nchip * ndie * nplane * nblk * npg;
         if (raw >= pages_needed)
             break;
-        if (nblk < 4096)       { nblk  = (nblk  < 2048) ? nblk  * 2 : 4096; continue; }
-        if (npg  < 1024)       { npg   = (npg   < 512)  ? npg   * 2 : 1024; continue; }
-        if (nch  < 16)         { nch   *= 2; continue; }
-        if (nchip < 8)         { nchip *= 2; continue; }
-        if (ndie  < 8)         { ndie  *= 2; continue; }
-        if (nplane < 4)        { nplane *= 2; continue; }
-        break;  /* maxed out */
+        if (nblk < 4096) {
+            nblk = (nblk < 2048) ? nblk * 2 : 4096;
+            continue;
+        }
+        if (npg < 1024) {
+            npg = (npg < 512) ? npg * 2 : 1024;
+            continue;
+        }
+        if (nch < 16) {
+            nch *= 2;
+            continue;
+        }
+        if (nchip < 8) {
+            nchip *= 2;
+            continue;
+        }
+        if (ndie < 8) {
+            ndie *= 2;
+            continue;
+        }
+        if (nplane < 4) {
+            nplane *= 2;
+            continue;
+        }
+        break; /* maxed out */
     }
 
     /* ------------------------------------------------------------------ */
@@ -685,19 +694,19 @@ int main(int argc, char *argv[])
     struct nvme_uspace_config config;
     nvme_uspace_config_default(&config);
 
-    config.sssim_cfg.channel_count     = nch;
+    config.sssim_cfg.channel_count = nch;
     config.sssim_cfg.chips_per_channel = nchip;
-    config.sssim_cfg.dies_per_chip     = ndie;
-    config.sssim_cfg.planes_per_die    = nplane;
-    config.sssim_cfg.blocks_per_plane  = nblk;
-    config.sssim_cfg.pages_per_block   = npg;
-    config.sssim_cfg.page_size         = page_size;
-    config.sssim_cfg.spare_size        = spare_size;
-    config.sssim_cfg.lba_size          = lba_size;
-    config.sssim_cfg.total_lbas        = total_lbas;
+    config.sssim_cfg.dies_per_chip = ndie;
+    config.sssim_cfg.planes_per_die = nplane;
+    config.sssim_cfg.blocks_per_plane = nblk;
+    config.sssim_cfg.pages_per_block = npg;
+    config.sssim_cfg.page_size = page_size;
+    config.sssim_cfg.spare_size = spare_size;
+    config.sssim_cfg.lba_size = lba_size;
+    config.sssim_cfg.total_lbas = total_lbas;
 
     uint64_t raw_pages = (uint64_t)nch * nchip * ndie * nplane * nblk * npg;
-    uint64_t raw_gb    = (raw_pages * page_size) >> 30;
+    uint64_t raw_gb = (raw_pages * page_size) >> 30;
 
     struct nvme_uspace_dev dev;
 
@@ -705,11 +714,10 @@ int main(int argc, char *argv[])
     fprintf(stderr, "HFSSS NBD Server\n");
     fprintf(stderr, "========================================\n");
     fprintf(stderr, "Port:     %u\n", port);
-    fprintf(stderr, "Size:     %llu MB (%llu LBAs x %u B)\n",
-            (unsigned long long)size_mb,
+    fprintf(stderr, "Size:     %llu MB (%llu LBAs x %u B)\n", (unsigned long long)size_mb,
             (unsigned long long)total_lbas, lba_size);
-    fprintf(stderr, "NAND:     %uch/%uchip/%udie/%uplane/%ublk/%upg/%uB (%" PRIu64 " GB raw)\n",
-            nch, nchip, ndie, nplane, nblk, npg, page_size, raw_gb);
+    fprintf(stderr, "NAND:     %uch/%uchip/%udie/%uplane/%ublk/%upg/%uB (%" PRIu64 " GB raw)\n", nch, nchip, ndie,
+            nplane, nblk, npg, page_size, raw_gb);
     fprintf(stderr, "Initializing simulator...\n");
 
     if (nvme_uspace_dev_init(&dev, &config) != 0) {
@@ -736,19 +744,19 @@ int main(int argc, char *argv[])
     if (g_multithread) {
         struct ftl_config ftl_cfg;
         memset(&ftl_cfg, 0, sizeof(ftl_cfg));
-        ftl_cfg.total_lbas       = total_lbas;
-        ftl_cfg.page_size        = page_size;
-        ftl_cfg.pages_per_block  = npg;
+        ftl_cfg.total_lbas = total_lbas;
+        ftl_cfg.page_size = page_size;
+        ftl_cfg.pages_per_block = npg;
         ftl_cfg.blocks_per_plane = nblk;
-        ftl_cfg.planes_per_die   = nplane;
-        ftl_cfg.dies_per_chip    = ndie;
+        ftl_cfg.planes_per_die = nplane;
+        ftl_cfg.dies_per_chip = ndie;
         ftl_cfg.chips_per_channel = nchip;
-        ftl_cfg.channel_count    = nch;
-        ftl_cfg.op_ratio         = op_pct;
-        ftl_cfg.gc_policy        = GC_POLICY_GREEDY;
-        ftl_cfg.gc_threshold     = 10;
-        ftl_cfg.gc_hiwater       = 20;
-        ftl_cfg.gc_lowater       = 5;
+        ftl_cfg.channel_count = nch;
+        ftl_cfg.op_ratio = op_pct;
+        ftl_cfg.gc_policy = GC_POLICY_GREEDY;
+        ftl_cfg.gc_threshold = 10;
+        ftl_cfg.gc_hiwater = 20;
+        ftl_cfg.gc_lowater = 5;
 
         /* MT FTL uses the same HAL as the sssim device */
         struct hal_ctx *hal = &dev.sssim.hal;
@@ -767,8 +775,7 @@ int main(int argc, char *argv[])
             return 1;
         }
         g_mt = &mt_ctx;
-        fprintf(stderr, "Mode:     MULTI-THREADED (%d FTL workers + GC + WL)\n",
-                FTL_NUM_WORKERS);
+        fprintf(stderr, "Mode:     MULTI-THREADED (%d FTL workers + GC + WL)\n", FTL_NUM_WORKERS);
     } else {
         fprintf(stderr, "Mode:     SINGLE-THREADED\n");
     }
@@ -791,9 +798,9 @@ int main(int argc, char *argv[])
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
-    addr.sin_family      = AF_INET;
+    addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port        = htons(port);
+    addr.sin_port = htons(port);
 
     if (bind(g_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         perror("bind");
@@ -818,11 +825,10 @@ int main(int argc, char *argv[])
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = handle_signal;
     sigemptyset(&sa.sa_mask);
-    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    fprintf(stderr, "Listening on 0.0.0.0:%u — export size %llu MB\n",
-            port, (unsigned long long)size_mb);
+    fprintf(stderr, "Listening on 0.0.0.0:%u — export size %llu MB\n", port, (unsigned long long)size_mb);
     fprintf(stderr, "Waiting for NBD client...\n");
 
     /* ------------------------------------------------------------------ */
@@ -832,9 +838,7 @@ int main(int argc, char *argv[])
         struct sockaddr_in client_addr;
         socklen_t client_addr_len = sizeof(client_addr);
 
-        int client_fd = accept(g_listen_fd,
-                               (struct sockaddr *)&client_addr,
-                               &client_addr_len);
+        int client_fd = accept(g_listen_fd, (struct sockaddr *)&client_addr, &client_addr_len);
         if (client_fd < 0) {
             if (errno == EINTR || errno == EBADF) {
                 /* Interrupted by signal or fd closed by handler */
@@ -844,15 +848,12 @@ int main(int argc, char *argv[])
             break;
         }
 
-        fprintf(stderr, "[NBD] Connected: %s:%u\n",
-                inet_ntoa(client_addr.sin_addr),
-                ntohs(client_addr.sin_port));
+        fprintf(stderr, "[NBD] Connected: %s:%u\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
         if (nbd_handshake(client_fd, export_size) == 0) {
             fprintf(stderr, "[NBD] Handshake OK, entering transmission phase\n");
             if (g_async && g_mt) {
-                fprintf(stderr, "Mode:     ASYNC PIPELINE (SQ + CQ + %d FTL workers)\n",
-                        FTL_NUM_WORKERS);
+                fprintf(stderr, "Mode:     ASYNC PIPELINE (SQ + CQ + %d FTL workers)\n", FTL_NUM_WORKERS);
                 struct nbd_async_ctx async_ctx;
                 if (nbd_async_init(&async_ctx, client_fd, lba_size, g_mt, 256) != 0) {
                     fprintf(stderr, "ERROR: nbd_async_init failed\n");
