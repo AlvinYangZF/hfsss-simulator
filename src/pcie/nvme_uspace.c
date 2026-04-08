@@ -633,12 +633,14 @@ int nvme_uspace_dispatch_io_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_entr
         break;
 
     case NVME_NVM_WRITE_ZEROES: {
-        if (!data || data_len < (u64)nlb * dev->sssim.config.lba_size) {
-            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD, NVME_STATUS_TYPE_GENERIC);
+        u64 zero_len = (u64)nlb * dev->sssim.config.lba_size;
+        void *zero_buf = calloc(1, zero_len);
+        if (!zero_buf) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INTERNAL_DEVICE_ERROR, NVME_STATUS_TYPE_GENERIC);
             return HFSSS_OK;
         }
-        memset(data, 0, (u64)nlb * dev->sssim.config.lba_size);
-        result = nvme_uspace_write(dev, nsid, slba, nlb, data);
+        result = nvme_uspace_write(dev, nsid, slba, nlb, zero_buf);
+        free(zero_buf);
         break;
     }
 
@@ -943,13 +945,22 @@ int nvme_uspace_exercise_admin_path(struct nvme_uspace_dev *dev)
     rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
     fprintf(stderr, "[NVMe]   Get Features PM:     rc=%d status=0x%04x\n", rc, cpl.status);
 
-    /* 6. Set Features - Temperature Threshold (FID=0x04) */
+    /* 6. Set Features - Temperature Threshold (FID=0x04)
+     *    Read current value first, then write it back unchanged so the
+     *    dispatch path is exercised without mutating device state. */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_GET_FEATURES;
+    cmd.cdw10 = 0x04;
+    rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
+    u32 saved_temp_thresh = cpl.cdw0;
+
     memset(&cmd, 0, sizeof(cmd));
     cmd.opcode = NVME_ADMIN_SET_FEATURES;
     cmd.cdw10 = 0x04;
-    cmd.cdw11 = 0x0160; /* 352 K */
+    cmd.cdw11 = saved_temp_thresh;
     rc = nvme_uspace_dispatch_admin_cmd(dev, &cmd, &cpl, NULL, 0);
-    fprintf(stderr, "[NVMe]   Set Features Temp:   rc=%d status=0x%04x\n", rc, cpl.status);
+    fprintf(stderr, "[NVMe]   Set Features Temp:   rc=%d status=0x%04x (restored 0x%04x)\n", rc, cpl.status,
+            saved_temp_thresh);
 
     /* 7. Get Log Page - SMART/Health (LID=2) */
     memset(&cmd, 0, sizeof(cmd));
