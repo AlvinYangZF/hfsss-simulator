@@ -15,16 +15,17 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST_ASSERT(cond, msg) do { \
-    tests_run++; \
-    if (cond) { \
-        printf("  [PASS] %s\n", msg); \
-        tests_passed++; \
-    } else { \
-        printf("  [FAIL] %s\n", msg); \
-        tests_failed++; \
-    } \
-} while (0)
+#define TEST_ASSERT(cond, msg)                                                                                         \
+    do {                                                                                                               \
+        tests_run++;                                                                                                   \
+        if (cond) {                                                                                                    \
+            printf("  [PASS] %s\n", msg);                                                                              \
+            tests_passed++;                                                                                            \
+        } else {                                                                                                       \
+            printf("  [FAIL] %s\n", msg);                                                                              \
+            tests_failed++;                                                                                            \
+        }                                                                                                              \
+    } while (0)
 
 struct shmem_fixture {
     char name[128];
@@ -74,8 +75,7 @@ static int fixture_init(struct shmem_fixture *fx)
     fx->backing_fd = -1;
     fx->sut_fd = -1;
 
-    snprintf(fx->name, sizeof(fx->name), "/hf_%x_%llx",
-             (unsigned int)getpid(), (unsigned long long)get_time_ns());
+    snprintf(fx->name, sizeof(fx->name), "/hf_%x_%llx", (unsigned int)getpid(), (unsigned long long)get_time_ns());
 
     fx->backing_fd = shm_open(fx->name, O_CREAT | O_EXCL | O_RDWR, 0600);
     if (fx->backing_fd < 0) {
@@ -88,8 +88,7 @@ static int fixture_init(struct shmem_fixture *fx)
         return HFSSS_ERR_IO;
     }
 
-    fx->backing = mmap(NULL, sizeof(struct shmem_layout),
-                       PROT_READ | PROT_WRITE, MAP_SHARED, fx->backing_fd, 0);
+    fx->backing = mmap(NULL, sizeof(struct shmem_layout), PROT_READ | PROT_WRITE, MAP_SHARED, fx->backing_fd, 0);
     if (fx->backing == MAP_FAILED) {
         fx->backing = NULL;
         fixture_cleanup(fx);
@@ -115,8 +114,7 @@ static int test_open_invalid_args(void)
     struct shmem_layout *shmem = NULL;
     int fd = -1;
 
-    TEST_ASSERT(shmem_if_open(NULL, &shmem, &fd) == HFSSS_ERR_INVAL,
-                "shmem_if_open should reject NULL path");
+    TEST_ASSERT(shmem_if_open(NULL, &shmem, &fd) == HFSSS_ERR_INVAL, "shmem_if_open should reject NULL path");
     TEST_ASSERT(shmem_if_open("/hfsss_missing", NULL, &fd) == HFSSS_ERR_INVAL,
                 "shmem_if_open should reject NULL shmem_out");
     TEST_ASSERT(shmem_if_open("/hfsss_missing", &shmem, NULL) == HFSSS_ERR_INVAL,
@@ -133,8 +131,7 @@ static int test_open_missing_object(void)
     int fd = -1;
     char name[128];
 
-    snprintf(name, sizeof(name), "/hm_%x_%llx",
-             (unsigned int)getpid(), (unsigned long long)get_time_ns());
+    snprintf(name, sizeof(name), "/hm_%x_%llx", (unsigned int)getpid(), (unsigned long long)get_time_ns());
 
     TEST_ASSERT(shmem_if_open(name, &shmem, &fd) == HFSSS_ERR_NOTSUPP,
                 "shmem_if_open should report missing shared memory");
@@ -153,8 +150,7 @@ static int test_open_close_real_shmem(void)
     if (ret == HFSSS_OK) {
         TEST_ASSERT(fx.sut != NULL, "shmem_if_open should return a mapped layout");
         TEST_ASSERT(fx.sut_fd >= 0, "shmem_if_open should return a valid fd");
-        TEST_ASSERT(fx.sut->header.slot_count == RING_BUFFER_SLOTS,
-                    "mapped header should be shared with creator");
+        TEST_ASSERT(fx.sut->header.slot_count == RING_BUFFER_SLOTS, "mapped header should be shared with creator");
         TEST_ASSERT(fx.sut->header.slot_size == sizeof(struct ring_slot),
                     "mapped slot size should match ring slot layout");
     }
@@ -181,22 +177,18 @@ static int test_receive_empty_and_not_ready(void)
     }
 
     memset(&cmd, 0, sizeof(cmd));
-    TEST_ASSERT(shmem_if_receive_cmd(fx.sut, &cmd) == HFSSS_ERR_AGAIN,
-                "receive on empty ring should return AGAIN");
+    TEST_ASSERT(shmem_if_receive_cmd(fx.sut, &cmd) == HFSSS_ERR_AGAIN, "receive on empty ring should return AGAIN");
     TEST_ASSERT(fx.backing->header.cons_idx == 0 && fx.backing->header.cons_seq == 0,
                 "empty receive should not advance consumer state");
 
     fx.backing->header.prod_idx = 1;
     fx.backing->slots[0].ready = 0;
-    TEST_ASSERT(shmem_if_receive_cmd(fx.sut, &cmd) == HFSSS_ERR_AGAIN,
-                "receive on not-ready slot should return AGAIN");
+    TEST_ASSERT(shmem_if_receive_cmd(fx.sut, &cmd) == HFSSS_ERR_AGAIN, "receive on not-ready slot should return AGAIN");
     TEST_ASSERT(fx.backing->header.cons_idx == 0 && fx.backing->header.cons_seq == 0,
                 "not-ready receive should not advance consumer state");
 
-    TEST_ASSERT(shmem_if_receive_cmd(NULL, &cmd) == HFSSS_ERR_INVAL,
-                "receive should reject NULL shmem");
-    TEST_ASSERT(shmem_if_receive_cmd(fx.sut, NULL) == HFSSS_ERR_INVAL,
-                "receive should reject NULL cmd");
+    TEST_ASSERT(shmem_if_receive_cmd(NULL, &cmd) == HFSSS_ERR_INVAL, "receive should reject NULL shmem");
+    TEST_ASSERT(shmem_if_receive_cmd(fx.sut, NULL) == HFSSS_ERR_INVAL, "receive should reject NULL cmd");
 
     fixture_cleanup(&fx);
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
@@ -226,12 +218,10 @@ static int test_receive_success_and_wrap(void)
     slot->ready = 1;
 
     memset(&cmd, 0, sizeof(cmd));
-    TEST_ASSERT(shmem_if_receive_cmd(fx.sut, &cmd) == HFSSS_OK,
-                "receive should consume a ready slot");
+    TEST_ASSERT(shmem_if_receive_cmd(fx.sut, &cmd) == HFSSS_OK, "receive should consume a ready slot");
     TEST_ASSERT(cmd.cmd_type == CMD_NVME_IO && cmd.cmd_id == 42 && cmd.sqid == 7,
                 "receive should copy command payload");
-    TEST_ASSERT(cmd.cdw0_15[0] == 0xdeadbeef,
-                "receive should preserve command words");
+    TEST_ASSERT(cmd.cdw0_15[0] == 0xdeadbeef, "receive should preserve command words");
     TEST_ASSERT(slot->ready == 0, "receive should clear slot ready flag");
     TEST_ASSERT(fx.backing->header.cons_idx == 1 && fx.backing->header.cons_seq == 1,
                 "receive should advance consumer index and sequence");
@@ -245,8 +235,7 @@ static int test_receive_success_and_wrap(void)
     slot->ready = 1;
 
     memset(&cmd, 0, sizeof(cmd));
-    TEST_ASSERT(shmem_if_receive_cmd(fx.sut, &cmd) == HFSSS_OK,
-                "receive should handle consumer index wrap");
+    TEST_ASSERT(shmem_if_receive_cmd(fx.sut, &cmd) == HFSSS_OK, "receive should handle consumer index wrap");
     TEST_ASSERT(cmd.cmd_id == 99, "wrapped receive should copy the wrapped slot command");
     TEST_ASSERT(fx.backing->header.cons_idx == 0 && fx.backing->header.cons_seq == 1,
                 "wrapped receive should wrap consumer index to zero");
@@ -282,10 +271,8 @@ static int test_send_cpl_busy_success_and_wrap(void)
 
     slot->done = 0;
     slot->ready = 1;
-    TEST_ASSERT(shmem_if_send_cpl(fx.sut, &cpl) == HFSSS_OK,
-                "send_cpl should mark an available slot done");
-    TEST_ASSERT(slot->ready == 0 && slot->done == 1,
-                "send_cpl should clear ready and mark done");
+    TEST_ASSERT(shmem_if_send_cpl(fx.sut, &cpl) == HFSSS_OK, "send_cpl should mark an available slot done");
+    TEST_ASSERT(slot->ready == 0 && slot->done == 1, "send_cpl should clear ready and mark done");
     TEST_ASSERT(fx.backing->header.prod_idx == 1 && fx.backing->header.prod_seq == 1,
                 "send_cpl should advance producer index and sequence");
 
@@ -294,15 +281,12 @@ static int test_send_cpl_busy_success_and_wrap(void)
     slot = &fx.backing->slots[RING_BUFFER_SLOTS - 1];
     slot->ready = 1;
     slot->done = 0;
-    TEST_ASSERT(shmem_if_send_cpl(fx.sut, &cpl) == HFSSS_OK,
-                "send_cpl should handle producer index wrap");
+    TEST_ASSERT(shmem_if_send_cpl(fx.sut, &cpl) == HFSSS_OK, "send_cpl should handle producer index wrap");
     TEST_ASSERT(fx.backing->header.prod_idx == 0 && fx.backing->header.prod_seq == 1,
                 "wrapped send_cpl should wrap producer index to zero");
 
-    TEST_ASSERT(shmem_if_send_cpl(NULL, &cpl) == HFSSS_ERR_INVAL,
-                "send_cpl should reject NULL shmem");
-    TEST_ASSERT(shmem_if_send_cpl(fx.sut, NULL) == HFSSS_ERR_INVAL,
-                "send_cpl should reject NULL completion");
+    TEST_ASSERT(shmem_if_send_cpl(NULL, &cpl) == HFSSS_ERR_INVAL, "send_cpl should reject NULL shmem");
+    TEST_ASSERT(shmem_if_send_cpl(fx.sut, NULL) == HFSSS_ERR_INVAL, "send_cpl should reject NULL completion");
 
     fixture_cleanup(&fx);
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
