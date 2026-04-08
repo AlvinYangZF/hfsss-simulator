@@ -18,6 +18,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          clean: true
+
+      - name: Remove untracked files
+        run: git clean -fdx
 
       - name: Install clang-format
         run: brew install clang-format 2>/dev/null || true
