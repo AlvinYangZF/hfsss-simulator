@@ -36,4 +36,5 @@ jobs:
         run: make ASAN=1 test
 
       - name: Run system tests under ASan
+        timeout-minutes: 10
         run: make ASAN=1 systest

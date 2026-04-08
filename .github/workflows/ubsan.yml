@@ -35,4 +35,5 @@ jobs:
         run: make UBSAN=1 test
 
       - name: Run system tests under UBSan
+        timeout-minutes: 10
         run: make UBSAN=1 systest

@@ -20,6 +20,7 @@ jobs:
           sudo apt-get install -y build-essential
 
       - name: Run system tests
+        timeout-minutes: 10
         env:
           HFSSS_SYSTEST_ARTIFACT_DIR: ${{ github.workspace }}/build/ci/systest
         run: |
