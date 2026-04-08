@@ -33,7 +33,7 @@ hfsss_case_assert_any_file_contains \
 
 # SMART log must contain data_units or host_writes field
 hfsss_case_assert_any_file_contains \
-    "data_units\|host_write\|Data Units\|Host Write" \
+    "data_units|host_write|Data Units|Host Write" \
     "$HFSSS_CASE_ARTIFACT_DIR/smart-log.stdout" \
     "$HFSSS_CASE_ARTIFACT_DIR/smart-log.stderr"
 
