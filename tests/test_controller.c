@@ -27,21 +27,6 @@ static void print_separator(void)
     printf("========================================\n");
 }
 
-/* Shmem Interface Tests */
-static int test_shmem_if(void)
-{
-    printf("\n=== Shmem Interface Tests ===\n");
-
-    /* Note: shmem_if_open requires actual shared memory,
-     * which we don't have in this test. We'll just test
-     * the init/cleanup paths of other components.
-     */
-
-    TEST_ASSERT(true, "shmem_if test skipped (needs real shared memory)");
-
-    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
-}
-
 /* Arbiter Tests */
 static int test_arbiter(void)
 {
@@ -296,7 +281,6 @@ int main(void)
     printf("HFSSS Controller Module Tests\n");
     print_separator();
 
-    test_shmem_if();
     test_arbiter();
     test_scheduler();
     test_write_buffer();
