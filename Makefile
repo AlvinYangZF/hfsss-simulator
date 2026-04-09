@@ -195,7 +195,7 @@ COVERAGE_BINS = $(COVERAGE_UT_BINS) $(COVERAGE_E2E_BINS)
 
 # Targets
 .PHONY: all clean directories test systest stress-long help \
-	coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage coverage-selftest \
+	coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage-frontend coverage coverage-selftest \
 	qemu-blackbox qemu-blackbox-list qemu-blackbox-ci qemu-blackbox-soak pre-checkin
 
 all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_SHMEM_IF) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT) $(TEST_MSGQ) $(TEST_NVME_ADMIN)
@@ -627,6 +627,7 @@ help:
 	@echo "  coverage-merge     - Merge UT and E2E reports into a single report"
 	@echo "  coverage           - Run the full coverage flow (UT, E2E, and merge)"
 	@echo "  coverage-selftest  - Run all 5 coverage infra self-tests"
+	@echo "  coverage-frontend  - Generate front-end module coverage report (includes vhost/pcie)"
 	@echo "  coverage-clean     - Clean build-cov/ + remove stale .gcda files"
 	@echo ""
 	@echo "QEMU black-box targets:"
@@ -668,6 +669,9 @@ coverage-e2e: coverage-build
 
 coverage-merge:
 	@bash scripts/coverage/merge_reports.sh
+
+coverage-frontend:
+	@bash scripts/coverage/frontend_report.sh
 
 # Full local flow: UT + E2E + merge
 coverage: coverage-ut coverage-e2e coverage-merge
