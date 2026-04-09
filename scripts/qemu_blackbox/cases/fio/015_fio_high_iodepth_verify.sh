@@ -28,5 +28,4 @@ hfsss_case_run_fio_json "high-iodepth" \
      --direct=1 \
      --verify=crc32c \
      --verify_fatal=1 \
-     --ioengine=libaio \
-     --norandommap"
+     --ioengine=libaio"
