@@ -33,7 +33,7 @@ static void test_identify_controller(void)
     printf("\n=== Identify Controller (CNS=1) ===\n");
 
     struct nvme_sq_entry cmd;
-    u8 data[4096];
+    u8 data[8192];
 
     memset(&cmd, 0, sizeof(cmd));
     memset(data, 0, sizeof(data));
@@ -56,7 +56,7 @@ static void test_identify_namespace(void)
     printf("\n=== Identify Namespace (CNS=0, NSID=1) ===\n");
 
     struct nvme_sq_entry cmd;
-    u8 data[4096];
+    u8 data[8192];
 
     memset(&cmd, 0, sizeof(cmd));
     memset(data, 0, sizeof(data));
@@ -79,7 +79,7 @@ static void test_identify_ns_invalid_nsid(void)
     printf("\n=== Identify Namespace Invalid NSID ===\n");
 
     struct nvme_sq_entry cmd;
-    u8 data[4096];
+    u8 data[8192];
 
     memset(&cmd, 0, sizeof(cmd));
     memset(data, 0, sizeof(data));
@@ -97,7 +97,7 @@ static void test_identify_active_ns_list(void)
     printf("\n=== Identify Active Namespace List (CNS=2) ===\n");
 
     struct nvme_sq_entry cmd;
-    u8 data[4096];
+    u8 data[8192];
 
     memset(&cmd, 0, sizeof(cmd));
     memset(data, 0, sizeof(data));
@@ -117,7 +117,7 @@ static void test_identify_invalid_cns(void)
     printf("\n=== Identify Invalid CNS ===\n");
 
     struct nvme_sq_entry cmd;
-    u8 data[4096];
+    u8 data[8192];
 
     memset(&cmd, 0, sizeof(cmd));
     memset(data, 0, sizeof(data));
@@ -134,7 +134,7 @@ static void test_identify_invalid_args(void)
     printf("\n=== Identify Invalid Arguments ===\n");
 
     struct nvme_sq_entry cmd;
-    u8 data[4096];
+    u8 data[8192];
 
     memset(&cmd, 0, sizeof(cmd));
     cmd.cdw10 = 0x01;
