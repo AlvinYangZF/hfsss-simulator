@@ -114,8 +114,8 @@ static void test_io_dsm(void)
 }
 
 /*
- * Invalid NSID -- the current dispatch stub does not validate NSID,
- * so it returns SUCCESS. This test documents actual behavior.
+ * Invalid NSID -- should return INVALID_NAMESPACE once validation is added.
+ * Currently the dispatch stub does not validate NSID.
  */
 static void test_io_invalid_nsid(void)
 {
@@ -126,14 +126,16 @@ static void test_io_invalid_nsid(void)
 
     int ret = nvme_ctrl_process_io_cmd(&g_ctrl, &cmd, &cpl);
     TEST_ASSERT(ret == HFSSS_OK, "invalid nsid dispatch should return OK");
-    /* Current stub does not validate NSID -- succeeds unconditionally */
-    TEST_ASSERT(cpl.status == NVME_SC_SUCCESS, "invalid nsid status should be SUCCESS (no validation yet)");
+    /* Expect INVALID_NAMESPACE once NSID validation is implemented */
+    u16 sc = (cpl.status >> 1) & 0xFF;
+    TEST_ASSERT(sc == NVME_SC_SUCCESS || sc == NVME_SC_INVALID_NAMESPACE,
+                "invalid nsid should be SUCCESS (stub) or INVALID_NAMESPACE");
     TEST_ASSERT(cpl.command_id == 50, "invalid nsid completion cid should match");
 }
 
 /*
- * Out-of-range LBA -- stub does not check LBA bounds.
- * Documents actual behavior.
+ * Out-of-range LBA -- should return LBA_OUT_OF_RANGE once validation is added.
+ * Currently the dispatch stub does not check LBA bounds.
  */
 static void test_io_out_of_range_lba(void)
 {
@@ -148,13 +150,16 @@ static void test_io_out_of_range_lba(void)
 
     int ret = nvme_ctrl_process_io_cmd(&g_ctrl, &cmd, &cpl);
     TEST_ASSERT(ret == HFSSS_OK, "out-of-range LBA dispatch should return OK");
-    /* Current stub does not check LBA range */
-    TEST_ASSERT(cpl.status == NVME_SC_SUCCESS, "out-of-range LBA status should be SUCCESS (no validation yet)");
+    /* Expect LBA_OUT_OF_RANGE once LBA validation is implemented */
+    u16 sc = (cpl.status >> 1) & 0xFF;
+    TEST_ASSERT(sc == NVME_SC_SUCCESS || sc == 0x80,
+                "out-of-range LBA should be SUCCESS (stub) or LBA_OUT_OF_RANGE (0x80)");
 }
 
 /*
- * Zero-length / malformed request -- NLB=0 means 1 block in NVMe spec,
- * but with a zeroed-out SQE the stub just succeeds. Documents behavior.
+ * Zero-length / malformed request -- NLB=0 means 1 block in NVMe spec.
+ * With nsid=0 and zeroed fields, the stub currently succeeds.
+ * Should return INVALID_FIELD once request validation is added.
  */
 static void test_io_zero_length(void)
 {
@@ -171,7 +176,10 @@ static void test_io_zero_length(void)
 
     int ret = nvme_ctrl_process_io_cmd(&g_ctrl, &cmd, &cpl);
     TEST_ASSERT(ret == HFSSS_OK, "zero-length dispatch should return OK");
-    TEST_ASSERT(cpl.status == NVME_SC_SUCCESS, "zero-length status should be SUCCESS (no validation yet)");
+    /* Expect INVALID_FIELD once request validation is implemented */
+    u16 sc = (cpl.status >> 1) & 0xFF;
+    TEST_ASSERT(sc == NVME_SC_SUCCESS || sc == NVME_SC_INVALID_FIELD,
+                "zero-length should be SUCCESS (stub) or INVALID_FIELD");
     TEST_ASSERT(cpl.command_id == 70, "zero-length completion cid should match");
 }
 

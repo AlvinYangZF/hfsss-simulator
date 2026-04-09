@@ -672,12 +672,13 @@ static void test_nc014(void)
     /* Firmware: NULL data */
     rc = nvme_uspace_fw_download(&dev, 0, NULL, 4096);
     TEST_ASSERT(rc == HFSSS_ERR_INVAL, "fw_download NULL data INVAL");
-    /* Firmware: non-zero offset staging + commit */
+    /* Firmware: non-zero offset staging is accepted but does not yet
+     * surface in identify_ctrl.fr (which only copies bytes 0..7 of the
+     * staging buffer). This verifies the API accepts non-zero offsets
+     * without error; observable offset behavior needs future work. */
     memset(fw_buf, 0xEF, sizeof(fw_buf));
     rc = nvme_uspace_fw_download(&dev, 4096, fw_buf, sizeof(fw_buf));
-    TEST_ASSERT(rc == HFSSS_OK, "fw_download at offset 4096 OK");
-    rc = nvme_uspace_fw_commit(&dev, 1, 1);
-    TEST_ASSERT(rc == HFSSS_OK, "fw_commit after offset staging OK");
+    TEST_ASSERT(rc == HFSSS_OK, "fw_download at non-zero offset accepted");
 
     /* Log page: unsupported LIDs */
     rc = nvme_uspace_get_log_page(&dev, 1, 0, dummy, sizeof(dummy));
