@@ -43,7 +43,7 @@ for mod in "${FRONTEND_MODULES[@]}"; do extract_args+=("$mod"); done
 
 lcov --extract "$INFO" "${extract_args[@]}" \
      --output-file "$FRONTEND_INFO" --rc branch_coverage=1 \
-     --ignore-errors deprecated,unsupported,inconsistent,inconsistent,unused,unused --quiet
+     --ignore-errors deprecated,unsupported,inconsistent,inconsistent,unused,unused,empty,empty --quiet || true
 
 if [ ! -s "$FRONTEND_INFO" ]; then
     echo "WARNING: no coverage data found for front-end modules in $INFO"

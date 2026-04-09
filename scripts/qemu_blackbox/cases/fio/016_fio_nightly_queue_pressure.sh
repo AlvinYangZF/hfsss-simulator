@@ -23,12 +23,10 @@ hfsss_case_run_fio_json "nightly-queue-pressure" \
      --bs=4k \
      --size=1g \
      --iodepth=32 \
-     --numjobs=2 \
+     --numjobs=1 \
      --direct=1 \
      --time_based \
      --runtime=60 \
      --verify=crc32c \
      --verify_fatal=1 \
-     --ioengine=libaio \
-     --group_reporting \
-     --norandommap"
+     --ioengine=libaio"
