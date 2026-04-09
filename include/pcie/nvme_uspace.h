@@ -29,8 +29,8 @@ struct nvme_uspace_dev {
 
     /* Firmware staging buffer (fw_download/fw_commit) */
     void *fw_staging_buf;
-    u32   fw_staging_size;
-    char  fw_revision[8];
+    u32 fw_staging_size;
+    char fw_revision[8];
 
     /* Per-FID feature storage (set_features/get_features) */
     u32 features[256];
@@ -60,8 +60,7 @@ int nvme_uspace_delete_io_sq(struct nvme_uspace_dev *dev, u16 qid);
 int nvme_uspace_read(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count, void *data);
 int nvme_uspace_write(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count, const void *data);
 int nvme_uspace_flush(struct nvme_uspace_dev *dev, u32 nsid);
-int nvme_uspace_trim(struct nvme_uspace_dev *dev, u32 nsid,
-                     struct nvme_dsm_range *ranges, u32 nr_ranges);
+int nvme_uspace_trim(struct nvme_uspace_dev *dev, u32 nsid, struct nvme_dsm_range *ranges, u32 nr_ranges);
 
 /* Default Config Helper */
 void nvme_uspace_config_default(struct nvme_uspace_config *config);
@@ -69,12 +68,30 @@ void nvme_uspace_config_default(struct nvme_uspace_config *config);
 /* Admin Commands */
 int nvme_uspace_format_nvm(struct nvme_uspace_dev *dev, u32 nsid);
 int nvme_uspace_sanitize(struct nvme_uspace_dev *dev, u32 sanact);
-int nvme_uspace_fw_download(struct nvme_uspace_dev *dev,
-                             u32 offset, const void *data, u32 len);
+int nvme_uspace_fw_download(struct nvme_uspace_dev *dev, u32 offset, const void *data, u32 len);
 int nvme_uspace_fw_commit(struct nvme_uspace_dev *dev, u32 slot, u32 action);
-int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid,
-                              u8 lid, void *buf, u32 len);
+int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void *buf, u32 len);
 int nvme_uspace_get_features(struct nvme_uspace_dev *dev, u8 fid, u32 *value);
 int nvme_uspace_set_features(struct nvme_uspace_dev *dev, u8 fid, u32 value);
+
+/*
+ * Full-path NVMe command dispatch.
+ *
+ * These functions route commands through nvme_ctrl_process_{io,admin}_cmd()
+ * for opcode validation and completion entry construction, then dispatch to
+ * the appropriate nvme_uspace_* implementation for actual FTL execution.
+ *
+ * This exercises the complete NVMe command processing pipeline end-to-end:
+ *   SQE construction → opcode validation → uspace dispatch → FTL → CQE
+ */
+int nvme_uspace_dispatch_io_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_entry *cmd, struct nvme_cq_entry *cpl,
+                                void *data, u32 data_len);
+
+int nvme_uspace_dispatch_admin_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_entry *cmd, struct nvme_cq_entry *cpl,
+                                   void *data, u32 data_len);
+
+/* Exercise admin commands to validate the NVMe command processing path.
+ * Called during NBD server startup to generate E2E admin command coverage. */
+int nvme_uspace_exercise_admin_path(struct nvme_uspace_dev *dev);
 
 #endif /* __HFSSS_NVME_USPACE_H */

@@ -10,16 +10,17 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST_ASSERT(cond, msg) do { \
-    tests_run++; \
-    if (cond) { \
-        printf("  [PASS] %s\n", msg); \
-        tests_passed++; \
-    } else { \
-        printf("  [FAIL] %s\n", msg); \
-        tests_failed++; \
-    } \
-} while(0)
+#define TEST_ASSERT(cond, msg)                                                                                         \
+    do {                                                                                                               \
+        tests_run++;                                                                                                   \
+        if (cond) {                                                                                                    \
+            printf("  [PASS] %s\n", msg);                                                                              \
+            tests_passed++;                                                                                            \
+        } else {                                                                                                       \
+            printf("  [FAIL] %s\n", msg);                                                                              \
+            tests_failed++;                                                                                            \
+        }                                                                                                              \
+    } while (0)
 
 static void print_separator(void)
 {
@@ -56,8 +57,7 @@ static int test_arbiter(void)
     TEST_ASSERT(true, "arbiter_cleanup should succeed");
 
     /* Test NULL handling */
-    TEST_ASSERT(arbiter_init(NULL, 1024) == HFSSS_ERR_INVAL,
-                "arbiter_init with NULL should fail");
+    TEST_ASSERT(arbiter_init(NULL, 1024) == HFSSS_ERR_INVAL, "arbiter_init with NULL should fail");
     arbiter_cleanup(NULL);
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
@@ -81,8 +81,7 @@ static int test_scheduler(void)
     TEST_ASSERT(true, "scheduler_cleanup should succeed");
 
     /* Test NULL handling */
-    TEST_ASSERT(scheduler_init(NULL, SCHED_FIFO) == HFSSS_ERR_INVAL,
-                "scheduler_init with NULL should fail");
+    TEST_ASSERT(scheduler_init(NULL, SCHED_FIFO) == HFSSS_ERR_INVAL, "scheduler_init with NULL should fail");
     scheduler_cleanup(NULL);
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
@@ -111,8 +110,7 @@ static int test_write_buffer(void)
     memset(read_buf, 0, sizeof(read_buf));
     ret = wb_read(&wb, 0, 4096, read_buf);
     TEST_ASSERT(ret == HFSSS_OK, "wb_read should succeed");
-    TEST_ASSERT(memcmp(data, read_buf, sizeof(data)) == 0,
-                "read data should match written data");
+    TEST_ASSERT(memcmp(data, read_buf, sizeof(data)) == 0, "read data should match written data");
 
     ret = wb_flush(&wb);
     TEST_ASSERT(ret == HFSSS_OK, "wb_flush should succeed");
@@ -121,8 +119,7 @@ static int test_write_buffer(void)
     TEST_ASSERT(true, "wb_cleanup should succeed");
 
     /* Test NULL handling */
-    TEST_ASSERT(wb_init(NULL, 1024) == HFSSS_ERR_INVAL,
-                "wb_init with NULL should fail");
+    TEST_ASSERT(wb_init(NULL, 1024) == HFSSS_ERR_INVAL, "wb_init with NULL should fail");
     wb_cleanup(NULL);
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
@@ -149,8 +146,7 @@ static int test_read_cache(void)
     memset(read_buf, 0, sizeof(read_buf));
     ret = rc_lookup(&rc, 0, 4096, read_buf);
     TEST_ASSERT(ret == HFSSS_OK, "rc_lookup should hit");
-    TEST_ASSERT(memcmp(data, read_buf, sizeof(data)) == 0,
-                "read data should match cached data");
+    TEST_ASSERT(memcmp(data, read_buf, sizeof(data)) == 0, "read data should match cached data");
 
     rc_invalidate(&rc, 0, 1);
     rc_clear(&rc);
@@ -159,8 +155,7 @@ static int test_read_cache(void)
     TEST_ASSERT(true, "rc_cleanup should succeed");
 
     /* Test NULL handling */
-    TEST_ASSERT(rc_init(NULL, 1024) == HFSSS_ERR_INVAL,
-                "rc_init with NULL should fail");
+    TEST_ASSERT(rc_init(NULL, 1024) == HFSSS_ERR_INVAL, "rc_init with NULL should fail");
     rc_cleanup(NULL);
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
@@ -189,8 +184,7 @@ static int test_channel_mgr(void)
     TEST_ASSERT(true, "channel_mgr_cleanup should succeed");
 
     /* Test NULL handling */
-    TEST_ASSERT(channel_mgr_init(NULL, 8) == HFSSS_ERR_INVAL,
-                "channel_mgr_init with NULL should fail");
+    TEST_ASSERT(channel_mgr_init(NULL, 8) == HFSSS_ERR_INVAL, "channel_mgr_init with NULL should fail");
     channel_mgr_cleanup(NULL);
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
@@ -217,8 +211,7 @@ static int test_resource_mgr(void)
     TEST_ASSERT(true, "resource_mgr_cleanup should succeed");
 
     /* Test NULL handling */
-    TEST_ASSERT(resource_mgr_init(NULL) == HFSSS_ERR_INVAL,
-                "resource_mgr_init with NULL should fail");
+    TEST_ASSERT(resource_mgr_init(NULL) == HFSSS_ERR_INVAL, "resource_mgr_init with NULL should fail");
     resource_mgr_cleanup(NULL);
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
@@ -245,8 +238,7 @@ static int test_flow_control(void)
     TEST_ASSERT(true, "flow_ctrl_cleanup should succeed");
 
     /* Test NULL handling */
-    TEST_ASSERT(flow_ctrl_init(NULL) == HFSSS_ERR_INVAL,
-                "flow_ctrl_init with NULL should fail");
+    TEST_ASSERT(flow_ctrl_init(NULL) == HFSSS_ERR_INVAL, "flow_ctrl_init with NULL should fail");
     flow_ctrl_cleanup(NULL);
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
@@ -276,10 +268,8 @@ static int test_controller(void)
     TEST_ASSERT(true, "controller_cleanup should succeed");
 
     /* Test NULL handling */
-    TEST_ASSERT(controller_init(NULL, &config) == HFSSS_ERR_INVAL,
-                "controller_init with NULL ctx should fail");
-    TEST_ASSERT(controller_init(&ctrl, NULL) == HFSSS_ERR_INVAL,
-                "controller_init with NULL config should fail");
+    TEST_ASSERT(controller_init(NULL, &config) == HFSSS_ERR_INVAL, "controller_init with NULL ctx should fail");
+    TEST_ASSERT(controller_init(&ctrl, NULL) == HFSSS_ERR_INVAL, "controller_init with NULL config should fail");
     controller_cleanup(NULL);
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;

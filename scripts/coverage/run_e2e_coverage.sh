@@ -192,6 +192,56 @@ bash "$ROOT/scripts/fio_verify_suite.sh" "$COV_SSH_PORT" /dev/nvme0n1 || {
     echo "WARN: fio suite reported failures (coverage data still captured)"
 }
 
+echo "========================================"
+echo "Running blackbox nvme-cli coverage cases..."
+echo "========================================"
+# Run selected blackbox test cases in the existing QEMU guest to generate
+# additional E2E coverage of NVMe admin and I/O paths.  We reuse the same
+# QEMU+NBD environment that fio_verify_suite just used (ports, SSH key).
+#
+# Only run lightweight cases that don't conflict with the fio suite's
+# prior writes.  Heavy fio cases are already covered above.
+E2E_COVERAGE_CASES=(
+    "001_nvme_cli_smoke.sh"
+    "002_nvme_namespace_info.sh"
+    "003_nvme_flush_smoke.sh"
+    "005_nvme_get_set_features_smoke.sh"
+    "006_nvme_smart_log_smoke.sh"
+    "004_nvme_trim_zero_verify.sh"
+)
+E2E_BB_ARTIFACTS="$HFSSS_RUN_WORKSPACE/blackbox-coverage"
+mkdir -p "$E2E_BB_ARTIFACTS"
+
+for casefile in "${E2E_COVERAGE_CASES[@]}"; do
+    # Find the case script
+    case_path="$(find "$ROOT/scripts/qemu_blackbox/cases" -name "$casefile" -type f | head -1)"
+    if [ -z "$case_path" ]; then
+        echo "WARN: case $casefile not found, skipping"
+        continue
+    fi
+    case_name="${casefile%.sh}"
+    case_artifact_dir="$E2E_BB_ARTIFACTS/$case_name"
+    mkdir -p "$case_artifact_dir"
+
+    echo "  Running: $casefile"
+    export HFSSS_CASE_NAME="$case_name"
+    export HFSSS_CASE_ARTIFACT_DIR="$case_artifact_dir"
+    export HFSSS_GUEST_NVME_DEV="/dev/nvme0n1"
+    export HFSSS_GUEST_NVME_CTRL="/dev/nvme0"
+    export COV_SSH_KEY="$SSH_KEY"
+
+    if timeout 120 bash "$case_path" > "$case_artifact_dir/case.stdout.log" 2>&1; then
+        echo "    PASS: $casefile"
+    else
+        rc=$?
+        if [ "$rc" -eq 2 ]; then
+            echo "    SKIP: $casefile"
+        else
+            echo "    FAIL: $casefile (rc=$rc, coverage data still captured)"
+        fi
+    fi
+done
+
 echo "Shutting down..."
 hfsss_run_cleanup
 # Runtime cleanup is done, but lcov/genhtml still need to run. Replace the

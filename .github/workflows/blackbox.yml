@@ -75,6 +75,8 @@ jobs:
               "001_nvme_cli_smoke.sh"
               "002_nvme_namespace_info.sh"
               "003_nvme_flush_smoke.sh"
+              "005_nvme_get_set_features_smoke.sh"
+              "006_nvme_smart_log_smoke.sh"
               "020_fio_pr_smoke_seqwrite_verify.sh"
               "021_fio_pr_smoke_randwrite_verify.sh"
             )

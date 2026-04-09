@@ -11,16 +11,20 @@ on:
 jobs:
   clang-format:
     name: clang-format
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, hfsss-ci]
     timeout-minutes: 5
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          clean: true
+
+      - name: Remove untracked files
+        run: git clean -fdx
 
       - name: Install clang-format
-        run: sudo apt-get update && sudo apt-get install -y clang-format
+        run: brew install clang-format 2>/dev/null || true
 
       - name: Check format on changed files
         run: |
