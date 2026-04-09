@@ -24,52 +24,48 @@ static int total_tests = 0;
 static int passed_tests = 0;
 static int failed_tests = 0;
 
-#define TEST_ASSERT(cond, msg) do { \
-    total_tests++; \
-    if (cond) { \
-        printf("  [PASS] %s\n", msg); \
-        passed_tests++; \
-    } else { \
-        printf("  [FAIL] %s\n", msg); \
-        failed_tests++; \
-    } \
-} while (0)
+#define TEST_ASSERT(cond, msg)                                                                                         \
+    do {                                                                                                               \
+        total_tests++;                                                                                                 \
+        if (cond) {                                                                                                    \
+            printf("  [PASS] %s\n", msg);                                                                              \
+            passed_tests++;                                                                                            \
+        } else {                                                                                                       \
+            printf("  [FAIL] %s\n", msg);                                                                              \
+            failed_tests++;                                                                                            \
+        }                                                                                                              \
+    } while (0)
 
 /* ---------------------------------------------------------------
  * Device geometry (same small geometry as stress tests)
  * ------------------------------------------------------------- */
-#define TEST_CHANNELS        2
-#define TEST_CHIPS           1
-#define TEST_DIES            1
-#define TEST_PLANES          1
-#define TEST_BLOCKS          128
-#define TEST_PAGES           256
-#define TEST_PAGE_SIZE       4096
+#define TEST_CHANNELS 2
+#define TEST_CHIPS 1
+#define TEST_DIES 1
+#define TEST_PLANES 1
+#define TEST_BLOCKS 128
+#define TEST_PAGES 256
+#define TEST_PAGE_SIZE 4096
 
 static uint64_t calc_total_lbas(const struct nvme_uspace_config *cfg)
 {
-    uint64_t raw_pages = (uint64_t)cfg->sssim_cfg.channel_count
-                       * cfg->sssim_cfg.chips_per_channel
-                       * cfg->sssim_cfg.dies_per_chip
-                       * cfg->sssim_cfg.planes_per_die
-                       * cfg->sssim_cfg.blocks_per_plane
-                       * cfg->sssim_cfg.pages_per_block;
+    uint64_t raw_pages = (uint64_t)cfg->sssim_cfg.channel_count * cfg->sssim_cfg.chips_per_channel *
+                         cfg->sssim_cfg.dies_per_chip * cfg->sssim_cfg.planes_per_die *
+                         cfg->sssim_cfg.blocks_per_plane * cfg->sssim_cfg.pages_per_block;
     return raw_pages * (100 - cfg->sssim_cfg.op_ratio) / 100;
 }
 
-static int setup_device(struct nvme_uspace_dev *dev,
-                        struct nvme_uspace_config *cfg,
-                        uint64_t *out_total_lbas)
+static int setup_device(struct nvme_uspace_dev *dev, struct nvme_uspace_config *cfg, uint64_t *out_total_lbas)
 {
     nvme_uspace_config_default(cfg);
-    cfg->sssim_cfg.channel_count     = TEST_CHANNELS;
+    cfg->sssim_cfg.channel_count = TEST_CHANNELS;
     cfg->sssim_cfg.chips_per_channel = TEST_CHIPS;
-    cfg->sssim_cfg.dies_per_chip     = TEST_DIES;
-    cfg->sssim_cfg.planes_per_die    = TEST_PLANES;
-    cfg->sssim_cfg.blocks_per_plane  = TEST_BLOCKS;
-    cfg->sssim_cfg.pages_per_block   = TEST_PAGES;
-    cfg->sssim_cfg.page_size         = TEST_PAGE_SIZE;
-    cfg->sssim_cfg.total_lbas        = calc_total_lbas(cfg);
+    cfg->sssim_cfg.dies_per_chip = TEST_DIES;
+    cfg->sssim_cfg.planes_per_die = TEST_PLANES;
+    cfg->sssim_cfg.blocks_per_plane = TEST_BLOCKS;
+    cfg->sssim_cfg.pages_per_block = TEST_PAGES;
+    cfg->sssim_cfg.page_size = TEST_PAGE_SIZE;
+    cfg->sssim_cfg.total_lbas = calc_total_lbas(cfg);
 
     *out_total_lbas = cfg->sssim_cfg.total_lbas;
 
@@ -80,7 +76,7 @@ static int setup_device(struct nvme_uspace_dev *dev,
         return -1;
     }
     if (nvme_uspace_create_io_cq(dev, 1, 256, false) != HFSSS_OK ||
-        nvme_uspace_create_io_sq(dev, 1, 256, 1, 0)  != HFSSS_OK) {
+        nvme_uspace_create_io_sq(dev, 1, 256, 1, 0) != HFSSS_OK) {
         nvme_uspace_dev_stop(dev);
         nvme_uspace_dev_cleanup(dev);
         return -1;
@@ -147,8 +143,7 @@ static void test_nc002(void)
 
     TEST_ASSERT(rc == HFSSS_OK, "identify_ns returns HFSSS_OK");
     TEST_ASSERT(id.nsze > 0, "namespace size (nsze) > 0");
-    TEST_ASSERT(id.nsze == total_lbas,
-                "nsze matches expected total_lbas");
+    TEST_ASSERT(id.nsze == total_lbas, "nsze matches expected total_lbas");
     TEST_ASSERT(id.ncap > 0, "namespace capacity (ncap) > 0");
 
     teardown_device(&dev);
@@ -175,14 +170,12 @@ static void test_nc003(void)
     /* NSID 0 is accepted as broadcast in this implementation */
     memset(&id, 0, sizeof(id));
     int rc0 = nvme_uspace_identify_ns(&dev, 0, &id);
-    TEST_ASSERT(rc0 == HFSSS_OK || rc0 != HFSSS_OK,
-                "identify_ns NSID=0 does not crash");
+    TEST_ASSERT(rc0 == HFSSS_OK || rc0 != HFSSS_OK, "identify_ns NSID=0 does not crash");
 
     /* NSID 99 is out of range */
     memset(&id, 0, sizeof(id));
     int rc99 = nvme_uspace_identify_ns(&dev, 99, &id);
-    TEST_ASSERT(rc99 != HFSSS_OK,
-                "identify_ns NSID=99 returns error");
+    TEST_ASSERT(rc99 != HFSSS_OK, "identify_ns NSID=99 returns error");
 
     teardown_device(&dev);
 }
@@ -212,8 +205,7 @@ static void test_nc004(void)
 
     val = 0xDEAD;
     rc = nvme_uspace_get_features(&dev, 0x02, &val);
-    TEST_ASSERT(rc == HFSSS_OK && val == 3,
-                "get_features FID=0x02 returns 3");
+    TEST_ASSERT(rc == HFSSS_OK && val == 3, "get_features FID=0x02 returns 3");
 
     /* FID 0x04: Temperature Threshold */
     rc = nvme_uspace_set_features(&dev, 0x04, 0x0150);
@@ -221,19 +213,16 @@ static void test_nc004(void)
 
     val = 0xDEAD;
     rc = nvme_uspace_get_features(&dev, 0x04, &val);
-    TEST_ASSERT(rc == HFSSS_OK && val == 0x0150,
-                "get_features FID=0x04 returns 0x0150");
+    TEST_ASSERT(rc == HFSSS_OK && val == 0x0150, "get_features FID=0x04 returns 0x0150");
 
     /* Unsupported FID 0x10 */
     rc = nvme_uspace_set_features(&dev, 0x10, 42);
-    TEST_ASSERT(rc == HFSSS_ERR_NOTSUPP,
-                "set_features FID=0x10 returns HFSSS_ERR_NOTSUPP");
+    TEST_ASSERT(rc == HFSSS_ERR_NOTSUPP, "set_features FID=0x10 returns HFSSS_ERR_NOTSUPP");
 
     /* FID 0x07: Number of Queues default */
     val = 0;
     rc = nvme_uspace_get_features(&dev, 0x07, &val);
-    TEST_ASSERT(rc == HFSSS_OK && val == 0x003F003F,
-                "get_features FID=0x07 returns default 0x003F003F");
+    TEST_ASSERT(rc == HFSSS_OK && val == 0x003F003F, "get_features FID=0x07 returns default 0x003F003F");
 
     teardown_device(&dev);
 }
@@ -259,8 +248,7 @@ static void test_nc005(void)
 
     /* Get initial SMART log */
     memset(&smart_before, 0, sizeof(smart_before));
-    rc = nvme_uspace_get_log_page(&dev, 1, 2, &smart_before,
-                                  sizeof(smart_before));
+    rc = nvme_uspace_get_log_page(&dev, 1, 2, &smart_before, sizeof(smart_before));
     TEST_ASSERT(rc == HFSSS_OK, "get_log_page SMART (initial) OK");
 
     uint64_t initial_duw = smart_before.data_units_written[0];
@@ -282,19 +270,16 @@ static void test_nc005(void)
 
     /* Get SMART log again */
     memset(&smart_after, 0, sizeof(smart_after));
-    rc = nvme_uspace_get_log_page(&dev, 1, 2, &smart_after,
-                                  sizeof(smart_after));
+    rc = nvme_uspace_get_log_page(&dev, 1, 2, &smart_after, sizeof(smart_after));
     TEST_ASSERT(rc == HFSSS_OK, "get_log_page SMART (after writes) OK");
-    TEST_ASSERT(smart_after.data_units_written[0] > initial_duw,
-                "data_units_written increased after writes");
+    TEST_ASSERT(smart_after.data_units_written[0] > initial_duw, "data_units_written increased after writes");
 
     free(wbuf);
 
     /* Unsupported LID 1 (Error Information) */
     uint8_t dummy_log[512];
     rc = nvme_uspace_get_log_page(&dev, 1, 1, dummy_log, sizeof(dummy_log));
-    TEST_ASSERT(rc == HFSSS_ERR_NOTSUPP,
-                "get_log_page LID=1 returns HFSSS_ERR_NOTSUPP");
+    TEST_ASSERT(rc == HFSSS_ERR_NOTSUPP, "get_log_page LID=1 returns HFSSS_ERR_NOTSUPP");
 
     teardown_device(&dev);
 }
@@ -329,8 +314,7 @@ static void test_nc006(void)
 
     memset(&ctrl_id, 0, sizeof(ctrl_id));
     rc = nvme_uspace_identify_ctrl(&dev, &ctrl_id);
-    TEST_ASSERT(rc == HFSSS_OK && (uint8_t)ctrl_id.fr[0] == 0xAB,
-                "identify_ctrl fr[0] == 0xAB after first FW update");
+    TEST_ASSERT(rc == HFSSS_OK && (uint8_t)ctrl_id.fr[0] == 0xAB, "identify_ctrl fr[0] == 0xAB after first FW update");
 
     /* Second FW update: pattern 0xCD */
     memset(fw_buf, 0xCD, sizeof(fw_buf));
@@ -342,15 +326,13 @@ static void test_nc006(void)
 
     memset(&ctrl_id, 0, sizeof(ctrl_id));
     rc = nvme_uspace_identify_ctrl(&dev, &ctrl_id);
-    TEST_ASSERT(rc == HFSSS_OK && (uint8_t)ctrl_id.fr[0] == 0xCD,
-                "identify_ctrl fr[0] == 0xCD after second FW update");
+    TEST_ASSERT(rc == HFSSS_OK && (uint8_t)ctrl_id.fr[0] == 0xCD, "identify_ctrl fr[0] == 0xCD after second FW update");
 
     /* fw_commit without fw_download should fail */
     /* Clear staging by committing what we have, then try again with no download */
     rc = nvme_uspace_fw_commit(&dev, 1, 1);
     /* A second commit without a new download should error */
-    TEST_ASSERT(rc != HFSSS_OK,
-                "fw_commit without fresh fw_download returns error");
+    TEST_ASSERT(rc != HFSSS_OK, "fw_commit without fresh fw_download returns error");
 
     teardown_device(&dev);
 }
@@ -379,7 +361,10 @@ static void test_nc007(void)
     for (int iter = 0; iter < 50; iter++) {
         /* Create CQ(2) / SQ(2) */
         rc = nvme_uspace_create_io_cq(&dev, 2, 64, false);
-        if (rc != HFSSS_OK) { all_ok = false; break; }
+        if (rc != HFSSS_OK) {
+            all_ok = false;
+            break;
+        }
 
         rc = nvme_uspace_create_io_sq(&dev, 2, 64, 2, 0);
         if (rc != HFSSS_OK) {
@@ -411,8 +396,7 @@ static void test_nc007(void)
 
     memset(rbuf, 0, TEST_PAGE_SIZE);
     rc = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
-    TEST_ASSERT(rc == HFSSS_OK && rbuf[0] == 0x77,
-                "queue 1 read-back OK after 50 q-cycle iterations");
+    TEST_ASSERT(rc == HFSSS_OK && rbuf[0] == 0x77, "queue 1 read-back OK after 50 q-cycle iterations");
 
     teardown_device(&dev);
 }
@@ -444,8 +428,7 @@ static void test_nc008(void)
 
     memset(rbuf, 0, TEST_PAGE_SIZE);
     rc = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
-    TEST_ASSERT(rc == HFSSS_OK && rbuf[0] == 0xAA,
-                "read LBA 0 returns correct data");
+    TEST_ASSERT(rc == HFSSS_OK && rbuf[0] == 0xAA, "read LBA 0 returns correct data");
 
     /* Write/read last valid LBA */
     uint64_t last_lba = total_lbas - 1;
@@ -455,18 +438,15 @@ static void test_nc008(void)
 
     memset(rbuf, 0, TEST_PAGE_SIZE);
     rc = nvme_uspace_read(&dev, 1, last_lba, 1, rbuf);
-    TEST_ASSERT(rc == HFSSS_OK && rbuf[0] == 0xBB,
-                "read last LBA returns correct data");
+    TEST_ASSERT(rc == HFSSS_OK && rbuf[0] == 0xBB, "read last LBA returns correct data");
 
     /* Read at total_lbas (one past end) should fail */
     rc = nvme_uspace_read(&dev, 1, total_lbas, 1, rbuf);
-    TEST_ASSERT(rc == HFSSS_ERR_INVAL,
-                "read LBA=total_lbas returns HFSSS_ERR_INVAL");
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL, "read LBA=total_lbas returns HFSSS_ERR_INVAL");
 
     /* Write at total_lbas should fail */
     rc = nvme_uspace_write(&dev, 1, total_lbas, 1, wbuf);
-    TEST_ASSERT(rc == HFSSS_ERR_INVAL,
-                "write LBA=total_lbas returns HFSSS_ERR_INVAL");
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL, "write LBA=total_lbas returns HFSSS_ERR_INVAL");
 
     teardown_device(&dev);
 }
@@ -492,20 +472,17 @@ static void test_nc009(void)
 
     /* Write with count=0 should not crash */
     rc = nvme_uspace_write(&dev, 1, 0, 0, buf);
-    TEST_ASSERT(rc == HFSSS_OK || rc == HFSSS_ERR_INVAL,
-                "write count=0 does not crash");
+    TEST_ASSERT(rc == HFSSS_OK || rc == HFSSS_ERR_INVAL, "write count=0 does not crash");
 
     /* Read with count=0 should not crash */
     rc = nvme_uspace_read(&dev, 1, 0, 0, buf);
-    TEST_ASSERT(rc == HFSSS_OK || rc == HFSSS_ERR_INVAL,
-                "read count=0 does not crash");
+    TEST_ASSERT(rc == HFSSS_OK || rc == HFSSS_ERR_INVAL, "read count=0 does not crash");
 
     /* Trim with nr_ranges=0 should not crash */
     struct nvme_dsm_range range;
     memset(&range, 0, sizeof(range));
     rc = nvme_uspace_trim(&dev, 1, &range, 0);
-    TEST_ASSERT(rc == HFSSS_OK || rc == HFSSS_ERR_INVAL,
-                "trim nr_ranges=0 does not crash");
+    TEST_ASSERT(rc == HFSSS_OK || rc == HFSSS_ERR_INVAL, "trim nr_ranges=0 does not crash");
 
     /* Flush on valid NSID should not crash */
     rc = nvme_uspace_flush(&dev, 1);
@@ -514,8 +491,7 @@ static void test_nc009(void)
     /* Identify with NSID=0xFFFFFFFF (broadcast) should not crash */
     struct nvme_identify_ns ns_id;
     rc = nvme_uspace_identify_ns(&dev, 0xFFFFFFFF, &ns_id);
-    TEST_ASSERT(rc == HFSSS_OK || rc != HFSSS_OK,
-                "identify_ns NSID=0xFFFFFFFF does not crash");
+    TEST_ASSERT(rc == HFSSS_OK || rc != HFSSS_OK, "identify_ns NSID=0xFFFFFFFF does not crash");
 
     teardown_device(&dev);
 }
@@ -565,14 +541,14 @@ static void test_nc010(void)
     /* Create 3 DSM ranges and trim them all at once */
     struct nvme_dsm_range ranges[3];
     ranges[0].attributes = 0;
-    ranges[0].slba       = 0;
-    ranges[0].nlb        = 4;
+    ranges[0].slba = 0;
+    ranges[0].nlb = 4;
     ranges[1].attributes = 0;
-    ranges[1].slba       = 100;
-    ranges[1].nlb        = 4;
+    ranges[1].slba = 100;
+    ranges[1].nlb = 4;
     ranges[2].attributes = 0;
-    ranges[2].slba       = 500;
-    ranges[2].nlb        = 4;
+    ranges[2].slba = 500;
+    ranges[2].nlb = 4;
 
     rc = nvme_uspace_trim(&dev, 1, ranges, 3);
     TEST_ASSERT(rc == HFSSS_OK, "trim with 3 ranges OK");
@@ -584,8 +560,7 @@ static void test_nc010(void)
         rc = nvme_uspace_read(&dev, 1, check_lbas[i], 1, rbuf);
         if (rc != HFSSS_ERR_NOENT) {
             all_noent = false;
-            fprintf(stderr,
-                    "  [DBG] trimmed LBA=%llu returned rc=%d (expected NOENT)\n",
+            fprintf(stderr, "  [DBG] trimmed LBA=%llu returned rc=%d (expected NOENT)\n",
                     (unsigned long long)check_lbas[i], rc);
         }
     }
@@ -625,8 +600,7 @@ static void test_nc012(void)
 
     /* After format, old data should be gone */
     rc = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
-    TEST_ASSERT(rc == HFSSS_ERR_NOENT,
-                "read after format returns HFSSS_ERR_NOENT");
+    TEST_ASSERT(rc == HFSSS_ERR_NOENT, "read after format returns HFSSS_ERR_NOENT");
 
     /* Write new data */
     memset(wbuf, 0x55, TEST_PAGE_SIZE);
@@ -636,8 +610,104 @@ static void test_nc012(void)
     /* Read and verify new data */
     memset(rbuf, 0, TEST_PAGE_SIZE);
     rc = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
-    TEST_ASSERT(rc == HFSSS_OK && rbuf[0] == 0x55,
-                "read after format+write returns correct data");
+    TEST_ASSERT(rc == HFSSS_OK && rbuf[0] == 0x55, "read after format+write returns correct data");
+
+    teardown_device(&dev);
+}
+
+/* NC-013: Sanitize contract (sanact 1/2/3, data erasure) */
+static void test_nc013(void)
+{
+    printf("\n[NC-013] Sanitize contract\n");
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    uint64_t total_lbas;
+    if (setup_device(&dev, &cfg, &total_lbas) != 0) {
+        TEST_ASSERT(false, "device setup");
+        return;
+    }
+    int rc;
+    uint8_t wbuf[TEST_PAGE_SIZE];
+    uint8_t rbuf[TEST_PAGE_SIZE];
+
+    /* Write data, sanitize with sanact=1, verify erasure */
+    memset(wbuf, 0xDD, TEST_PAGE_SIZE);
+    rc = nvme_uspace_write(&dev, 1, 0, 1, wbuf);
+    TEST_ASSERT(rc == HFSSS_OK, "write LBA 0 before sanitize");
+    rc = nvme_uspace_sanitize(&dev, 1);
+    TEST_ASSERT(rc == HFSSS_OK, "sanitize sanact=1 (block erase) OK");
+    rc = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
+    TEST_ASSERT(rc == HFSSS_ERR_NOENT, "read after sanact=1 returns HFSSS_ERR_NOENT");
+
+    /* Write again, sanitize with sanact=2 (overwrite) */
+    memset(wbuf, 0xCC, TEST_PAGE_SIZE);
+    nvme_uspace_write(&dev, 1, 0, 1, wbuf);
+    rc = nvme_uspace_sanitize(&dev, 2);
+    TEST_ASSERT(rc == HFSSS_OK, "sanitize sanact=2 (overwrite) OK");
+    rc = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
+    TEST_ASSERT(rc == HFSSS_ERR_NOENT, "read after sanact=2 returns HFSSS_ERR_NOENT");
+
+    /* sanact=3 (crypto erase) on already-empty device */
+    rc = nvme_uspace_sanitize(&dev, 3);
+    TEST_ASSERT(rc == HFSSS_OK, "sanitize sanact=3 (crypto erase) OK");
+    teardown_device(&dev);
+}
+
+/* NC-014: Admin negative paths (fw, log, features, format) */
+static void test_nc014(void)
+{
+    printf("\n[NC-014] Admin negative paths\n");
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    uint64_t total_lbas;
+    if (setup_device(&dev, &cfg, &total_lbas) != 0) {
+        TEST_ASSERT(false, "device setup");
+        return;
+    }
+    int rc;
+    uint32_t val;
+    uint8_t dummy[512];
+    uint8_t fw_buf[128];
+
+    /* Firmware: NULL data */
+    rc = nvme_uspace_fw_download(&dev, 0, NULL, 4096);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL, "fw_download NULL data INVAL");
+    /* Firmware: non-zero offset staging is accepted but does not yet
+     * surface in identify_ctrl.fr (which only copies bytes 0..7 of the
+     * staging buffer). This verifies the API accepts non-zero offsets
+     * without error; observable offset behavior needs future work. */
+    memset(fw_buf, 0xEF, sizeof(fw_buf));
+    rc = nvme_uspace_fw_download(&dev, 4096, fw_buf, sizeof(fw_buf));
+    TEST_ASSERT(rc == HFSSS_OK, "fw_download at non-zero offset accepted");
+
+    /* Log page: unsupported LIDs */
+    rc = nvme_uspace_get_log_page(&dev, 1, 0, dummy, sizeof(dummy));
+    TEST_ASSERT(rc == HFSSS_ERR_NOTSUPP, "get_log_page LID=0 NOTSUPP");
+    rc = nvme_uspace_get_log_page(&dev, 1, 3, dummy, sizeof(dummy));
+    TEST_ASSERT(rc == HFSSS_ERR_NOTSUPP, "get_log_page LID=3 NOTSUPP");
+    rc = nvme_uspace_get_log_page(&dev, 1, 0xFF, dummy, sizeof(dummy));
+    TEST_ASSERT(rc == HFSSS_ERR_NOTSUPP, "get_log_page LID=0xFF NOTSUPP");
+    /* Log page: NULL buffer */
+    rc = nvme_uspace_get_log_page(&dev, 1, 2, NULL, 512);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL, "get_log_page NULL buf INVAL");
+
+    /* Features: unsupported FIDs for get */
+    rc = nvme_uspace_get_features(&dev, 0x00, &val);
+    TEST_ASSERT(rc == HFSSS_ERR_NOTSUPP, "get_features FID=0x00 NOTSUPP");
+    rc = nvme_uspace_get_features(&dev, 0xFF, &val);
+    TEST_ASSERT(rc == HFSSS_ERR_NOTSUPP, "get_features FID=0xFF NOTSUPP");
+    /* Features: unsupported FID for set */
+    rc = nvme_uspace_set_features(&dev, 0xFF, 42);
+    TEST_ASSERT(rc == HFSSS_ERR_NOTSUPP, "set_features FID=0xFF NOTSUPP");
+    /* Features: NULL value pointer */
+    rc = nvme_uspace_get_features(&dev, 0x02, NULL);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL, "get_features NULL value INVAL");
+
+    /* Format: invalid NSIDs */
+    rc = nvme_uspace_format_nvm(&dev, 99);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL, "format_nvm NSID=99 INVAL");
+    rc = nvme_uspace_format_nvm(&dev, 0xFFFFFFFF);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL, "format_nvm NSID=0xFFFFFFFF INVAL");
 
     teardown_device(&dev);
 }
@@ -662,10 +732,11 @@ int main(void)
     test_nc009();
     test_nc010();
     test_nc012();
+    test_nc013();
+    test_nc014();
 
     printf("\n========================================\n");
-    printf("Summary: %d total, %d passed, %d failed\n",
-           total_tests, passed_tests, failed_tests);
+    printf("Summary: %d total, %d passed, %d failed\n", total_tests, passed_tests, failed_tests);
     printf("========================================\n");
 
     if (failed_tests > 0) {
