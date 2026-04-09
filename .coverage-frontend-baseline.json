@@ -1,0 +1,12 @@
+{
+  "created_at": "2026-04-08T00:00:00Z",
+  "modules": {
+    "src/vhost/hfsss_nbd_server.c": { "lines": 0.0, "functions": 0.0, "branches": 0.0 },
+    "src/vhost/nbd_async.c":        { "lines": 0.0, "functions": 0.0, "branches": 0.0 },
+    "src/pcie/nvme.c":              { "lines": 0.0, "functions": 0.0, "branches": 0.0 },
+    "src/pcie/nvme_uspace.c":       { "lines": 0.0, "functions": 0.0, "branches": 0.0 },
+    "src/pcie/queue.c":             { "lines": 0.0, "functions": 0.0, "branches": 0.0 },
+    "src/controller/shmem_if.c":    { "lines": 0.0, "functions": 0.0, "branches": 0.0 },
+    "src/common/msgqueue.c":        { "lines": 0.0, "functions": 0.0, "branches": 0.0 }
+  }
+}
