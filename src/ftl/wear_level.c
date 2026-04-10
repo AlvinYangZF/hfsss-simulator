@@ -20,6 +20,11 @@ int wear_level_init(struct wear_level_ctx *ctx)
     ctx->static_threshold = STATIC_WL_DEFAULT_THRESHOLD;
     ctx->last_static_check_ts = 0;
 
+    /* Wear monitoring defaults (from wear_level.h) */
+    ctx->wear_monitoring_enabled = WEAR_MONITORING_ENABLED;
+    ctx->wear_alert_threshold = WEAR_ALERT_THRESHOLD;
+    ctx->wear_critical_threshold = WEAR_CRITICAL_THRESHOLD;
+
     return HFSSS_OK;
 }
 
@@ -115,6 +120,11 @@ wear_alert_type wear_level_check_wear(struct wear_level_ctx *ctx,
                                       u32 max_pe_cycles)
 {
     if (!ctx || !block_mgr || max_pe_cycles == 0) {
+        return WEAR_ALERT_NONE;
+    }
+
+    /* Respect monitoring-disabled state */
+    if (!ctx->wear_monitoring_enabled) {
         return WEAR_ALERT_NONE;
     }
 

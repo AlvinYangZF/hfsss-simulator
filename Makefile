@@ -196,7 +196,8 @@ COVERAGE_UT_BINS = $(COVERAGE_BIN_DIR)/test_common $(COVERAGE_BIN_DIR)/test_medi
 	$(COVERAGE_BIN_DIR)/test_msgqueue \
 	$(COVERAGE_BIN_DIR)/test_nvme_admin_cmds \
 	$(COVERAGE_BIN_DIR)/test_nvme_io_cmds \
-	$(COVERAGE_BIN_DIR)/systest_performance
+	$(COVERAGE_BIN_DIR)/systest_performance \
+	$(COVERAGE_BIN_DIR)/systest_persistence
 COVERAGE_E2E_BINS = $(COVERAGE_BIN_DIR)/hfsss-nbd-server
 COVERAGE_BINS = $(COVERAGE_UT_BINS) $(COVERAGE_E2E_BINS)
 
@@ -539,7 +540,7 @@ stress-long: all
 
 # System-level tests (Tier 1)
 .PHONY: systest
-systest: directories $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG)
+systest: directories $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR)
 	@echo "========================================"
 	@echo "Running system-level tests..."
 	@echo "========================================"
@@ -552,6 +553,8 @@ systest: directories $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(S
 	@$(SYSTEST_PS)
 	@echo ""
 	@$(SYSTEST_WG)
+	@echo ""
+	@$(SYSTEST_PR)
 	@echo ""
 	@echo "========================================"
 	@echo "All system-level tests complete!"
