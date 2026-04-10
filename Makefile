@@ -125,6 +125,9 @@ TEST_T10PI = $(BIN_DIR)/test_t10_pi
 SYSTEST_DI = $(BIN_DIR)/systest_data_integrity
 SYSTEST_NC = $(BIN_DIR)/systest_nvme_compliance
 SYSTEST_EB = $(BIN_DIR)/systest_error_boundary
+SYSTEST_PS = $(BIN_DIR)/systest_performance
+SYSTEST_WG = $(BIN_DIR)/systest_wear_gc
+SYSTEST_PR = $(BIN_DIR)/systest_persistence
 TEST_UPLP = $(BIN_DIR)/test_uplp
 TEST_QOS = $(BIN_DIR)/test_qos
 TEST_SECURITY = $(BIN_DIR)/test_security
@@ -181,7 +184,8 @@ COVERAGE_UT_BINS = $(COVERAGE_BIN_DIR)/test_common $(COVERAGE_BIN_DIR)/test_medi
 	$(COVERAGE_BIN_DIR)/test_superblock $(COVERAGE_BIN_DIR)/test_power_cycle \
 	$(COVERAGE_BIN_DIR)/test_foundation $(COVERAGE_BIN_DIR)/test_t10_pi \
 	$(COVERAGE_BIN_DIR)/systest_data_integrity $(COVERAGE_BIN_DIR)/systest_nvme_compliance \
-	$(COVERAGE_BIN_DIR)/systest_error_boundary $(COVERAGE_BIN_DIR)/test_uplp \
+	$(COVERAGE_BIN_DIR)/systest_error_boundary $(COVERAGE_BIN_DIR)/systest_wear_gc \
+	$(COVERAGE_BIN_DIR)/test_uplp \
 	$(COVERAGE_BIN_DIR)/test_qos $(COVERAGE_BIN_DIR)/test_security \
 	$(COVERAGE_BIN_DIR)/test_multi_ns $(COVERAGE_BIN_DIR)/test_thermal_telemetry \
 	$(COVERAGE_BIN_DIR)/stress_enterprise $(COVERAGE_BIN_DIR)/test_proc_interface \
@@ -191,7 +195,8 @@ COVERAGE_UT_BINS = $(COVERAGE_BIN_DIR)/test_common $(COVERAGE_BIN_DIR)/test_medi
 	$(COVERAGE_BIN_DIR)/test_inflight_pool \
 	$(COVERAGE_BIN_DIR)/test_msgqueue \
 	$(COVERAGE_BIN_DIR)/test_nvme_admin_cmds \
-	$(COVERAGE_BIN_DIR)/test_nvme_io_cmds
+	$(COVERAGE_BIN_DIR)/test_nvme_io_cmds \
+	$(COVERAGE_BIN_DIR)/systest_performance
 COVERAGE_E2E_BINS = $(COVERAGE_BIN_DIR)/hfsss-nbd-server
 COVERAGE_BINS = $(COVERAGE_UT_BINS) $(COVERAGE_E2E_BINS)
 
@@ -200,7 +205,7 @@ COVERAGE_BINS = $(COVERAGE_UT_BINS) $(COVERAGE_E2E_BINS)
 	coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage-frontend coverage-frontend-update coverage coverage-selftest \
 	qemu-blackbox qemu-blackbox-list qemu-blackbox-ci qemu-blackbox-soak pre-checkin
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_SHMEM_IF) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT) $(TEST_MSGQ) $(TEST_NVME_ADMIN) $(TEST_NVME_IO)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_SHMEM_IF) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT) $(TEST_MSGQ) $(TEST_NVME_ADMIN) $(TEST_NVME_IO)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -455,6 +460,18 @@ $(SYSTEST_EB): $(TEST_DIR)/systest_error_boundary.c $(LIBHFSSS_PCIE) $(LIBHFSSS_
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
 
+$(SYSTEST_PS): $(TEST_DIR)/systest_performance.c $(LIBHFSSS_PERF) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-perf -lhfsss-common -lm $(LDFLAGS)
+
+$(SYSTEST_WG): $(TEST_DIR)/systest_wear_gc.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
+
+$(SYSTEST_PR): $(TEST_DIR)/systest_persistence.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
+
 $(TEST_UPLP): $(TEST_DIR)/test_uplp.c $(LIBHFSSS_FTL) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-common -lm $(LDFLAGS)
@@ -522,7 +539,7 @@ stress-long: all
 
 # System-level tests (Tier 1)
 .PHONY: systest
-systest: directories $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB)
+systest: directories $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG)
 	@echo "========================================"
 	@echo "Running system-level tests..."
 	@echo "========================================"
@@ -531,6 +548,10 @@ systest: directories $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB)
 	@$(SYSTEST_NC)
 	@echo ""
 	@$(SYSTEST_EB)
+	@echo ""
+	@$(SYSTEST_PS)
+	@echo ""
+	@$(SYSTEST_WG)
 	@echo ""
 	@echo "========================================"
 	@echo "All system-level tests complete!"

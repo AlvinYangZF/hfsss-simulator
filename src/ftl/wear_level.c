@@ -83,3 +83,78 @@ int wear_level_run_static(struct wear_level_ctx *ctx, struct block_mgr *block_mg
 
     return HFSSS_OK;
 }
+
+/* Wear Monitoring Functions */
+
+int wear_level_update_stats(struct wear_level_ctx *ctx, struct block_mgr *block_mgr)
+{
+    if (!ctx || !block_mgr || !block_mgr->blocks || block_mgr->total_blocks == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    u32 max_ec = 0;
+    u32 min_ec = UINT32_MAX;
+    u64 sum_ec = 0;
+
+    for (u64 i = 0; i < block_mgr->total_blocks; i++) {
+        u32 ec = block_mgr->blocks[i].erase_count;
+        if (ec > max_ec) max_ec = ec;
+        if (ec < min_ec) min_ec = ec;
+        sum_ec += ec;
+    }
+
+    ctx->max_erase_count = max_ec;
+    ctx->min_erase_count = min_ec;
+    ctx->avg_erase_count = (u32)(sum_ec / block_mgr->total_blocks);
+
+    return HFSSS_OK;
+}
+
+wear_alert_type wear_level_check_wear(struct wear_level_ctx *ctx,
+                                      struct block_mgr *block_mgr,
+                                      u32 max_pe_cycles)
+{
+    if (!ctx || !block_mgr || max_pe_cycles == 0) {
+        return WEAR_ALERT_NONE;
+    }
+
+    wear_level_update_stats(ctx, block_mgr);
+
+    u32 pct = (ctx->max_erase_count * 100) / max_pe_cycles;
+
+    if (pct >= ctx->wear_critical_threshold) {
+        ctx->critical_alert_count++;
+        return WEAR_ALERT_CRITICAL;
+    }
+    if (pct >= ctx->wear_alert_threshold) {
+        ctx->alert_count++;
+        return WEAR_ALERT_WARNING;
+    }
+
+    return WEAR_ALERT_NONE;
+}
+
+u32 wear_level_get_max_erase(struct wear_level_ctx *ctx)
+{
+    return ctx ? ctx->max_erase_count : 0;
+}
+
+u32 wear_level_get_min_erase(struct wear_level_ctx *ctx)
+{
+    return ctx ? ctx->min_erase_count : 0;
+}
+
+u32 wear_level_get_avg_erase(struct wear_level_ctx *ctx)
+{
+    return ctx ? ctx->avg_erase_count : 0;
+}
+
+u64 wear_level_get_alert_count(struct wear_level_ctx *ctx)
+{
+    return ctx ? ctx->alert_count : 0;
+}
+
+u64 wear_level_get_critical_alert_count(struct wear_level_ctx *ctx)
+{
+    return ctx ? ctx->critical_alert_count : 0;
+}

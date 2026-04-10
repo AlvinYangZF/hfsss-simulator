@@ -570,6 +570,93 @@ static void test_nc010(void)
 }
 
 /* ---------------------------------------------------------------
+ * NC-011: DSM/Trim with overlapping ranges
+ * ------------------------------------------------------------- */
+static void test_nc011(void)
+{
+    printf("\n[NC-011] DSM/Trim with overlapping ranges\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    uint64_t total_lbas;
+
+    if (setup_device(&dev, &cfg, &total_lbas) != 0) {
+        TEST_ASSERT(false, "device setup");
+        return;
+    }
+
+    int rc;
+    uint8_t wbuf[TEST_PAGE_SIZE];
+    uint8_t rbuf[TEST_PAGE_SIZE];
+
+    if (total_lbas < 100) {
+        TEST_ASSERT(false, "not enough LBAs for NC-011 (need >= 100)");
+        teardown_device(&dev);
+        return;
+    }
+
+    /* Write LBAs 0-99 with distinct byte patterns */
+    for (int lba = 0; lba < 100; lba++) {
+        memset(wbuf, (uint8_t)(lba + 1), TEST_PAGE_SIZE);
+        rc = nvme_uspace_write(&dev, 1, (uint64_t)lba, 1, wbuf);
+        if (rc != HFSSS_OK) {
+            TEST_ASSERT(false, "write LBAs 0-99 for trim setup");
+            teardown_device(&dev);
+            return;
+        }
+    }
+    nvme_uspace_flush(&dev, 1);
+
+    /* Trim with overlapping ranges: [10,20) and [15,30) */
+    struct nvme_dsm_range ranges[2];
+    ranges[0].attributes = 0;
+    ranges[0].slba = 10;
+    ranges[0].nlb = 10;   /* LBAs 10-19 */
+    ranges[1].attributes = 0;
+    ranges[1].slba = 15;
+    ranges[1].nlb = 15;   /* LBAs 15-29 */
+
+    rc = nvme_uspace_trim(&dev, 1, ranges, 2);
+    TEST_ASSERT(rc == HFSSS_OK, "trim with 2 overlapping ranges OK");
+
+    /* Verify LBAs 10-29 return NOENT */
+    bool all_noent = true;
+    for (int lba = 10; lba < 30; lba++) {
+        rc = nvme_uspace_read(&dev, 1, (uint64_t)lba, 1, rbuf);
+        if (rc != HFSSS_ERR_NOENT) {
+            all_noent = false;
+            fprintf(stderr, "  [DBG] LBA=%d expected NOENT, got rc=%d\n",
+                    lba, rc);
+        }
+    }
+    TEST_ASSERT(all_noent, "LBAs 10-29 return HFSSS_ERR_NOENT after overlap trim");
+
+    /* Verify LBAs 0-9 still have valid data */
+    bool pre_ok = true;
+    for (int lba = 0; lba < 10; lba++) {
+        rc = nvme_uspace_read(&dev, 1, (uint64_t)lba, 1, rbuf);
+        if (rc != HFSSS_OK || rbuf[0] != (uint8_t)(lba + 1)) {
+            pre_ok = false;
+            fprintf(stderr, "  [DBG] LBA=%d data mismatch after trim\n", lba);
+        }
+    }
+    TEST_ASSERT(pre_ok, "LBAs 0-9 retain valid data after overlap trim");
+
+    /* Verify LBAs 30-99 still have valid data */
+    bool post_ok = true;
+    for (int lba = 30; lba < 100; lba++) {
+        rc = nvme_uspace_read(&dev, 1, (uint64_t)lba, 1, rbuf);
+        if (rc != HFSSS_OK || rbuf[0] != (uint8_t)(lba + 1)) {
+            post_ok = false;
+            fprintf(stderr, "  [DBG] LBA=%d data mismatch after trim\n", lba);
+        }
+    }
+    TEST_ASSERT(post_ok, "LBAs 30-99 retain valid data after overlap trim");
+
+    teardown_device(&dev);
+}
+
+/* ---------------------------------------------------------------
  * NC-012: Format NVM followed by IO
  * ------------------------------------------------------------- */
 static void test_nc012(void)
@@ -731,6 +818,7 @@ int main(void)
     test_nc008();
     test_nc009();
     test_nc010();
+    test_nc011();
     test_nc012();
     test_nc013();
     test_nc014();
