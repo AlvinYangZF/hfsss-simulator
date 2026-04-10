@@ -528,7 +528,12 @@ int nbd_async_start(struct nbd_async_ctx *ctx)
 
     ret = pthread_create(&ctx->cq_thread, NULL, nbd_cq_thread_main, ctx);
     if (ret != 0) {
+        /* CQ failed after SQ started: unblock the SQ thread's recv()
+         * by shutting down the read side of the client socket, then
+         * join. Without the shutdown the SQ thread stays in blocking
+         * recv() and pthread_join() deadlocks. */
         ctx->running = false;
+        shutdown(ctx->client_fd, SHUT_RD);
         pthread_join(ctx->sq_thread, NULL);
         return -1;
     }

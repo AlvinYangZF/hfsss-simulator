@@ -189,6 +189,28 @@ void ftl_mt_cleanup(struct ftl_mt_ctx *ctx)
     memset(ctx, 0, sizeof(*ctx));
 }
 
+/* Tear down already-started workers on partial-startup failure.
+ * Mirrors ftl_mt_stop(): push STOP, then signal request_cond under
+ * the lock before joining, so workers blocked in pthread_cond_wait()
+ * actually wake up and see the stop message. Without the signal the
+ * join will deadlock. */
+static void rollback_started_workers(struct ftl_mt_ctx *ctx, int count)
+{
+    for (int j = 0; j < count; j++) {
+        struct io_request stop;
+        memset(&stop, 0, sizeof(stop));
+        stop.opcode = IO_OP_STOP;
+        while (!io_ring_push(&ctx->workers[j].request_ring, &stop)) {
+            sched_yield();
+        }
+        pthread_mutex_lock(&ctx->workers[j].request_lock);
+        pthread_cond_signal(&ctx->workers[j].request_cond);
+        pthread_mutex_unlock(&ctx->workers[j].request_lock);
+        pthread_join(ctx->workers[j].thread, NULL);
+        ctx->workers[j].running = false;
+    }
+}
+
 int ftl_mt_start(struct ftl_mt_ctx *ctx)
 {
     if (!ctx || !ctx->initialized) {
@@ -200,14 +222,8 @@ int ftl_mt_start(struct ftl_mt_ctx *ctx)
         int ret = pthread_create(&ctx->workers[i].thread, NULL,
                                   ftl_worker_main, &ctx->workers[i]);
         if (ret != 0) {
-            /* Stop already-started workers */
-            for (int j = 0; j < i; j++) {
-                struct io_request stop;
-                memset(&stop, 0, sizeof(stop));
-                stop.opcode = IO_OP_STOP;
-                io_ring_push(&ctx->workers[j].request_ring, &stop);
-                pthread_join(ctx->workers[j].thread, NULL);
-            }
+            ctx->workers[i].running = false;
+            rollback_started_workers(ctx, i);
             return HFSSS_ERR_INVAL;
         }
     }
@@ -216,13 +232,36 @@ int ftl_mt_start(struct ftl_mt_ctx *ctx)
     pthread_mutex_init(&ctx->gc_mutex, NULL);
     pthread_cond_init(&ctx->gc_cond, NULL);
     ctx->gc_running = true;
-    pthread_create(&ctx->gc_thread, NULL, gc_thread_main, ctx);
+    int gc_rc = pthread_create(&ctx->gc_thread, NULL, gc_thread_main, ctx);
+    if (gc_rc != 0) {
+        /* GC thread failed to start: clean up cond/mutex, unwind workers */
+        ctx->gc_running = false;
+        pthread_cond_destroy(&ctx->gc_cond);
+        pthread_mutex_destroy(&ctx->gc_mutex);
+        rollback_started_workers(ctx, FTL_NUM_WORKERS);
+        return HFSSS_ERR_INVAL;
+    }
     ftl_mt_gc_mutex_ptr = &ctx->gc_mutex;
     ftl_mt_gc_cond_ptr  = &ctx->gc_cond;
 
     /* Start WL/Read Disturb background thread */
     ctx->wl_running = true;
-    pthread_create(&ctx->wl_thread, NULL, wl_thread_main, ctx);
+    int wl_rc = pthread_create(&ctx->wl_thread, NULL, wl_thread_main, ctx);
+    if (wl_rc != 0) {
+        /* WL failed: stop GC first (signal cond to unblock), then workers */
+        ctx->wl_running = false;
+        ctx->gc_running = false;
+        pthread_mutex_lock(&ctx->gc_mutex);
+        pthread_cond_signal(&ctx->gc_cond);
+        pthread_mutex_unlock(&ctx->gc_mutex);
+        pthread_join(ctx->gc_thread, NULL);
+        ftl_mt_gc_mutex_ptr = NULL;
+        ftl_mt_gc_cond_ptr  = NULL;
+        pthread_cond_destroy(&ctx->gc_cond);
+        pthread_mutex_destroy(&ctx->gc_mutex);
+        rollback_started_workers(ctx, FTL_NUM_WORKERS);
+        return HFSSS_ERR_INVAL;
+    }
 
     return HFSSS_OK;
 }

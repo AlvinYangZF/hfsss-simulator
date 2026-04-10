@@ -14,6 +14,7 @@
 #include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -311,19 +312,72 @@ int bench_run(const struct bench_cfg *cfg, struct bench_result *out) {
     /* Default op_count when neither duration nor op_count specified */
     uint64_t default_ops = 10000;
 
+    /* Distribute op_count across threads. If cfg->op_count is not
+     * evenly divisible by nt, the first (op_count % nt) workers each
+     * get one extra op so the total matches exactly. Previously the
+     * truncating division silently dropped up to (nt - 1) operations. */
+    uint64_t base_ops    = cfg->op_count ? (cfg->op_count / nt) : default_ops;
+    uint64_t extra_ops   = cfg->op_count ? (cfg->op_count % nt) : 0;
+
     for (uint32_t i = 0; i < nt; i++) {
         ws[i].cfg       = cfg;
-        ws[i].op_count  = cfg->op_count ? (cfg->op_count / nt) : default_ops;
+        ws[i].op_count  = base_ops + (i < extra_ops ? 1 : 0);
         ws[i].rng_state = 0xDEADBEEF12345678ULL ^ ((uint64_t)i * 0x9E3779B97F4A7C15ULL);
         if (cfg->duration_s > 0) ws[i].op_count = UINT64_MAX;
     }
 
-    for (uint32_t i = 0; i < nt; i++) {
-        pthread_create(&threads[i], NULL, bench_worker, &ws[i]);
+    /* Track which threads were actually created so failures can unwind
+     * the already-started ones instead of joining invalid thread ids. */
+    bool *started = (bool *)calloc(nt, sizeof(bool));
+    if (!started) {
+        free(threads);
+        free(ws);
+        return HFSSS_ERR_NOMEM;
     }
+
+    int create_rc = 0;
+    uint32_t created = 0;
     for (uint32_t i = 0; i < nt; i++) {
-        pthread_join(threads[i], NULL);
+        int prc = pthread_create(&threads[i], NULL, bench_worker, &ws[i]);
+        if (prc != 0) {
+            create_rc = prc;
+            break;
+        }
+        started[i] = true;
+        created++;
     }
+
+    if (create_rc != 0) {
+        /* Signal already-started workers to finish by zeroing their
+         * remaining op_count budget — the loop termination checks it
+         * on each iteration. Duration-based runs still exit when the
+         * deadline is reached; those cannot be shortened from outside
+         * without a shared stop flag, so we just join and surface the
+         * failure. */
+        for (uint32_t i = 0; i < created; i++) {
+            ws[i].op_count = 0;
+        }
+        for (uint32_t i = 0; i < nt; i++) {
+            if (started[i]) pthread_join(threads[i], NULL);
+        }
+        free(started);
+        free(threads);
+        free(ws);
+        return HFSSS_ERR_INVAL;
+    }
+
+    for (uint32_t i = 0; i < nt; i++) {
+        int jrc = pthread_join(threads[i], NULL);
+        if (jrc != 0) {
+            /* A failing join leaves the thread in an unknown state;
+             * bail out with an error instead of reporting success. */
+            free(started);
+            free(threads);
+            free(ws);
+            return HFSSS_ERR_IO;
+        }
+    }
+    free(started);
 
     /* Aggregate results */
     uint64_t total_read  = 0;
