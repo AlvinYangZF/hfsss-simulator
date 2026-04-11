@@ -498,6 +498,24 @@ int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane
     return HFSSS_OK;
 }
 
+int media_nand_read_status(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_die_cmd_state *out)
+{
+    if (!ctx || !ctx->initialized || !out) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nand_cmd_target target = {
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = 0,
+        .block = 0,
+        .page = 0,
+    };
+
+    return nand_cmd_engine_snapshot(ctx->nand, &target, out);
+}
+
 int media_nand_is_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 {
     int is_bad;

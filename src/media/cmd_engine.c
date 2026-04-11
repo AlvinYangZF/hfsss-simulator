@@ -26,6 +26,14 @@ static struct nand_die *engine_get_die(struct nand_device *dev, u32 ch, u32 chip
     return &nand_chip->dies[die];
 }
 
+static struct nand_channel *engine_get_channel(struct nand_device *dev, u32 ch)
+{
+    if (!dev || ch >= dev->channel_count) {
+        return NULL;
+    }
+    return &dev->channels[ch];
+}
+
 static int plane_index_from_mask(u32 plane_mask, u32 *out)
 {
     if (plane_mask == 0) {
@@ -89,15 +97,23 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         return rc;
     }
 
+    struct nand_channel *channel = engine_get_channel(dev, target->ch);
+    if (!channel) {
+        return HFSSS_ERR_INVAL;
+    }
     struct nand_die *die = engine_get_die(dev, target->ch, target->chip, target->die);
     if (!die) {
         return HFSSS_ERR_INVAL;
     }
 
+    /* Channel-level serialization is the first-order command submission
+     * boundary in early phases; per-die work is gated underneath it. */
+    mutex_lock(&channel->lock, 0);
     mutex_lock(&die->die_lock, 0);
 
     if (!nand_cmd_is_legal_in_state(die->cmd_state.state, op)) {
         mutex_unlock(&die->die_lock);
+        mutex_unlock(&channel->lock);
         return HFSSS_ERR_BUSY;
     }
 
@@ -156,8 +172,10 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     die->cmd_state.in_flight = false;
     die->cmd_state.phase = CMD_PHASE_COMPLETE;
     die->cmd_state.state = DIE_IDLE;
+    die->cmd_state.remaining_ns = 0;
 
     mutex_unlock(&die->die_lock);
+    mutex_unlock(&channel->lock);
     return stage_rc;
 }
 
@@ -204,15 +222,27 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
         return HFSSS_ERR_INVAL;
     }
 
+    struct nand_channel *channel = engine_get_channel(dev, target->ch);
+    if (!channel) {
+        return HFSSS_ERR_INVAL;
+    }
     struct nand_die *die = engine_get_die(dev, target->ch, target->chip, target->die);
     if (!die) {
         return HFSSS_ERR_INVAL;
     }
 
+    /*
+     * The synchronous submission model means any concurrent reset caller is
+     * serialized behind the active command via the channel and die locks, so
+     * reset always observes an idle die. True mid-flight abort is deferred to
+     * the async execution model in a later phase.
+     */
+    mutex_lock(&channel->lock, 0);
     mutex_lock(&die->die_lock, 0);
 
     if (!nand_cmd_is_legal_in_state(die->cmd_state.state, NAND_OP_RESET)) {
         mutex_unlock(&die->die_lock);
+        mutex_unlock(&channel->lock);
         return HFSSS_ERR_BUSY;
     }
 
@@ -220,9 +250,11 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
     die->cmd_state.state = DIE_IDLE;
     die->cmd_state.phase = CMD_PHASE_COMPLETE;
     die->cmd_state.in_flight = false;
+    die->cmd_state.remaining_ns = 0;
     die->cmd_state.result_status = HFSSS_OK;
 
     mutex_unlock(&die->die_lock);
+    mutex_unlock(&channel->lock);
     return HFSSS_OK;
 }
 

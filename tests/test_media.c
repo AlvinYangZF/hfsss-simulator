@@ -535,6 +535,37 @@ static int test_cmd_state_machine(void)
     TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_PROG_ARRAY_BUSY, NAND_OP_PROG) == false,
                 "SM-10: PROG illegal in DIE_PROG_ARRAY_BUSY");
 
+    /* SM-11: failed read against an unwritten page must not advance plane EAT.
+     * This is the canary for the short-circuit gate in the engine submit path
+     * where a failed setup callback skips every subsequent stage EAT commit. */
+    u64 eat_before_fail = eat_get_for_plane(ctx.eat, 0, 0, 0, 0);
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 3, 0, buf, NULL);
+    TEST_ASSERT(ret == HFSSS_ERR_NOENT, "SM-11: read on unwritten page returns NOENT");
+    u64 eat_after_fail = eat_get_for_plane(ctx.eat, 0, 0, 0, 0);
+    TEST_ASSERT(eat_before_fail == eat_after_fail, "SM-11: failed read does not advance plane EAT");
+
+    /* SM-12: a program commits EAT and then mutates NAND state, so a read-back
+     * after the program observes both the advanced EAT and the new data. This
+     * guards the eat-before-mutate ordering for program/erase paths. */
+    u64 eat_before_prog = eat_get_for_plane(ctx.eat, 0, 0, 0, 0);
+    memset(buf, 0xCC, sizeof(buf));
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 3, 0, buf, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-12: program succeeds");
+    u64 eat_after_prog = eat_get_for_plane(ctx.eat, 0, 0, 0, 0);
+    TEST_ASSERT(eat_after_prog > eat_before_prog, "SM-12: program advances plane EAT");
+    memset(buf, 0, sizeof(buf));
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 3, 0, buf, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-12: read-back after program succeeds");
+    TEST_ASSERT(((u8 *)buf)[0] == 0xCC, "SM-12: read-back sees programmed data");
+
+    /* SM-13: status wrapper routes through the engine snapshot path. */
+    struct nand_die_cmd_state status;
+    ret = media_nand_read_status(&ctx, 0, 0, 0, &status);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-13: status wrapper returns OK");
+    TEST_ASSERT(status.state == DIE_IDLE, "SM-13: status shows DIE_IDLE after completed command");
+    TEST_ASSERT(status.phase == CMD_PHASE_COMPLETE, "SM-13: status shows CMD_PHASE_COMPLETE");
+    TEST_ASSERT(status.in_flight == false, "SM-13: status shows not in-flight");
+
     media_cleanup(&ctx);
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }

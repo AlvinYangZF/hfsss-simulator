@@ -54,18 +54,15 @@ struct media_ctx {
 /* Function Prototypes */
 int media_init(struct media_ctx *ctx, struct media_config *config);
 void media_cleanup(struct media_ctx *ctx);
-int media_nand_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                    u32 plane, u32 block, u32 page, void *data, void *spare);
-int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                       u32 plane, u32 block, u32 page, const void *data, const void *spare);
-int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                     u32 plane, u32 block);
-int media_nand_is_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                            u32 plane, u32 block);
-int media_nand_mark_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                              u32 plane, u32 block);
-u32 media_nand_get_erase_count(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                               u32 plane, u32 block);
+int media_nand_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page, void *data,
+                    void *spare);
+int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page,
+                       const void *data, const void *spare);
+int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block);
+int media_nand_read_status(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_die_cmd_state *out);
+int media_nand_is_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block);
+int media_nand_mark_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block);
+u32 media_nand_get_erase_count(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block);
 void media_get_stats(struct media_ctx *ctx, struct media_stats *stats);
 void media_reset_stats(struct media_ctx *ctx);
 
