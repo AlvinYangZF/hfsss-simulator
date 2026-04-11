@@ -136,6 +136,12 @@ struct __attribute__((packed)) nbd_reply {
 
 static volatile int g_running = 1;
 static int g_listen_fd = -1;
+/* File descriptor of the currently active client session, if any. Set
+ * before calling into nbd_serve() / nbd_async_start() and cleared after
+ * the session exits. The signal handler shuts this down to unblock any
+ * recv()/read() the serving threads are parked in, so that SIGINT /
+ * SIGTERM take effect promptly even when a client is connected. */
+static volatile int g_active_client_fd = -1;
 
 static void handle_signal(int signo)
 {
@@ -144,6 +150,11 @@ static void handle_signal(int signo)
     /* Interrupt accept() */
     if (g_listen_fd >= 0)
         close(g_listen_fd);
+    /* Unblock the currently serving session, if any. shutdown() is
+     * async-signal-safe and will make any in-flight recv/read return. */
+    int cfd = g_active_client_fd;
+    if (cfd >= 0)
+        shutdown(cfd, SHUT_RDWR);
 }
 
 /* -------------------------------------------------------------------------
@@ -852,6 +863,9 @@ int main(int argc, char *argv[])
 
         if (nbd_handshake(client_fd, export_size) == 0) {
             fprintf(stderr, "[NBD] Handshake OK, entering transmission phase\n");
+            /* Publish client_fd so the signal handler can shut it down
+             * to unblock the serving thread on SIGINT / SIGTERM. */
+            g_active_client_fd = client_fd;
             if (g_async && g_mt) {
                 fprintf(stderr, "Mode:     ASYNC PIPELINE (SQ + CQ + %d FTL workers)\n", FTL_NUM_WORKERS);
                 struct nbd_async_ctx async_ctx;
@@ -869,6 +883,7 @@ int main(int argc, char *argv[])
             } else {
                 nbd_serve(client_fd, &dev, lba_size);
             }
+            g_active_client_fd = -1;
         } else {
             fprintf(stderr, "[NBD] Handshake failed\n");
         }
