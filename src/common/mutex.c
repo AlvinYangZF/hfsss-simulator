@@ -96,7 +96,7 @@ int mutex_lock(struct mutex *mtx, u64 timeout_ns)
      * function ignored timeout_ns entirely and always blocked, which
      * silently broke every caller that relied on the timeout budget. */
     const u64 deadline = mutex_now_ns() + timeout_ns;
-    const struct timespec sleep_step = { .tv_sec = 0, .tv_nsec = 100000 };
+    const struct timespec sleep_step = {.tv_sec = 0, .tv_nsec = 100000};
 
     for (;;) {
         int rc = pthread_mutex_trylock(&lock->mutex);
@@ -135,7 +135,9 @@ void mutex_stats(struct mutex *mtx, u64 *lock_count, u64 *unlock_count)
 
     struct mutex_lock *lock = (struct mutex_lock *)mtx->lock;
     pthread_mutex_lock(&lock->mutex);
-    if (lock_count) *lock_count = mtx->lock_count;
-    if (unlock_count) *unlock_count = mtx->unlock_count;
+    if (lock_count)
+        *lock_count = mtx->lock_count;
+    if (unlock_count)
+        *unlock_count = mtx->unlock_count;
     pthread_mutex_unlock(&lock->mutex);
 }

@@ -24,17 +24,17 @@ struct mem_block {
 
 /* Memory Pool Context */
 struct mem_pool {
-    u32 block_size;             /* caller's requested size (for stats) */
-    u32 slot_size;              /* effective stride: block_size rounded
-                                 * up to MEMPOOL_MIN_ALIGN. Used for all
-                                 * address math so that returned pointers
-                                 * stay aligned even when block_size is
-                                 * small (e.g. 1). */
+    u32 block_size; /* caller's requested size (for stats) */
+    u32 slot_size;  /* effective stride: block_size rounded
+                     * up to MEMPOOL_MIN_ALIGN. Used for all
+                     * address math so that returned pointers
+                     * stay aligned even when block_size is
+                     * small (e.g. 1). */
     u32 block_count;
     u32 free_count;
     u32 used_count;
-    void *memory;               /* user data area: block_count * slot_size */
-    struct mem_block *blocks;   /* metadata array: block_count entries */
+    void *memory;             /* user data area: block_count * slot_size */
+    struct mem_block *blocks; /* metadata array: block_count entries */
     struct mem_block *free_list;
     void *lock;
     u64 alloc_count;

@@ -18,16 +18,17 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST_ASSERT(cond, msg) do { \
-    tests_run++; \
-    if (cond) { \
-        printf("  [PASS] %s\n", msg); \
-        tests_passed++; \
-    } else { \
-        printf("  [FAIL] %s\n", msg); \
-        tests_failed++; \
-    } \
-} while(0)
+#define TEST_ASSERT(cond, msg)                                                                                         \
+    do {                                                                                                               \
+        tests_run++;                                                                                                   \
+        if (cond) {                                                                                                    \
+            printf("  [PASS] %s\n", msg);                                                                              \
+            tests_passed++;                                                                                            \
+        } else {                                                                                                       \
+            printf("  [FAIL] %s\n", msg);                                                                              \
+            tests_failed++;                                                                                            \
+        }                                                                                                              \
+    } while (0)
 
 /* Log Tests */
 static int test_log(void)
@@ -175,10 +176,8 @@ static int test_mempool_alignment(void)
         int ret = mem_pool_init(&pool, sizes[s], 32);
         TEST_ASSERT(ret == HFSSS_OK, "init with small block_size");
 
-        TEST_ASSERT(pool.slot_size >= MEMPOOL_MIN_ALIGN,
-                    "slot_size rounded up to MEMPOOL_MIN_ALIGN");
-        TEST_ASSERT((pool.slot_size % MEMPOOL_MIN_ALIGN) == 0,
-                    "slot_size is a multiple of MEMPOOL_MIN_ALIGN");
+        TEST_ASSERT(pool.slot_size >= MEMPOOL_MIN_ALIGN, "slot_size rounded up to MEMPOOL_MIN_ALIGN");
+        TEST_ASSERT((pool.slot_size % MEMPOOL_MIN_ALIGN) == 0, "slot_size is a multiple of MEMPOOL_MIN_ALIGN");
 
         void *ptrs[32];
         int all_aligned = 1;
@@ -193,8 +192,7 @@ static int test_mempool_alignment(void)
                 break;
             }
         }
-        TEST_ASSERT(all_aligned,
-                    "every alloc is MEMPOOL_MIN_ALIGN-aligned");
+        TEST_ASSERT(all_aligned, "every alloc is MEMPOOL_MIN_ALIGN-aligned");
 
         /* round-trip each one to confirm free() still recognises the
          * address under the new slot_size stride. */
@@ -523,7 +521,7 @@ static int test_watchdog(void)
 
     /* Test init */
     ret = watchdog_init(&ctx, 100 * 1000 * 1000ULL, /* 100ms check interval */
-                     watchdog_test_timeout_cb, NULL);
+                        watchdog_test_timeout_cb, NULL);
     TEST_ASSERT(ret == HFSSS_OK, "watchdog_init should succeed");
 
     /* Test register tasks */

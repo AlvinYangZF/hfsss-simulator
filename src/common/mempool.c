@@ -18,8 +18,7 @@ int mem_pool_init(struct mem_pool *pool, u32 block_size, u32 block_count)
      * block_size values (e.g. 1) would otherwise hand out addresses
      * that differ by a single byte, breaking uint64_t / pointer loads
      * on strict-alignment targets and causing UB everywhere else. */
-    u32 slot_size = (block_size + (MEMPOOL_MIN_ALIGN - 1)) &
-                    ~(u32)(MEMPOOL_MIN_ALIGN - 1);
+    u32 slot_size = (block_size + (MEMPOOL_MIN_ALIGN - 1)) & ~(u32)(MEMPOOL_MIN_ALIGN - 1);
 
     /* User data area: exactly slot_size per block. Allocator metadata
      * lives in a parallel blocks[] array so user writes to allocated
@@ -33,8 +32,7 @@ int mem_pool_init(struct mem_pool *pool, u32 block_size, u32 block_count)
         return HFSSS_ERR_NOMEM;
     }
 
-    pool->blocks = (struct mem_block *)calloc(block_count,
-                                               sizeof(struct mem_block));
+    pool->blocks = (struct mem_block *)calloc(block_count, sizeof(struct mem_block));
     if (!pool->blocks) {
         free(pool->memory);
         pool->memory = NULL;
@@ -133,7 +131,7 @@ void mem_pool_free(struct mem_pool *pool, void *ptr)
      * not block_size, so mem_pool_free() still recognises valid
      * addresses after the alignment round-up. */
     char *base = (char *)pool->memory;
-    char *end  = base + (u64)pool->slot_size * pool->block_count;
+    char *end = base + (u64)pool->slot_size * pool->block_count;
     if ((char *)ptr < base || (char *)ptr >= end) {
         return;
     }
@@ -168,10 +166,14 @@ void mem_pool_stats(struct mem_pool *pool, u32 *used, u32 *free, u64 *alloc_tota
     struct mempool_lock *lock = (struct mempool_lock *)pool->lock;
     pthread_mutex_lock(&lock->mutex);
 
-    if (used) *used = pool->used_count;
-    if (free) *free = pool->free_count;
-    if (alloc_total) *alloc_total = pool->alloc_count;
-    if (free_total) *free_total = pool->free_count_total;
+    if (used)
+        *used = pool->used_count;
+    if (free)
+        *free = pool->free_count;
+    if (alloc_total)
+        *alloc_total = pool->alloc_count;
+    if (free_total)
+        *free_total = pool->free_count_total;
 
     pthread_mutex_unlock(&lock->mutex);
 }

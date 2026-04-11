@@ -8,13 +8,13 @@
 #include <errno.h>
 
 #ifdef __APPLE__
-#  include <sys/types.h>
-#  include <sys/sysctl.h>
-#  include <mach/thread_policy.h>
-#  include <mach/thread_act.h>
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <mach/thread_policy.h>
+#include <mach/thread_act.h>
 #else
-#  include <sched.h>
-#  include <unistd.h>
+#include <sched.h>
+#include <unistd.h>
 #endif
 
 /* ------------------------------------------------------------------
@@ -23,29 +23,27 @@
 
 /* Logical CPU assignment per role */
 static const int role_cpu_map[RT_ROLE_COUNT] = {
-    [RT_ROLE_IO_FAST]  = 0,
-    [RT_ROLE_GC]       = 1,
-    [RT_ROLE_MONITOR]  = 2,
-    [RT_ROLE_OOB]      = 3,
-    [RT_ROLE_GENERIC]  = -1,  /* no pinning */
+    [RT_ROLE_IO_FAST] = 0, [RT_ROLE_GC] = 1,       [RT_ROLE_MONITOR] = 2,
+    [RT_ROLE_OOB] = 3,     [RT_ROLE_GENERIC] = -1, /* no pinning */
 };
 
-int rt_pin_thread(pthread_t thread, enum rt_thread_role role) {
-    if (role >= RT_ROLE_COUNT) return HFSSS_ERR_INVAL;
+int rt_pin_thread(pthread_t thread, enum rt_thread_role role)
+{
+    if (role >= RT_ROLE_COUNT)
+        return HFSSS_ERR_INVAL;
 
     int cpu = role_cpu_map[role];
-    if (cpu < 0) return HFSSS_OK;  /* GENERIC: no-op */
+    if (cpu < 0)
+        return HFSSS_OK; /* GENERIC: no-op */
 
 #ifdef __APPLE__
     /* macOS does not expose CPU pinning via POSIX; use thread affinity tags
      * as best-effort grouping hint.  This avoids a hard compile error while
      * still exercising the code path in tests.                              */
-    thread_affinity_policy_data_t pol = { .affinity_tag = (integer_t)(cpu + 1) };
+    thread_affinity_policy_data_t pol = {.affinity_tag = (integer_t)(cpu + 1)};
     mach_port_t mach_thread = pthread_mach_thread_np(thread);
-    kern_return_t kr = thread_policy_set(mach_thread,
-                                          THREAD_AFFINITY_POLICY,
-                                          (thread_policy_t)&pol,
-                                          THREAD_AFFINITY_POLICY_COUNT);
+    kern_return_t kr =
+        thread_policy_set(mach_thread, THREAD_AFFINITY_POLICY, (thread_policy_t)&pol, THREAD_AFFINITY_POLICY_COUNT);
     if (kr != KERN_SUCCESS) {
         HFSSS_LOG_WARN("RT", "thread_policy_set failed for role %d (non-fatal on macOS)", role);
     }
@@ -64,15 +62,18 @@ int rt_pin_thread(pthread_t thread, enum rt_thread_role role) {
 #endif
 }
 
-int rt_pin_self(enum rt_thread_role role) {
+int rt_pin_self(enum rt_thread_role role)
+{
     return rt_pin_thread(pthread_self(), role);
 }
 
-int rt_get_affinity_mask(enum rt_thread_role role, uint64_t *mask_out) {
-    if (role >= RT_ROLE_COUNT || !mask_out) return HFSSS_ERR_INVAL;
+int rt_get_affinity_mask(enum rt_thread_role role, uint64_t *mask_out)
+{
+    if (role >= RT_ROLE_COUNT || !mask_out)
+        return HFSSS_ERR_INVAL;
     int cpu = role_cpu_map[role];
     if (cpu < 0) {
-        *mask_out = 0;  /* GENERIC: any CPU */
+        *mask_out = 0; /* GENERIC: any CPU */
         return HFSSS_OK;
     }
     *mask_out = (uint64_t)1 << cpu;
@@ -82,8 +83,10 @@ int rt_get_affinity_mask(enum rt_thread_role role, uint64_t *mask_out) {
 /* ------------------------------------------------------------------
  * IPC channel
  * ------------------------------------------------------------------ */
-int rt_ipc_init(struct rt_ipc_channel *ch) {
-    if (!ch) return HFSSS_ERR_INVAL;
+int rt_ipc_init(struct rt_ipc_channel *ch)
+{
+    if (!ch)
+        return HFSSS_ERR_INVAL;
     memset(ch, 0, sizeof(*ch));
     pthread_mutex_init(&ch->lock, NULL);
     pthread_cond_init(&ch->not_empty, NULL);
@@ -91,15 +94,19 @@ int rt_ipc_init(struct rt_ipc_channel *ch) {
     return HFSSS_OK;
 }
 
-void rt_ipc_cleanup(struct rt_ipc_channel *ch) {
-    if (!ch || !ch->initialized) return;
+void rt_ipc_cleanup(struct rt_ipc_channel *ch)
+{
+    if (!ch || !ch->initialized)
+        return;
     pthread_cond_destroy(&ch->not_empty);
     pthread_mutex_destroy(&ch->lock);
     ch->initialized = false;
 }
 
-int rt_ipc_send(struct rt_ipc_channel *ch, const struct rt_ipc_msg *msg) {
-    if (!ch || !ch->initialized || !msg) return HFSSS_ERR_INVAL;
+int rt_ipc_send(struct rt_ipc_channel *ch, const struct rt_ipc_msg *msg)
+{
+    if (!ch || !ch->initialized || !msg)
+        return HFSSS_ERR_INVAL;
 
     pthread_mutex_lock(&ch->lock);
     uint32_t next_head = (ch->head + 1) % RT_IPC_CHANNEL_DEPTH;
@@ -115,8 +122,10 @@ int rt_ipc_send(struct rt_ipc_channel *ch, const struct rt_ipc_msg *msg) {
     return HFSSS_OK;
 }
 
-int rt_ipc_recv(struct rt_ipc_channel *ch, struct rt_ipc_msg *msg) {
-    if (!ch || !ch->initialized || !msg) return HFSSS_ERR_INVAL;
+int rt_ipc_recv(struct rt_ipc_channel *ch, struct rt_ipc_msg *msg)
+{
+    if (!ch || !ch->initialized || !msg)
+        return HFSSS_ERR_INVAL;
 
     pthread_mutex_lock(&ch->lock);
     while (ch->head == ch->tail) {
@@ -128,13 +137,14 @@ int rt_ipc_recv(struct rt_ipc_channel *ch, struct rt_ipc_msg *msg) {
     return HFSSS_OK;
 }
 
-int rt_ipc_recv_timeout(struct rt_ipc_channel *ch, struct rt_ipc_msg *msg,
-                         uint32_t timeout_ms) {
-    if (!ch || !ch->initialized || !msg) return HFSSS_ERR_INVAL;
+int rt_ipc_recv_timeout(struct rt_ipc_channel *ch, struct rt_ipc_msg *msg, uint32_t timeout_ms)
+{
+    if (!ch || !ch->initialized || !msg)
+        return HFSSS_ERR_INVAL;
 
     struct timespec abs;
     clock_gettime(CLOCK_REALTIME, &abs);
-    abs.tv_sec  += timeout_ms / 1000;
+    abs.tv_sec += timeout_ms / 1000;
     abs.tv_nsec += (timeout_ms % 1000) * 1000000L;
     if (abs.tv_nsec >= 1000000000L) {
         abs.tv_sec++;
@@ -156,37 +166,47 @@ int rt_ipc_recv_timeout(struct rt_ipc_channel *ch, struct rt_ipc_msg *msg,
     return HFSSS_OK;
 }
 
-bool rt_ipc_is_empty(const struct rt_ipc_channel *ch) {
-    if (!ch || !ch->initialized) return true;
+bool rt_ipc_is_empty(const struct rt_ipc_channel *ch)
+{
+    if (!ch || !ch->initialized)
+        return true;
     return ch->head == ch->tail;
 }
 
-uint32_t rt_ipc_pending(const struct rt_ipc_channel *ch) {
-    if (!ch || !ch->initialized) return 0;
+uint32_t rt_ipc_pending(const struct rt_ipc_channel *ch)
+{
+    if (!ch || !ch->initialized)
+        return 0;
     uint32_t h = ch->head;
     uint32_t t = ch->tail;
-    if (h >= t) return h - t;
+    if (h >= t)
+        return h - t;
     return RT_IPC_CHANNEL_DEPTH - t + h;
 }
 
 /* ------------------------------------------------------------------
  * Trace ring
  * ------------------------------------------------------------------ */
-int trace_ring_init(struct trace_ring *ring) {
-    if (!ring) return HFSSS_ERR_INVAL;
+int trace_ring_init(struct trace_ring *ring)
+{
+    if (!ring)
+        return HFSSS_ERR_INVAL;
     memset(ring, 0, sizeof(*ring));
     ring->initialized = true;
     return HFSSS_OK;
 }
 
-void trace_ring_cleanup(struct trace_ring *ring) {
-    if (!ring) return;
+void trace_ring_cleanup(struct trace_ring *ring)
+{
+    if (!ring)
+        return;
     ring->initialized = false;
 }
 
-int trace_ring_write(struct trace_ring *ring, enum trace_level level,
-                      uint8_t subsys, const char *msg) {
-    if (!ring || !ring->initialized || !msg) return HFSSS_ERR_INVAL;
+int trace_ring_write(struct trace_ring *ring, enum trace_level level, uint8_t subsys, const char *msg)
+{
+    if (!ring || !ring->initialized || !msg)
+        return HFSSS_ERR_INVAL;
 
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -215,18 +235,21 @@ int trace_ring_write(struct trace_ring *ring, enum trace_level level,
 
     struct trace_entry *e = &ring->entries[slot];
     e->timestamp_ns = now;
-    e->seq          = seq;
-    e->level        = (uint8_t)level;
-    e->subsystem    = subsys;
+    e->seq = seq;
+    e->level = (uint8_t)level;
+    e->subsystem = subsys;
     strncpy(e->msg, msg, TRACE_MSG_LEN - 1);
     e->msg[TRACE_MSG_LEN - 1] = '\0';
 
     return HFSSS_OK;
 }
 
-int trace_ring_read(struct trace_ring *ring, struct trace_entry *out) {
-    if (!ring || !ring->initialized || !out) return HFSSS_ERR_INVAL;
-    if (ring->read_idx >= ring->write_idx) return HFSSS_ERR_NOENT;
+int trace_ring_read(struct trace_ring *ring, struct trace_entry *out)
+{
+    if (!ring || !ring->initialized || !out)
+        return HFSSS_ERR_INVAL;
+    if (ring->read_idx >= ring->write_idx)
+        return HFSSS_ERR_NOENT;
 
     uint32_t slot = ring->read_idx % TRACE_RING_CAPACITY;
     *out = ring->entries[slot];
@@ -234,41 +257,49 @@ int trace_ring_read(struct trace_ring *ring, struct trace_entry *out) {
     return HFSSS_OK;
 }
 
-uint32_t trace_ring_pending(const struct trace_ring *ring) {
-    if (!ring || !ring->initialized) return 0;
+uint32_t trace_ring_pending(const struct trace_ring *ring)
+{
+    if (!ring || !ring->initialized)
+        return 0;
     uint32_t w = ring->write_idx;
     uint32_t r = ring->read_idx;
     return (w > r) ? (w - r) : 0;
 }
 
-uint32_t trace_ring_dropped(const struct trace_ring *ring) {
-    if (!ring) return 0;
+uint32_t trace_ring_dropped(const struct trace_ring *ring)
+{
+    if (!ring)
+        return 0;
     return ring->dropped;
 }
 
 /* ------------------------------------------------------------------
  * Resource monitor
  * ------------------------------------------------------------------ */
-int rt_mon_init(struct rt_resource_monitor *mon,
-                uint32_t cpu_warn_pct, uint32_t latency_warn_us) {
-    if (!mon) return HFSSS_ERR_INVAL;
+int rt_mon_init(struct rt_resource_monitor *mon, uint32_t cpu_warn_pct, uint32_t latency_warn_us)
+{
+    if (!mon)
+        return HFSSS_ERR_INVAL;
     memset(mon, 0, sizeof(*mon));
-    mon->cpu_warn_pct      = cpu_warn_pct;
-    mon->latency_warn_us   = latency_warn_us;
+    mon->cpu_warn_pct = cpu_warn_pct;
+    mon->latency_warn_us = latency_warn_us;
     pthread_mutex_init(&mon->lock, NULL);
     mon->initialized = true;
     return HFSSS_OK;
 }
 
-void rt_mon_cleanup(struct rt_resource_monitor *mon) {
-    if (!mon || !mon->initialized) return;
+void rt_mon_cleanup(struct rt_resource_monitor *mon)
+{
+    if (!mon || !mon->initialized)
+        return;
     pthread_mutex_destroy(&mon->lock);
     mon->initialized = false;
 }
 
-int rt_mon_record(struct rt_resource_monitor *mon,
-                  const struct rt_resource_sample *s) {
-    if (!mon || !mon->initialized || !s) return HFSSS_ERR_INVAL;
+int rt_mon_record(struct rt_resource_monitor *mon, const struct rt_resource_sample *s)
+{
+    if (!mon || !mon->initialized || !s)
+        return HFSSS_ERR_INVAL;
 
     pthread_mutex_lock(&mon->lock);
 
@@ -292,10 +323,12 @@ int rt_mon_record(struct rt_resource_monitor *mon,
     return HFSSS_OK;
 }
 
-int rt_mon_get_latest(const struct rt_resource_monitor *mon,
-                       struct rt_resource_sample *out) {
-    if (!mon || !mon->initialized || !out) return HFSSS_ERR_INVAL;
-    if (mon->sample_count == 0) return HFSSS_ERR_NOENT;
+int rt_mon_get_latest(const struct rt_resource_monitor *mon, struct rt_resource_sample *out)
+{
+    if (!mon || !mon->initialized || !out)
+        return HFSSS_ERR_INVAL;
+    if (mon->sample_count == 0)
+        return HFSSS_ERR_NOENT;
 
     pthread_mutex_lock((pthread_mutex_t *)&mon->lock);
     uint32_t last_idx = (mon->history_idx - 1) % RT_MON_HISTORY_LEN;
@@ -304,12 +337,16 @@ int rt_mon_get_latest(const struct rt_resource_monitor *mon,
     return HFSSS_OK;
 }
 
-uint32_t rt_mon_cpu_anomalies(const struct rt_resource_monitor *mon) {
-    if (!mon || !mon->initialized) return 0;
+uint32_t rt_mon_cpu_anomalies(const struct rt_resource_monitor *mon)
+{
+    if (!mon || !mon->initialized)
+        return 0;
     return mon->cpu_anomaly_count;
 }
 
-uint32_t rt_mon_latency_anomalies(const struct rt_resource_monitor *mon) {
-    if (!mon || !mon->initialized) return 0;
+uint32_t rt_mon_latency_anomalies(const struct rt_resource_monitor *mon)
+{
+    if (!mon || !mon->initialized)
+        return 0;
     return mon->latency_anomaly_count;
 }

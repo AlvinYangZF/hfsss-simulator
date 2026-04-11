@@ -117,8 +117,7 @@ void log_set_level(struct log_ctx *ctx, u32 level)
     ctx->level = level;
 }
 
-void log_printf(struct log_ctx *ctx, u32 level, const char *module,
-                const char *file, u32 line, const char *fmt, ...)
+void log_printf(struct log_ctx *ctx, u32 level, const char *module, const char *file, u32 line, const char *fmt, ...)
 {
     if (!ctx || level > ctx->level) {
         return;
@@ -140,16 +139,14 @@ void log_printf(struct log_ctx *ctx, u32 level, const char *module,
     va_end(args);
 
     if (ctx->use_stdout) {
-        const char *level_str[] = { "ERROR", "WARN", "INFO", "DEBUG", "TRACE" };
-        printf("[%s] [%s] %s:%u: %s\n",
-               level_str[MIN(level, 4)], module, file, line, entry->message);
+        const char *level_str[] = {"ERROR", "WARN", "INFO", "DEBUG", "TRACE"};
+        printf("[%s] [%s] %s:%u: %s\n", level_str[MIN(level, 4)], module, file, line, entry->message);
     }
 
     if (ctx->output_file) {
-        const char *level_str[] = { "ERROR", "WARN", "INFO", "DEBUG", "TRACE" };
-        fprintf(ctx->output_file, "[%llu] [%s] [%s] %s:%u: %s\n",
-               (unsigned long long)entry->timestamp,
-               level_str[MIN(level, 4)], module, file, line, entry->message);
+        const char *level_str[] = {"ERROR", "WARN", "INFO", "DEBUG", "TRACE"};
+        fprintf(ctx->output_file, "[%llu] [%s] [%s] %s:%u: %s\n", (unsigned long long)entry->timestamp,
+                level_str[MIN(level, 4)], module, file, line, entry->message);
         fflush(ctx->output_file);
     }
 

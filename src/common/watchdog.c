@@ -2,8 +2,7 @@
 
 static void *watchdog_thread(void *arg);
 
-int watchdog_init(struct watchdog_ctx *ctx, u64 check_interval_ns,
-                  watchdog_timeout_cb_t timeout_cb, void *cb_user_data)
+int watchdog_init(struct watchdog_ctx *ctx, u64 check_interval_ns, watchdog_timeout_cb_t timeout_cb, void *cb_user_data)
 {
     if (!ctx || check_interval_ns == 0) {
         return HFSSS_ERR_INVAL;
@@ -93,8 +92,7 @@ void watchdog_stop(struct watchdog_ctx *ctx)
     pthread_join(ctx->thread, NULL);
 }
 
-int watchdog_register_task(struct watchdog_ctx *ctx, const char *name,
-                           u64 timeout_ns, void *user_data)
+int watchdog_register_task(struct watchdog_ctx *ctx, const char *name, u64 timeout_ns, void *user_data)
 {
     if (!ctx || !name || timeout_ns == 0) {
         return HFSSS_ERR_INVAL;
@@ -171,8 +169,7 @@ int watchdog_feed(struct watchdog_ctx *ctx, int task_id)
      * non-ACTIVE task up front, making the TIMEOUT -> ACTIVE transition
      * on the line below unreachable. INACTIVE tasks still cannot be
      * fed -- they must be enabled first. */
-    if (task->state != WATCHDOG_TASK_ACTIVE &&
-        task->state != WATCHDOG_TASK_TIMEOUT) {
+    if (task->state != WATCHDOG_TASK_ACTIVE && task->state != WATCHDOG_TASK_TIMEOUT) {
         pthread_mutex_unlock(&ctx->mutex);
         return HFSSS_ERR_NOENT;
     }
