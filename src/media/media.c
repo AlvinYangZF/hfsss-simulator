@@ -1,4 +1,6 @@
 #include "media/media.h"
+#include "media/cmd_engine.h"
+#include "media/cmd_state.h"
 #include "sssim.h"
 #include <stdlib.h>
 #include <string.h>
@@ -7,9 +9,8 @@
 #include <sys/types.h>
 
 /* Forward declarations */
-static void media_wait_until_available(struct media_ctx *ctx, enum op_type op,
-                                       u32 ch, u32 chip, u32 die, u32 plane);
-static void media_inject_bit_errors(struct media_ctx *ctx, struct nand_page *page, void *data, void *spare, u32 page_size, u32 spare_size);
+static void media_inject_bit_errors(struct media_ctx *ctx, struct nand_page *page, void *data, void *spare,
+                                    u32 page_size, u32 spare_size);
 
 /* Page metadata structure for persistence */
 struct page_metadata {
@@ -47,10 +48,9 @@ int media_init(struct media_ctx *ctx, struct media_config *config)
     }
 
     /* Initialize NAND device */
-    ret = nand_device_init(ctx->nand, config->channel_count, config->chips_per_channel,
-                            config->dies_per_chip, config->planes_per_die,
-                            config->blocks_per_plane, config->pages_per_block,
-                            config->page_size, config->spare_size);
+    ret = nand_device_init(ctx->nand, config->channel_count, config->chips_per_channel, config->dies_per_chip,
+                           config->planes_per_die, config->blocks_per_plane, config->pages_per_block, config->page_size,
+                           config->spare_size);
     if (ret != HFSSS_OK) {
         free(ctx->nand);
         mutex_cleanup(&ctx->lock);
@@ -109,9 +109,8 @@ int media_init(struct media_ctx *ctx, struct media_config *config)
         return HFSSS_ERR_NOMEM;
     }
 
-    ret = bbt_init(ctx->bbt, config->channel_count, config->chips_per_channel,
-                   config->dies_per_chip, config->planes_per_die,
-                   config->blocks_per_plane);
+    ret = bbt_init(ctx->bbt, config->channel_count, config->chips_per_channel, config->dies_per_chip,
+                   config->planes_per_die, config->blocks_per_plane);
     if (ret != HFSSS_OK) {
         media_cleanup(ctx);
         return ret;
@@ -162,31 +161,8 @@ void media_cleanup(struct media_ctx *ctx)
     mutex_cleanup(&ctx->lock);
 }
 
-static void media_wait_until_available(struct media_ctx *ctx, enum op_type op,
-                                       u32 ch, u32 chip, u32 die, u32 plane)
-{
-    u64 eat;
-    u64 now;
-    u64 remaining;
-
-    /* Get the earliest available time */
-    eat = eat_get_max(ctx->eat, op, ch, chip, die, plane);
-    now = get_time_ns();
-
-    if (eat > now) {
-        /* Need to wait - busy wait for now (could use nanosleep) */
-        remaining = eat - now;
-        if (remaining > 1000000) {
-            /* Only log if waiting more than 1ms */
-        }
-        /* Simple busy wait for accuracy */
-        while (get_time_ns() < eat) {
-            /* Spin */
-        }
-    }
-}
-
-static void media_inject_bit_errors(struct media_ctx *ctx, struct nand_page *page, void *data, void *spare, u32 page_size, u32 spare_size)
+static void media_inject_bit_errors(struct media_ctx *ctx, struct nand_page *page, void *data, void *spare,
+                                    u32 page_size, u32 spare_size)
 {
     u32 bit_errors;
     u64 retention_ns;
@@ -201,11 +177,8 @@ static void media_inject_bit_errors(struct media_ctx *ctx, struct nand_page *pag
     retention_ns = get_time_ns() - page->program_ts;
 
     /* Calculate expected bit errors */
-    bit_errors = reliability_calculate_bit_errors(ctx->reliability,
-                                                   ctx->config.nand_type,
-                                                   erase_count,
-                                                   page->read_count,
-                                                   retention_ns);
+    bit_errors = reliability_calculate_bit_errors(ctx->reliability, ctx->config.nand_type, erase_count,
+                                                  page->read_count, retention_ns);
 
     /* Store for stats */
     page->bit_errors = bit_errors;
@@ -222,55 +195,95 @@ static void media_inject_bit_errors(struct media_ctx *ctx, struct nand_page *pag
     memcpy(data, page->data, page_size);
 }
 
-int media_nand_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                    u32 plane, u32 block, u32 page, void *data, void *spare)
-{
+struct read_cb_ctx {
+    struct media_ctx *ctx;
+    u32 ch;
+    u32 chip;
+    u32 die;
+    u32 plane;
+    u32 block;
+    u32 page;
+    void *data;
+    void *spare;
     struct nand_page *nand_page;
-    u64 latency;
-    u64 start_time;
+    int out_status;
+};
 
+static int read_on_setup_commit(void *raw)
+{
+    struct read_cb_ctx *c = (struct read_cb_ctx *)raw;
+    c->nand_page = nand_get_page(c->ctx->nand, c->ch, c->chip, c->die, c->plane, c->block, c->page);
+    if (!c->nand_page) {
+        c->out_status = HFSSS_ERR_INVAL;
+        return HFSSS_ERR_INVAL;
+    }
+    if (c->nand_page->state != PAGE_VALID) {
+        c->out_status = HFSSS_ERR_NOENT;
+        return HFSSS_ERR_NOENT;
+    }
+    return HFSSS_OK;
+}
+
+static int read_on_data_xfer_commit(void *raw)
+{
+    struct read_cb_ctx *c = (struct read_cb_ctx *)raw;
+    if (!c->nand_page) {
+        return HFSSS_ERR_INVAL;
+    }
+    media_inject_bit_errors(c->ctx, c->nand_page, c->data, c->spare, c->ctx->config.page_size,
+                            c->ctx->config.spare_size);
+    c->nand_page->read_count++;
+    return HFSSS_OK;
+}
+
+int media_nand_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page, void *data,
+                    void *spare)
+{
     if (!ctx || !ctx->initialized || !data) {
         return HFSSS_ERR_INVAL;
     }
 
-    /* Validate address */
     if (nand_validate_address(ctx->nand, ch, chip, die, plane, block, page) != HFSSS_OK) {
         return HFSSS_ERR_INVAL;
     }
 
-    /* Check if block is bad */
     if (bbt_is_bad(ctx->bbt, ch, chip, die, plane, block) == 1) {
         return HFSSS_ERR_IO;
     }
 
-    /* Wait for the plane/die/chip/channel to be available */
-    media_wait_until_available(ctx, OP_READ, ch, chip, die, plane);
+    struct read_cb_ctx cbc = {
+        .ctx = ctx,
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane = plane,
+        .block = block,
+        .page = page,
+        .data = data,
+        .spare = spare,
+        .nand_page = NULL,
+        .out_status = HFSSS_OK,
+    };
+    struct nand_cmd_target target = {
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = 1u << plane,
+        .block = block,
+        .page = page,
+    };
+    struct nand_cmd_ops ops = {
+        .on_setup_commit = read_on_setup_commit,
+        .on_array_commit = NULL,
+        .on_data_xfer_commit = read_on_data_xfer_commit,
+    };
 
-    /* Get the page */
-    nand_page = nand_get_page(ctx->nand, ch, chip, die, plane, block, page);
-    if (!nand_page) {
-        return HFSSS_ERR_INVAL;
+    u64 start_time = get_time_ns();
+    int rc = nand_cmd_engine_submit_read(ctx->nand, &target, &ops, &cbc);
+    if (rc != HFSSS_OK) {
+        return cbc.out_status != HFSSS_OK ? cbc.out_status : rc;
     }
 
-    /* Check if page is valid */
-    if (nand_page->state != PAGE_VALID) {
-        return HFSSS_ERR_NOENT;
-    }
-
-    /* Get read latency */
-    latency = timing_get_read_latency(ctx->timing, page);
-    start_time = get_time_ns();
-
-    /* Update EAT */
-    eat_update(ctx->eat, OP_READ, ch, chip, die, plane, latency);
-
-    /* Copy data with potential bit errors */
-    media_inject_bit_errors(ctx, nand_page, data, spare, ctx->config.page_size, ctx->config.spare_size);
-
-    /* Increment read count */
-    nand_page->read_count++;
-
-    /* Update stats */
     mutex_lock(&ctx->lock, 0);
     ctx->stats.read_count++;
     ctx->stats.total_read_bytes += ctx->config.page_size;
@@ -280,24 +293,61 @@ int media_nand_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
     return HFSSS_OK;
 }
 
-int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                       u32 plane, u32 block, u32 page, const void *data, const void *spare)
+struct prog_cb_ctx {
+    struct media_ctx *ctx;
+    u32 ch;
+    u32 chip;
+    u32 die;
+    u32 plane;
+    u32 block;
+    u32 page;
+    const void *data;
+    const void *spare;
+    int out_status;
+};
+
+static int prog_on_array_commit(void *raw)
 {
-    struct nand_page *nand_page;
-    u64 latency;
-    u64 start_time;
+    struct prog_cb_ctx *c = (struct prog_cb_ctx *)raw;
+    struct nand_page *nand_page = nand_get_page(c->ctx->nand, c->ch, c->chip, c->die, c->plane, c->block, c->page);
+    if (!nand_page) {
+        c->out_status = HFSSS_ERR_INVAL;
+        return HFSSS_ERR_INVAL;
+    }
+
+    memcpy(nand_page->data, c->data, c->ctx->config.page_size);
+    if (c->spare) {
+        memcpy(nand_page->spare, c->spare, c->ctx->config.spare_size);
+    }
+
+    nand_page->state = PAGE_VALID;
+    nand_page->program_ts = get_time_ns();
+    nand_page->erase_count = bbt_get_erase_count(c->ctx->bbt, c->ch, c->chip, c->die, c->plane, c->block);
+    nand_page->read_count = 0;
+    nand_page->dirty = true;
+
+    struct nand_block *nand_block = nand_get_block(c->ctx->nand, c->ch, c->chip, c->die, c->plane, c->block);
+    if (nand_block) {
+        nand_block->state = BLOCK_OPEN;
+        nand_block->pages_written++;
+        nand_block->dirty = true;
+    }
+    return HFSSS_OK;
+}
+
+int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page,
+                       const void *data, const void *spare)
+{
     int is_bad;
 
     if (!ctx || !ctx->initialized || !data) {
         return HFSSS_ERR_INVAL;
     }
 
-    /* Validate address */
     if (nand_validate_address(ctx->nand, ch, chip, die, plane, block, page) != HFSSS_OK) {
         return HFSSS_ERR_INVAL;
     }
 
-    /* Check if block is bad */
     is_bad = bbt_is_bad(ctx->bbt, ch, chip, die, plane, block);
     if (is_bad == 1) {
         return HFSSS_ERR_IO;
@@ -306,44 +356,38 @@ int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
         return HFSSS_ERR_INVAL;
     }
 
-    /* Wait for the plane/die/chip/channel to be available */
-    media_wait_until_available(ctx, OP_PROGRAM, ch, chip, die, plane);
+    struct prog_cb_ctx cbc = {
+        .ctx = ctx,
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane = plane,
+        .block = block,
+        .page = page,
+        .data = data,
+        .spare = spare,
+        .out_status = HFSSS_OK,
+    };
+    struct nand_cmd_target target = {
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = 1u << plane,
+        .block = block,
+        .page = page,
+    };
+    struct nand_cmd_ops ops = {
+        .on_setup_commit = NULL,
+        .on_array_commit = prog_on_array_commit,
+        .on_data_xfer_commit = NULL,
+    };
 
-    /* Get the page */
-    nand_page = nand_get_page(ctx->nand, ch, chip, die, plane, block, page);
-    if (!nand_page) {
-        return HFSSS_ERR_INVAL;
+    u64 start_time = get_time_ns();
+    int rc = nand_cmd_engine_submit_program(ctx->nand, &target, &ops, &cbc);
+    if (rc != HFSSS_OK) {
+        return cbc.out_status != HFSSS_OK ? cbc.out_status : rc;
     }
 
-    /* Get program latency */
-    latency = timing_get_prog_latency(ctx->timing, page);
-    start_time = get_time_ns();
-
-    /* Update EAT */
-    eat_update(ctx->eat, OP_PROGRAM, ch, chip, die, plane, latency);
-
-    /* Write data to NAND */
-    memcpy(nand_page->data, data, ctx->config.page_size);
-    if (spare) {
-        memcpy(nand_page->spare, spare, ctx->config.spare_size);
-    }
-
-    /* Update page state */
-    nand_page->state = PAGE_VALID;
-    nand_page->program_ts = get_time_ns();
-    nand_page->erase_count = bbt_get_erase_count(ctx->bbt, ch, chip, die, plane, block);
-    nand_page->read_count = 0;
-    nand_page->dirty = true;  /* Mark page as dirty for incremental checkpointing */
-
-    /* Update block state */
-    struct nand_block *nand_block = nand_get_block(ctx->nand, ch, chip, die, plane, block);
-    if (nand_block) {
-        nand_block->state = BLOCK_OPEN;
-        nand_block->pages_written++;
-        nand_block->dirty = true;  /* Mark block as dirty for incremental checkpointing */
-    }
-
-    /* Update stats */
     mutex_lock(&ctx->lock, 0);
     ctx->stats.write_count++;
     ctx->stats.total_write_bytes += ctx->config.page_size;
@@ -353,28 +397,62 @@ int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
     return HFSSS_OK;
 }
 
-int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                     u32 plane, u32 block)
+struct erase_cb_ctx {
+    struct media_ctx *ctx;
+    u32 ch;
+    u32 chip;
+    u32 die;
+    u32 plane;
+    u32 block;
+    int out_status;
+};
+
+static int erase_on_array_commit(void *raw)
 {
-    struct nand_block *nand_block;
-    u64 latency;
-    u64 start_time;
+    struct erase_cb_ctx *c = (struct erase_cb_ctx *)raw;
+    struct nand_block *nand_block = nand_get_block(c->ctx->nand, c->ch, c->chip, c->die, c->plane, c->block);
+    if (!nand_block) {
+        c->out_status = HFSSS_ERR_INVAL;
+        return HFSSS_ERR_INVAL;
+    }
+
+    for (u32 page = 0; page < nand_block->page_count; page++) {
+        struct nand_page *nand_page = &nand_block->pages[page];
+        memset(nand_page->data, 0xFF, c->ctx->config.page_size);
+        memset(nand_page->spare, 0xFF, c->ctx->config.spare_size);
+        nand_page->state = PAGE_FREE;
+        nand_page->program_ts = 0;
+        nand_page->read_count = 0;
+        nand_page->bit_errors = 0;
+        nand_page->dirty = true;
+    }
+
+    nand_block->state = BLOCK_FREE;
+    nand_block->pages_written = 0;
+    nand_block->dirty = true;
+
+    bbt_increment_erase_count(c->ctx->bbt, c->ch, c->chip, c->die, c->plane, c->block);
+
+    u32 erase_count = bbt_get_erase_count(c->ctx->bbt, c->ch, c->chip, c->die, c->plane, c->block);
+    if (reliability_is_block_bad(c->ctx->reliability, c->ctx->config.nand_type, erase_count)) {
+        bbt_mark_bad(c->ctx->bbt, c->ch, c->chip, c->die, c->plane, c->block);
+    }
+    return HFSSS_OK;
+}
+
+int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
+{
     int is_bad;
 
     if (!ctx || !ctx->initialized) {
         return HFSSS_ERR_INVAL;
     }
 
-    /* Validate address */
-    if (ch >= ctx->config.channel_count ||
-        chip >= ctx->config.chips_per_channel ||
-        die >= ctx->config.dies_per_chip ||
-        plane >= ctx->config.planes_per_die ||
-        block >= ctx->config.blocks_per_plane) {
+    if (ch >= ctx->config.channel_count || chip >= ctx->config.chips_per_channel || die >= ctx->config.dies_per_chip ||
+        plane >= ctx->config.planes_per_die || block >= ctx->config.blocks_per_plane) {
         return HFSSS_ERR_INVAL;
     }
 
-    /* Check if block is bad */
     is_bad = bbt_is_bad(ctx->bbt, ch, chip, die, plane, block);
     if (is_bad == 1) {
         return HFSSS_ERR_IO;
@@ -383,49 +461,35 @@ int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
         return HFSSS_ERR_INVAL;
     }
 
-    /* Wait for the plane/die/chip/channel to be available */
-    media_wait_until_available(ctx, OP_ERASE, ch, chip, die, plane);
+    struct erase_cb_ctx cbc = {
+        .ctx = ctx,
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane = plane,
+        .block = block,
+        .out_status = HFSSS_OK,
+    };
+    struct nand_cmd_target target = {
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = 1u << plane,
+        .block = block,
+        .page = 0,
+    };
+    struct nand_cmd_ops ops = {
+        .on_setup_commit = NULL,
+        .on_array_commit = erase_on_array_commit,
+        .on_data_xfer_commit = NULL,
+    };
 
-    /* Get the block */
-    nand_block = nand_get_block(ctx->nand, ch, chip, die, plane, block);
-    if (!nand_block) {
-        return HFSSS_ERR_INVAL;
+    u64 start_time = get_time_ns();
+    int rc = nand_cmd_engine_submit_erase(ctx->nand, &target, &ops, &cbc);
+    if (rc != HFSSS_OK) {
+        return cbc.out_status != HFSSS_OK ? cbc.out_status : rc;
     }
 
-    /* Get erase latency */
-    latency = timing_get_erase_latency(ctx->timing);
-    start_time = get_time_ns();
-
-    /* Update EAT */
-    eat_update(ctx->eat, OP_ERASE, ch, chip, die, plane, latency);
-
-    /* Erase all pages in the block */
-    for (u32 page = 0; page < nand_block->page_count; page++) {
-        struct nand_page *nand_page = &nand_block->pages[page];
-        memset(nand_page->data, 0xFF, ctx->config.page_size);
-        memset(nand_page->spare, 0xFF, ctx->config.spare_size);
-        nand_page->state = PAGE_FREE;
-        nand_page->program_ts = 0;
-        nand_page->read_count = 0;
-        nand_page->bit_errors = 0;
-        nand_page->dirty = true;  /* Mark page as dirty for incremental checkpointing */
-    }
-
-    /* Update block state */
-    nand_block->state = BLOCK_FREE;
-    nand_block->pages_written = 0;
-    nand_block->dirty = true;  /* Mark block as dirty for incremental checkpointing */
-
-    /* Increment erase count */
-    bbt_increment_erase_count(ctx->bbt, ch, chip, die, plane, block);
-
-    /* Check if block should be marked as bad now */
-    u32 erase_count = bbt_get_erase_count(ctx->bbt, ch, chip, die, plane, block);
-    if (reliability_is_block_bad(ctx->reliability, ctx->config.nand_type, erase_count)) {
-        bbt_mark_bad(ctx->bbt, ch, chip, die, plane, block);
-    }
-
-    /* Update stats */
     mutex_lock(&ctx->lock, 0);
     ctx->stats.erase_count++;
     ctx->stats.total_erase_ns += get_time_ns() - start_time;
@@ -434,8 +498,25 @@ int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
     return HFSSS_OK;
 }
 
-int media_nand_is_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                            u32 plane, u32 block)
+int media_nand_read_status(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_die_cmd_state *out)
+{
+    if (!ctx || !ctx->initialized || !out) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nand_cmd_target target = {
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = 0,
+        .block = 0,
+        .page = 0,
+    };
+
+    return nand_cmd_engine_snapshot(ctx->nand, &target, out);
+}
+
+int media_nand_is_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 {
     int is_bad;
 
@@ -447,8 +528,7 @@ int media_nand_is_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
     return is_bad;
 }
 
-int media_nand_mark_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                              u32 plane, u32 block)
+int media_nand_mark_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 {
     if (!ctx || !ctx->initialized) {
         return HFSSS_ERR_INVAL;
@@ -457,8 +537,7 @@ int media_nand_mark_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
     return bbt_mark_bad(ctx->bbt, ch, chip, die, plane, block);
 }
 
-u32 media_nand_get_erase_count(struct media_ctx *ctx, u32 ch, u32 chip, u32 die,
-                               u32 plane, u32 block)
+u32 media_nand_get_erase_count(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 {
     if (!ctx || !ctx->initialized) {
         return 0;
@@ -492,18 +571,18 @@ void media_reset_stats(struct media_ctx *ctx)
 /* Persistence implementation */
 
 /* Magic number for file format validation */
-#define MEDIA_FILE_MAGIC 0x48465353  /* "HFSS" */
-#define MEDIA_FILE_VERSION 2  /* Incremented for incremental checkpoint support */
+#define MEDIA_FILE_MAGIC 0x48465353 /* "HFSS" */
+#define MEDIA_FILE_VERSION 2        /* Incremented for incremental checkpoint support */
 
 /* File header flags */
-#define MEDIA_FILE_FLAG_FULL         0x00000000
-#define MEDIA_FILE_FLAG_INCREMENTAL  0x00000001
+#define MEDIA_FILE_FLAG_FULL 0x00000000
+#define MEDIA_FILE_FLAG_INCREMENTAL 0x00000001
 
 /* File header structure */
 struct media_file_header {
     u32 magic;
     u32 version;
-    u32 flags;        /* Full or incremental checkpoint */
+    u32 flags; /* Full or incremental checkpoint */
     struct media_config config;
     struct media_stats stats;
     u64 nand_data_offset;
@@ -525,11 +604,8 @@ static int write_file_header(FILE *f, struct media_ctx *ctx, u32 flags)
     hdr.nand_data_offset = sizeof(hdr);
 
     /* Calculate NAND data size including metadata */
-    u32 total_blocks = ctx->config.channel_count *
-                       ctx->config.chips_per_channel *
-                       ctx->config.dies_per_chip *
-                       ctx->config.planes_per_die *
-                       ctx->config.blocks_per_plane;
+    u32 total_blocks = ctx->config.channel_count * ctx->config.chips_per_channel * ctx->config.dies_per_chip *
+                       ctx->config.planes_per_die * ctx->config.blocks_per_plane;
     u32 total_pages = total_blocks * ctx->config.pages_per_block;
     u64 block_metadata_size = total_blocks * (sizeof(enum block_state) + sizeof(u32) + sizeof(bool));
     u64 page_metadata_size = total_pages * (sizeof(struct page_metadata) + sizeof(bool));
@@ -610,32 +686,40 @@ static int write_nand_data(FILE *f, struct media_ctx *ctx, bool incremental)
                 for (plane = 0; plane < ctx->config.planes_per_die; plane++) {
                     for (block = 0; block < ctx->config.blocks_per_plane; block++) {
                         struct nand_block *blk = nand_get_block(ctx->nand, ch, chip, die, plane, block);
-                        if (!blk) continue;
+                        if (!blk)
+                            continue;
 
                         /* Write block dirty flag, state, and pages_written */
                         bool block_dirty = blk->dirty;
                         if (incremental && !block_dirty) {
                             /* Write just the dirty flag as false and skip the rest */
-                            if (fwrite(&block_dirty, sizeof(block_dirty), 1, f) != 1) return HFSSS_ERR_IO;
+                            if (fwrite(&block_dirty, sizeof(block_dirty), 1, f) != 1)
+                                return HFSSS_ERR_IO;
                             continue;
                         }
 
-                        if (fwrite(&block_dirty, sizeof(block_dirty), 1, f) != 1) return HFSSS_ERR_IO;
-                        if (fwrite(&blk->state, sizeof(blk->state), 1, f) != 1) return HFSSS_ERR_IO;
-                        if (fwrite(&blk->pages_written, sizeof(blk->pages_written), 1, f) != 1) return HFSSS_ERR_IO;
+                        if (fwrite(&block_dirty, sizeof(block_dirty), 1, f) != 1)
+                            return HFSSS_ERR_IO;
+                        if (fwrite(&blk->state, sizeof(blk->state), 1, f) != 1)
+                            return HFSSS_ERR_IO;
+                        if (fwrite(&blk->pages_written, sizeof(blk->pages_written), 1, f) != 1)
+                            return HFSSS_ERR_IO;
 
                         for (page = 0; page < ctx->config.pages_per_block; page++) {
                             struct nand_page *pg = &blk->pages[page];
-                            if (!pg) continue;
+                            if (!pg)
+                                continue;
 
                             bool page_dirty = pg->dirty;
                             if (incremental && !page_dirty) {
                                 /* Write just the dirty flag as false and skip the rest */
-                                if (fwrite(&page_dirty, sizeof(page_dirty), 1, f) != 1) return HFSSS_ERR_IO;
+                                if (fwrite(&page_dirty, sizeof(page_dirty), 1, f) != 1)
+                                    return HFSSS_ERR_IO;
                                 continue;
                             }
 
-                            if (fwrite(&page_dirty, sizeof(page_dirty), 1, f) != 1) return HFSSS_ERR_IO;
+                            if (fwrite(&page_dirty, sizeof(page_dirty), 1, f) != 1)
+                                return HFSSS_ERR_IO;
 
                             /* Write page metadata */
                             struct page_metadata meta;
@@ -677,11 +761,13 @@ static int read_nand_data(FILE *f, struct media_ctx *ctx, bool incremental)
                 for (plane = 0; plane < ctx->config.planes_per_die; plane++) {
                     for (block = 0; block < ctx->config.blocks_per_plane; block++) {
                         struct nand_block *blk = nand_get_block(ctx->nand, ch, chip, die, plane, block);
-                        if (!blk) continue;
+                        if (!blk)
+                            continue;
 
                         /* Read block dirty flag */
                         bool block_dirty;
-                        if (fread(&block_dirty, sizeof(block_dirty), 1, f) != 1) return HFSSS_ERR_IO;
+                        if (fread(&block_dirty, sizeof(block_dirty), 1, f) != 1)
+                            return HFSSS_ERR_IO;
 
                         if (incremental && !block_dirty) {
                             /* Skip this block - not dirty */
@@ -689,17 +775,21 @@ static int read_nand_data(FILE *f, struct media_ctx *ctx, bool incremental)
                         }
 
                         /* Read block state and pages_written */
-                        if (fread(&blk->state, sizeof(blk->state), 1, f) != 1) return HFSSS_ERR_IO;
-                        if (fread(&blk->pages_written, sizeof(blk->pages_written), 1, f) != 1) return HFSSS_ERR_IO;
-                        blk->dirty = false;  /* Clear dirty flag after loading */
+                        if (fread(&blk->state, sizeof(blk->state), 1, f) != 1)
+                            return HFSSS_ERR_IO;
+                        if (fread(&blk->pages_written, sizeof(blk->pages_written), 1, f) != 1)
+                            return HFSSS_ERR_IO;
+                        blk->dirty = false; /* Clear dirty flag after loading */
 
                         for (page = 0; page < ctx->config.pages_per_block; page++) {
                             struct nand_page *pg = &blk->pages[page];
-                            if (!pg) continue;
+                            if (!pg)
+                                continue;
 
                             /* Read page dirty flag */
                             bool page_dirty;
-                            if (fread(&page_dirty, sizeof(page_dirty), 1, f) != 1) return HFSSS_ERR_IO;
+                            if (fread(&page_dirty, sizeof(page_dirty), 1, f) != 1)
+                                return HFSSS_ERR_IO;
 
                             if (incremental && !page_dirty) {
                                 /* Skip this page - not dirty */
@@ -716,7 +806,7 @@ static int read_nand_data(FILE *f, struct media_ctx *ctx, bool incremental)
                             pg->erase_count = meta.erase_count;
                             pg->bit_errors = meta.bit_errors;
                             pg->read_count = meta.read_count;
-                            pg->dirty = false;  /* Clear dirty flag after loading */
+                            pg->dirty = false; /* Clear dirty flag after loading */
 
                             /* Read page data */
                             if (fread(pg->data, ctx->config.page_size, 1, f) != 1) {
@@ -752,7 +842,8 @@ int media_has_dirty_data(struct media_ctx *ctx)
                 for (plane = 0; plane < ctx->config.planes_per_die; plane++) {
                     for (block = 0; block < ctx->config.blocks_per_plane; block++) {
                         struct nand_block *blk = nand_get_block(ctx->nand, ch, chip, die, plane, block);
-                        if (!blk) continue;
+                        if (!blk)
+                            continue;
                         if (blk->dirty) {
                             return 1;
                         }
@@ -785,7 +876,8 @@ void media_mark_all_clean(struct media_ctx *ctx)
                 for (plane = 0; plane < ctx->config.planes_per_die; plane++) {
                     for (block = 0; block < ctx->config.blocks_per_plane; block++) {
                         struct nand_block *blk = nand_get_block(ctx->nand, ch, chip, die, plane, block);
-                        if (!blk) continue;
+                        if (!blk)
+                            continue;
                         blk->dirty = false;
                         for (page = 0; page < blk->page_count; page++) {
                             blk->pages[page].dirty = false;
@@ -942,8 +1034,7 @@ int media_load(struct media_ctx *ctx, const char *filepath)
 
 /* Join a directory and filename into out buffer. Caller must ensure out_sz
  * is large enough; returns HFSSS_ERR_INVAL on truncation. */
-static int build_ckpt_path(char *out, size_t out_sz, const char *dir,
-                           const char *filename)
+static int build_ckpt_path(char *out, size_t out_sz, const char *dir, const char *filename)
 {
     if (!out || !dir || !filename || out_sz == 0) {
         return HFSSS_ERR_INVAL;
@@ -964,9 +1055,9 @@ int media_create_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir)
     mkdir(checkpoint_dir, 0755);
 
     char path[SSSIM_PATH_LEN];
-    int rc = build_ckpt_path(path, sizeof(path), checkpoint_dir,
-                             "checkpoint.bin");
-    if (rc != HFSSS_OK) return rc;
+    int rc = build_ckpt_path(path, sizeof(path), checkpoint_dir, "checkpoint.bin");
+    if (rc != HFSSS_OK)
+        return rc;
 
     rc = media_save(ctx, path);
     if (rc == HFSSS_OK) {
@@ -975,8 +1066,7 @@ int media_create_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir)
     return rc;
 }
 
-int media_create_incremental_checkpoint(struct media_ctx *ctx,
-                                        const char *checkpoint_dir)
+int media_create_incremental_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir)
 {
     if (!ctx || !checkpoint_dir) {
         return HFSSS_ERR_INVAL;
@@ -984,9 +1074,9 @@ int media_create_incremental_checkpoint(struct media_ctx *ctx,
     mkdir(checkpoint_dir, 0755);
 
     char path[SSSIM_PATH_LEN];
-    int rc = build_ckpt_path(path, sizeof(path), checkpoint_dir,
-                             "checkpoint_inc.bin");
-    if (rc != HFSSS_OK) return rc;
+    int rc = build_ckpt_path(path, sizeof(path), checkpoint_dir, "checkpoint_inc.bin");
+    if (rc != HFSSS_OK)
+        return rc;
 
     rc = media_save_incremental(ctx, path);
     if (rc == HFSSS_OK) {
@@ -1001,9 +1091,9 @@ int media_restore_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir)
         return HFSSS_ERR_INVAL;
     }
     char path[SSSIM_PATH_LEN];
-    int rc = build_ckpt_path(path, sizeof(path), checkpoint_dir,
-                             "checkpoint.bin");
-    if (rc != HFSSS_OK) return rc;
+    int rc = build_ckpt_path(path, sizeof(path), checkpoint_dir, "checkpoint.bin");
+    if (rc != HFSSS_OK)
+        return rc;
 
     return media_load(ctx, path);
 }
