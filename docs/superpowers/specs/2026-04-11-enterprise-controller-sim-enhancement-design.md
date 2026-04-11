@@ -22,7 +22,7 @@ The target simulator should support:
 
 - multiple enterprise controller personas rather than one default controller shape
 - stronger queue arbitration, namespace isolation, and QoS behavior
-- controller modes such as conventional NVMe, ZNS, and FDP-oriented behavior
+- host-visible namespace-mode differences such as conventional NVMe, ZNS namespaces, and FDP-oriented placement behavior
 - tighter coupling between controller profile and NAND/media profile
 - richer telemetry, security lifecycle, and maintenance interference modeling
 
@@ -68,6 +68,15 @@ This design should be read alongside:
 
 The NAND/media design handles command-state and media-side realism. This controller design handles **host-facing policy, persona, and enterprise feature behavior**.
 
+### 2.4 Current-code prerequisites that affect phase ordering
+
+This spec is intentionally ahead of the current master branch. The implementation plan must account for the following already-known prerequisites:
+
+- multi-namespace host dispatch is not active in the current NVMe user-space path, so Phase 2 namespace-mode work depends on either real multi-namespace plumbing or an explicitly bounded prerequisite patch
+- a controller lifecycle state machine does not exist on master, so a **minimal lifecycle skeleton** must land before any phase that claims lifecycle-gated command legality, admission control, or telemetry visibility
+- the current register model and BAR layout only expose a 64-doorbell baseline, so queue-pair counts advertised by future personas must be treated as profile-envelope inputs until the register model is expanded
+- the current `hfsss_config` loader is flat and does not support array-shaped profile data, so the initial profile rollout should use compile-time C tables, with config-file import/export extended later if needed
+
 ---
 
 ## 3. Public Capability Baseline
@@ -98,6 +107,8 @@ Across the three public controller families, the following common signals are st
 
 - **InnoGrit Tacoma IG5669**
   - strongest inputs: 16-channel enterprise profile with tight NAND/media coupling, ZNS, atomic write, low-latency persona, optional offload behavior
+
+Published maxima such as `1024 queue pairs` or `128 namespaces` should be treated as **persona-envelope targets**, not as a claim that Phase 1 reaches immediate parity with those numbers on the existing register model.
 
 ### 3.3 What is explicitly out of scope
 
@@ -132,6 +143,8 @@ Those should remain abstract or deferred.
 - SR-IOV-style virtualization fidelity or computational-storage API fidelity beyond public behavior classes
 - cycle-accurate host interface timing
 - full cloud-SSD software stack emulation outside the controller boundary
+- default OCP Datacenter NVMe SSD conformance in the first implementation
+- full NVMe-MI, TCG SSC, or enterprise-admin-command fidelity before the relevant later phases explicitly pull them into scope
 
 ---
 
@@ -152,9 +165,16 @@ Responsibilities:
   - policy bundle
   - lifecycle bundle
 - define power, latency, and throughput envelopes
+- own persona-level command-semantic capability gates such as atomic write, dual-port exposure, multi-domain partitioning, and optional offload
 - bind these axes into a concrete shipped profile without collapsing the axes themselves into one monolithic preset
 
 The key rule is: **topology, namespace mode, and policy are separate axes**. A controller profile is a composition of those axes, not a single bag of flags.
+
+Terminology used in this document is fixed as follows:
+
+- `profile`: the structured field model and capability schema
+- `persona`: a named instance of that profile model
+- `preset`: a compile-time starter configuration used to instantiate a persona during early implementation
 
 ### 5.2 Enterprise Isolation Layer
 
@@ -189,6 +209,13 @@ Responsibilities:
 - FDP-oriented placement semantics
 - later extension for SEF / Open Channel
 
+This layer deliberately treats ZNS and FDP as **different contracts**:
+
+- ZNS is a namespace-facing command-set and state-machine contract
+- FDP is a placement and reclaim-policy contract layered onto the conventional block model
+
+They may coexist under one controller persona, but they should not be modeled as one symmetric feature bucket.
+
 This layer defines the host-visible contract for:
 
 - identify data exposed to the host
@@ -216,6 +243,8 @@ This layer owns the contract between controller and NAND/media. It must define:
 - reset-abort and media-error propagation semantics
 
 This layer does **not** override host-visible capability surfaces on its own; it feeds timing and legality into the higher controller layers.
+
+Controller work in Phase 2 and beyond depends on the NAND/media design reaching the corresponding command-state, legality-feed, and status-snapshot milestones. The implementation plan should therefore pin each controller phase to the NAND/media phase it consumes instead of assuming both tracks advance independently.
 
 ### 5.5 Enterprise Lifecycle Layer
 
@@ -287,6 +316,8 @@ The first controller-profile abstraction should at minimum define:
 - `nand_media_profile_ref`
 - `maintenance_service_class`
 
+In Phase 1, some of these fields are expected to exist as **declared profile metadata** before their full runtime semantics land. In particular, `supports_dual_port`, `supports_atomic_write`, `supports_multi_domain_partitioning`, `supports_offload`, and `security_lifecycle_class` may initially be authoritative profile slots whose enforcing behavior arrives in later phases.
+
 ### 6.2 Initial persona set
 
 The first wave should define generic personas rather than vendor-branded replicas:
@@ -343,7 +374,45 @@ The first implementation should support a matrix such as:
 
 This allows one controller persona to expose mixed conventional and ZNS/FDP namespaces where the active capability set permits it.
 
-### 6.6 Controller-To-FTL And Application Contract
+### 6.6 NVMe Hierarchy Assumptions
+
+The controller simulator should keep the NVMe hierarchy explicit even before every layer is fully implemented.
+
+The working ownership model is:
+
+- **controller/path scope**: host-path visibility, path state, failover, and controller-wide safety gates
+- **endurance-group scope**: endurance accounting, reclaim-policy grouping, and future FDP-aligned placement domains
+- **NVM-set scope**: optional media/performance grouping, deferred unless a later phase needs it explicitly
+- **namespace scope**: host-visible namespace-mode semantics such as conventional NVM or ZNS behavior
+
+The first implementation does not need complete NVMe hierarchy fidelity, but it should avoid collapsing every future enterprise feature into namespace scope by default.
+
+### 6.7 Minimum Host-Visible Command Scope
+
+The controller profile fields in this spec imply a minimum host-visible command-scope table. The implementation plan should freeze this table before code starts.
+
+Baseline admin-scope surface:
+
+- Identify Controller / Namespace / active namespace enumeration
+- Get Log Page for health, error, telemetry, and lifecycle surfaces explicitly exposed by the active profile
+- Get/Set Features only for feature scopes surfaced by the active profile and safe under the current lifecycle state
+
+Baseline I/O-scope surface:
+
+- NVM Command Set `Read`, `Write`, `Flush`, `Write Zeroes`, and Dataset Management / Trim
+
+Deferred or profile-gated admin surface:
+
+- Namespace Management create/delete/attach/detach until multi-namespace plumbing is real
+- Firmware Download / Commit, Sanitize, Security Send / Receive, Virtualization-related admin flows, and NVMe-MI-aligned management hooks until the relevant phases pull them into scope
+
+Deferred or profile-gated I/O surface:
+
+- Compare, Verify, Copy, Reservations, and other advanced NVM Command Set behaviors
+- ZNS-specific commands such as Zone Append and Zone Management Send / Receive until the ZNS namespace contract phase
+- FDP-related directives, identifiers, and logs until the FDP-oriented placement phase
+
+### 6.8 Controller-To-FTL And Application Contract
 
 The controller simulator must define what it owns versus what the FTL/application layers own.
 
@@ -372,7 +441,7 @@ Shared contract:
 
 This keeps ZNS/FDP from becoming decorative labels or from swallowing FTL responsibility into controller code.
 
-### 6.7 Controller Lifecycle And Recovery State Model
+### 6.9 Controller Lifecycle And Recovery State Model
 
 The lifecycle layer must be represented as an explicit state machine with named states and externally visible transitions.
 
@@ -526,6 +595,8 @@ The minimum external observability contract must expose:
 
 The first implementation may expose this through an OOB or debug API. Later phases may map parts of it onto NVMe telemetry and log pages, but the observability contract must exist from the beginning.
 
+OCP-aligned log-page fidelity is a later enhancement, not an automatic Phase 1-3 promise. The early requirement is schema stability and machine-readable observability, not default conformance to every OCP log-page contract.
+
 ---
 
 ## 8. Phase Plan
@@ -539,6 +610,7 @@ Deliverables:
 - mapping from vendor-inspired inputs to generic personas
 - capability-to-observable-to-test traceability matrix
 - axis ownership matrix covering topology, mode, policy, lifecycle, and media coupling
+- current-code prerequisite matrix covering multi-namespace plumbing, lifecycle skeleton needs, queue-scale register implications, and profile-representation constraints
 
 Exit criteria:
 
@@ -554,6 +626,7 @@ Deliverables:
 
 - controller profile abstraction
 - generic 8ch / 16ch persona presets
+- compile-time profile table bootstrap for the initial personas
 - controller configuration path updated to consume a profile instead of only flat defaults
 - compatibility wrapper path for existing controller startup
 - compatibility and migration matrix from current flat configs to the profile model
@@ -562,12 +635,15 @@ Exit criteria:
 
 - current default behavior remains available through a baseline profile
 - channel count, queue scale, and enterprise capability flags come from the active profile
+- fields whose semantics land in later phases are explicitly marked as metadata-only until their enforcing phase begins
 - existing controller and NVMe tests still pass in baseline mode
 
 ### Phase 2: Namespace Mode And Placement Contract
 
 Deliverables:
 
+- minimal controller lifecycle skeleton sufficient for command-legality, admission, and telemetry-visibility gates used by Phase 2 and Phase 3
+- multi-namespace dispatch foundation or explicitly integrated prerequisite path for namespace-scoped behavior
 - conventional namespace contract
 - ZNS namespace contract
 - FDP-oriented placement contract
@@ -576,6 +652,7 @@ Deliverables:
 
 Exit criteria:
 
+- lifecycle gates required by Phase 2 and Phase 3 exist in a minimal but machine-readable form
 - namespace-mode legality is explicit and machine-testable
 - ZNS/FDP remain namespace-scoped and can coexist with conventional namespaces where the profile allows it
 - baseline personas reject unsupported namespace modes deterministically
@@ -588,6 +665,7 @@ Deliverables:
 - persona-aware latency/QoS policy layer
 - telemetry families and sampling contract
 - maintenance service model and arbitration rules
+- minimal path-state schema and telemetry stub sufficient for the observability contract
 
 Exit criteria:
 
@@ -631,6 +709,7 @@ Exit criteria:
 ### 9.1 Test Categories
 
 - **profile tests**: each persona exposes the expected capabilities
+- **command-scope tests**: baseline, optional, and deferred admin/I/O surfaces are exposed or rejected exactly as the command-scope table declares
 - **scheduler/QoS tests**: latency, bandwidth, and fairness behavior under contention
 - **mode tests**: conventional vs ZNS vs FDP-oriented behavior
 - **telemetry tests**: queue pressure, maintenance state, and health visibility
@@ -644,6 +723,7 @@ Exit criteria:
 - 8ch and 16ch personas produce envelope differences under a fixed workload, fixed seed, fixed warm-up, and declared tolerance band
 - dual-port support is persona-gated and testable
 - ZNS/FDP behavior is namespace-scoped and profile-gated rather than hard-coded globally
+- command/admin scope exposure follows the published scope table, and unsupported commands fail deterministically
 - telemetry reflects maintenance and queue pressure
 - security lifecycle changes controller state in observable ways
 - controller timing changes consistently when the underlying NAND/media profile changes
@@ -742,7 +822,25 @@ The following decisions are fixed for this design:
 
 ## 12. References
 
+### 12.1 Normative and baseline references
+
 - NAND/media design: [`2026-04-10-nand-media-command-coverage-design.md`](2026-04-10-nand-media-command-coverage-design.md)
+- NVM Express Base Specification, Revision 2.3: <https://nvmexpress.org/specification/nvm-express-base-specification/>
+- NVM Command Set Specification, Revision 1.2: <https://nvmexpress.org/specification/nvm-command-set-specification/>
+- NVMe Zoned Namespace Command Set Specification, Revision 1.4: <https://nvmexpress.org/specification/nvme-zoned-namespaces-zns-command-set-specification/>
+- NVM Express Management Interface Specification, Revision 2.1: <https://nvmexpress.org/specification/nvme-mi-specification/>
+- OCP Datacenter NVMe SSD Specification, Version 2.6: <https://www.opencompute.org/documents/datacenter-nvme-ssd-specification-v2-6-2-pdf>
+- PCI Express Base Specification, Revision 5.0 Version 1.0: <https://pcisig.com/PCIExpress/Specs/Base/_5.0_1.0>
+- ONFI 6.0 and ONFI 5.2 specifications: <https://onfi.org/specs.html>
+- TCG Storage Architecture Core Specification, Version 2.01 Revision 1.00: <https://trustedcomputinggroup.org/resource/tcg-storage-architecture-core-specification/>
+- TCG Storage Interface Interactions Specification (SIIS), Version 1.20: <https://trustedcomputinggroup.org/resource/storage-work-group-storage-interface-interactions-specification/>
+- TCG Storage Security Subsystem Class: Opal, Version 2.30: <https://trustedcomputinggroup.org/resource/storage-work-group-storage-security-subsystem-class-opal/>
+- TCG Storage Security Subsystem Class: Enterprise, Version 1.01 Revision 1.00: <https://trustedcomputinggroup.org/resource/storage-work-group-storage-security-subsystem-class-enterprise-specification/>
+
+These references define the semantic baseline for the implementation plan. Moving to newer revisions later should be an explicit spec update, not an accidental drift during coding.
+
+### 12.2 Public controller input sources
+
 - Marvell Bravera SC5 product page: <https://www.marvell.com/products/ssd-controllers/mv-ss1331-1333.html>
 - Marvell Bravera SC5 product brief: <https://www.marvell.com/content/dam/marvell/en/public-collateral/storage/marvell-ssd-mv-ss1331-1333-product-brief.pdf>
 - Silicon Motion enterprise controller page: <https://www.siliconmotion.com/products/enterprise/detail>
