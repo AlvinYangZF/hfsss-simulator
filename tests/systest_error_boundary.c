@@ -8,6 +8,11 @@
 #include "pcie/nvme_uspace.h"
 #include "ftl/ftl.h"
 #include "common/common.h"
+#include "common/hfsss_config.h"
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 /* --------------- Test Harness --------------- */
 
@@ -347,6 +352,84 @@ static void test_cb003_low_op_ratio(void) {
 }
 
 /* ================================================================
+ * CB-004: High OP ratio (50%) — minimal GC pressure
+ * ================================================================ */
+static void test_cb004_high_op_ratio(void) {
+    printf("\n=== CB-004: High OP ratio (50%%) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    memset(&dev, 0, sizeof(dev));
+
+    /* Custom setup with op_ratio = 50 */
+    nvme_uspace_config_default(&cfg);
+    cfg.sssim_cfg.channel_count = 2;
+    cfg.sssim_cfg.chips_per_channel = 1;
+    cfg.sssim_cfg.dies_per_chip = 1;
+    cfg.sssim_cfg.planes_per_die = 1;
+    cfg.sssim_cfg.blocks_per_plane = 64;
+    cfg.sssim_cfg.pages_per_block = 128;
+    cfg.sssim_cfg.page_size = 4096;
+    cfg.sssim_cfg.op_ratio = 50;
+    uint64_t raw = (uint64_t)2 * 1 * 1 * 1 * 64 * 128;
+    cfg.sssim_cfg.total_lbas = raw * (100 - 50) / 100;
+
+    int rc = nvme_uspace_dev_init(&dev, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "CB-004: dev init with 50%% OP");
+    if (rc != HFSSS_OK) return;
+
+    rc = nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(rc == HFSSS_OK, "CB-004: dev start");
+    if (rc != HFSSS_OK) { nvme_uspace_dev_cleanup(&dev); return; }
+
+    rc = nvme_uspace_create_io_cq(&dev, 1, 256, false);
+    TEST_ASSERT(rc == HFSSS_OK, "CB-004: create CQ");
+    rc = nvme_uspace_create_io_sq(&dev, 1, 256, 1, 0);
+    TEST_ASSERT(rc == HFSSS_OK, "CB-004: create SQ");
+
+    u64 total_lbas = cfg.sssim_cfg.total_lbas;
+    void *buf = malloc(LBA_SIZE);
+    TEST_ASSERT(buf != NULL, "CB-004: allocate buffer");
+    if (!buf) { teardown_dev(&dev); return; }
+
+    /* Fill 80% so writes always succeed (plenty of headroom) */
+    u64 fill_count = total_lbas * 80 / 100;
+    int written_ok = 0;
+    for (u64 lba = 0; lba < fill_count; lba++) {
+        fill_pattern(buf, (uint32_t)lba, 1);
+        rc = nvme_uspace_write(&dev, 1, lba, 1, buf);
+        if (rc == HFSSS_OK) written_ok++;
+    }
+    TEST_ASSERT(written_ok == (int)fill_count,
+                "CB-004: all 80%% writes succeed with 50%% OP");
+
+    /* Random overwrites should also always succeed (generous OP) */
+    uint32_t seed = 0xDEADBEEF;
+    int overwrite_ok = 0;
+    for (int i = 0; i < 3000; i++) {
+        seed = lcg(seed);
+        u64 lba = seed % fill_count;
+        fill_pattern(buf, (uint32_t)lba, 2);
+        rc = nvme_uspace_write(&dev, 1, lba, 1, buf);
+        if (rc == HFSSS_OK) overwrite_ok++;
+    }
+    TEST_ASSERT(overwrite_ok == 3000,
+                "CB-004: all overwrites succeed with 50%% OP");
+
+    /* With generous OP, GC pressure should be light. Read WAF. */
+    struct ftl_stats stats;
+    sssim_get_stats(&dev.sssim, &stats);
+    printf("  (gc_count=%llu, WAF=%.3f at 50%% OP)\n",
+           (unsigned long long)stats.gc_count, stats.waf);
+    /* WAF with 50% OP + 80% fill should be low (<5 is very generous).
+     * Mostly we just assert the sim produced a valid positive WAF. */
+    TEST_ASSERT(stats.waf >= 1.0, "CB-004: WAF is valid (>= 1.0)");
+
+    free(buf);
+    teardown_dev(&dev);
+}
+
+/* ================================================================
  * CB-005: NAND types (verify all init correctly)
  * ================================================================ */
 static void test_cb005_nand_types(void) {
@@ -472,6 +555,73 @@ static void test_cb006_edge_lba_values(void) {
 }
 
 /* ================================================================
+ * CB-007: Config file round-trip (YAML save/load)
+ * ================================================================ */
+static void test_cb007_config_round_trip(void) {
+    printf("\n=== CB-007: Config file round-trip ===\n");
+
+    char path[256];
+    snprintf(path, sizeof(path), "/tmp/systest_cb007_%d.yaml", (int)getpid());
+
+    /* Step 1: defaults + custom values */
+    struct hfsss_config cfg_a;
+    hfsss_config_defaults(&cfg_a);
+    cfg_a.nand.channel_count = 4;
+    cfg_a.nand.chips_per_channel = 2;
+    cfg_a.nand.blocks_per_plane = 256;
+    cfg_a.nand.op_ratio_pct = 20;
+    cfg_a.gc.threshold_pct = 15;
+    strncpy(cfg_a.gc.policy, "cost_benefit", sizeof(cfg_a.gc.policy) - 1);
+    cfg_a.log_level = 3;
+
+    int rc = hfsss_config_save(path, &cfg_a);
+    TEST_ASSERT(rc == 0, "CB-007: hfsss_config_save succeeds");
+    if (rc != 0) return;
+
+    /* Step 2: validate the file exists and is non-empty */
+    struct stat st;
+    rc = stat(path, &st);
+    TEST_ASSERT(rc == 0 && st.st_size > 0,
+                "CB-007: config file created and non-empty");
+
+    /* Step 3: load into fresh struct and compare */
+    struct hfsss_config cfg_b;
+    memset(&cfg_b, 0, sizeof(cfg_b));
+    char errbuf[256] = {0};
+    rc = hfsss_config_load(path, &cfg_b, errbuf, sizeof(errbuf));
+    TEST_ASSERT(rc == 0, "CB-007: hfsss_config_load succeeds");
+    if (rc != 0) {
+        printf("  (load error: %s)\n", errbuf);
+        unlink(path);
+        return;
+    }
+
+    /* Step 4: field-level equality checks */
+    TEST_ASSERT(cfg_b.nand.channel_count == cfg_a.nand.channel_count,
+                "CB-007: channel_count round-trips");
+    TEST_ASSERT(cfg_b.nand.chips_per_channel == cfg_a.nand.chips_per_channel,
+                "CB-007: chips_per_channel round-trips");
+    TEST_ASSERT(cfg_b.nand.blocks_per_plane == cfg_a.nand.blocks_per_plane,
+                "CB-007: blocks_per_plane round-trips");
+    TEST_ASSERT(cfg_b.nand.op_ratio_pct == cfg_a.nand.op_ratio_pct,
+                "CB-007: op_ratio_pct round-trips");
+    TEST_ASSERT(cfg_b.gc.threshold_pct == cfg_a.gc.threshold_pct,
+                "CB-007: gc.threshold_pct round-trips");
+    TEST_ASSERT(strcmp(cfg_b.gc.policy, cfg_a.gc.policy) == 0,
+                "CB-007: gc.policy string round-trips");
+    TEST_ASSERT(cfg_b.log_level == cfg_a.log_level,
+                "CB-007: log_level round-trips");
+
+    /* Step 5: validate both are well-formed */
+    rc = hfsss_config_validate(&cfg_a, errbuf, sizeof(errbuf));
+    TEST_ASSERT(rc == 0, "CB-007: original config validates");
+    rc = hfsss_config_validate(&cfg_b, errbuf, sizeof(errbuf));
+    TEST_ASSERT(rc == 0, "CB-007: reloaded config validates");
+
+    unlink(path);
+}
+
+/* ================================================================
  * Main
  * ================================================================ */
 int main(void) {
@@ -483,8 +633,10 @@ int main(void) {
     test_cb001_minimum_geometry();
     test_cb002_larger_geometry();
     test_cb003_low_op_ratio();
+    test_cb004_high_op_ratio();
     test_cb005_nand_types();
     test_cb006_edge_lba_values();
+    test_cb007_config_round_trip();
 
     printf("\n============================================\n");
     printf("  Results: %d/%d passed, %d failed\n", passed_tests, total_tests, failed_tests);

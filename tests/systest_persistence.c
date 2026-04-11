@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include "pcie/nvme_uspace.h"
 #include "ftl/ftl.h"
+#include "ftl/mapping.h"
 #include "ftl/superblock.h"
 #include "common/common.h"
 #include "common/fault_inject.h"
@@ -188,6 +189,18 @@ static void test_pr_001(void) {
     /* Flush to ensure all data reaches media */
     nvme_uspace_flush(&dev, 1);
 
+    /* Snapshot the L2P mapping so the reloaded device can restore it.
+     * This simulates "media save + FTL checkpoint" that the production
+     * recovery flow would perform atomically. */
+    union ppn *ppn_snapshot = calloc(write_count, sizeof(union ppn));
+    bool *ppn_valid = calloc(write_count, sizeof(bool));
+    for (uint64_t lba = 0; lba < write_count; lba++) {
+        if (mapping_l2p(&dev.sssim.ftl.mapping, lba,
+                        &ppn_snapshot[lba]) == HFSSS_OK) {
+            ppn_valid[lba] = true;
+        }
+    }
+
     int rc = media_save(&dev.sssim.media, media_path);
     TEST_ASSERT(rc == HFSSS_OK, "PR-001: media_save succeeds");
 
@@ -209,38 +222,32 @@ static void test_pr_001(void) {
     rc = media_load(&dev2.sssim.media, media_path);
     TEST_ASSERT(rc == HFSSS_OK, "PR-001: media_load succeeds");
 
-    /*
-     * After media_load the NAND image is restored, but the FTL L2P
-     * table of the fresh device has no mapping entries.  We read via
-     * the FTL layer which may return NOENT for LBAs it has not mapped
-     * yet.  To verify raw media persistence we bypass the FTL: write
-     * through the original FTL, save media, reload media, then re-read
-     * through an FTL that was checkpointed alongside the media.
-     *
-     * Since FTL checkpoint is not in scope of PR-001, we verify what
-     * we can: that media_save/media_load themselves succeed and that
-     * the round-trip returns HFSSS_OK without crashing.  A full L2P
-     * round-trip is covered by PR-003 and PR-004.
-     */
-    ok = true;
+    /* Restore the L2P mapping snapshot into dev2 so the read path can
+     * locate the LBAs.  This closes the full media + FTL round-trip. */
+    for (uint64_t lba = 0; lba < write_count; lba++) {
+        if (ppn_valid[lba]) {
+            mapping_direct_set(&dev2.sssim.ftl.mapping, lba,
+                               ppn_snapshot[lba]);
+        }
+    }
+
+    /* Now the real assertion: every persisted LBA must read back
+     * correctly through the NVMe -> FTL -> media path. */
     uint64_t verified = 0;
     for (uint64_t lba = 0; lba < write_count; lba++) {
         rc = nvme_uspace_read(&dev2, 1, lba, 1, rbuf);
         if (rc == HFSSS_OK && verify_pattern(rbuf, (uint32_t)lba, 1)) {
             verified++;
         }
-        /* NOENT is acceptable: fresh FTL has no L2P entries */
     }
-    /*
-     * If the FTL checkpoint was also restored (future integration), all
-     * 500 should verify.  For now, accept partial or full verification.
-     */
-    TEST_ASSERT(rc != HFSSS_ERR_IO,
-                "PR-001: read-back after media_load does not produce I/O error");
     printf("  (verified %llu of %llu LBAs through FTL)\n",
            (unsigned long long)verified,
            (unsigned long long)write_count);
+    TEST_ASSERT(verified == write_count,
+                "PR-001: all LBAs verify after media save/load + mapping restore");
 
+    free(ppn_snapshot);
+    free(ppn_valid);
     free(wbuf);
     free(rbuf);
     dev_teardown(&dev2);
@@ -413,6 +420,16 @@ static void test_pr_003(void) {
 
     nvme_uspace_flush(&dev, 1);
 
+    /* Snapshot L2P mapping for restore alongside the media checkpoint */
+    union ppn *ppn_snapshot = calloc(write_count, sizeof(union ppn));
+    bool *ppn_valid = calloc(write_count, sizeof(bool));
+    for (uint64_t lba = 0; lba < write_count; lba++) {
+        if (mapping_l2p(&dev.sssim.ftl.mapping, lba,
+                        &ppn_snapshot[lba]) == HFSSS_OK) {
+            ppn_valid[lba] = true;
+        }
+    }
+
     int rc = media_create_checkpoint(&dev.sssim.media, ckpt_dir);
     TEST_ASSERT(rc == HFSSS_OK, "PR-003: media_create_checkpoint succeeds");
 
@@ -434,12 +451,15 @@ static void test_pr_003(void) {
     rc = media_restore_checkpoint(&dev2.sssim.media, ckpt_dir);
     TEST_ASSERT(rc == HFSSS_OK, "PR-003: media_restore_checkpoint succeeds");
 
-    /*
-     * Similar caveat as PR-001: fresh FTL has no L2P table for the
-     * restored media.  We verify at the media layer level that the
-     * checkpoint round-trip completed without error.
-     */
-    ok = true;
+    /* Restore L2P mapping into dev2: full media + FTL checkpoint round-trip */
+    for (uint64_t lba = 0; lba < write_count; lba++) {
+        if (ppn_valid[lba]) {
+            mapping_direct_set(&dev2.sssim.ftl.mapping, lba,
+                               ppn_snapshot[lba]);
+        }
+    }
+
+    /* Real assertion: every LBA must read back with the original pattern */
     uint64_t verified = 0;
     for (uint64_t lba = 0; lba < write_count; lba++) {
         rc = nvme_uspace_read(&dev2, 1, lba, 1, rbuf);
@@ -447,12 +467,14 @@ static void test_pr_003(void) {
             verified++;
         }
     }
-    TEST_ASSERT(rc != HFSSS_ERR_IO,
-                "PR-003: reads after checkpoint restore produce no I/O error");
     printf("  (verified %llu of %llu LBAs through FTL)\n",
            (unsigned long long)verified,
            (unsigned long long)write_count);
+    TEST_ASSERT(verified == write_count,
+                "PR-003: all LBAs verify after media checkpoint round-trip");
 
+    free(ppn_snapshot);
+    free(ppn_valid);
     free(wbuf);
     free(rbuf);
     dev_teardown(&dev2);

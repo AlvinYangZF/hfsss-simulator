@@ -47,6 +47,24 @@ int wear_level_set_static_threshold(struct wear_level_ctx *ctx, u32 threshold)
     return HFSSS_OK;
 }
 
+int wear_level_set_alert_threshold(struct wear_level_ctx *ctx,
+                                   u32 alert_threshold,
+                                   u32 critical_threshold)
+{
+    if (!ctx) {
+        return HFSSS_ERR_INVAL;
+    }
+    /* Sanity: thresholds are percentages (0..100), and critical must be
+     * >= alert for the alert hierarchy to make sense. */
+    if (alert_threshold > 100 || critical_threshold > 100 ||
+        critical_threshold < alert_threshold) {
+        return HFSSS_ERR_INVAL;
+    }
+    ctx->wear_alert_threshold = alert_threshold;
+    ctx->wear_critical_threshold = critical_threshold;
+    return HFSSS_OK;
+}
+
 bool wear_level_should_run_static(struct wear_level_ctx *ctx, u64 current_ts, u32 max_erase, u32 min_erase)
 {
     if (!ctx || !ctx->enabled || !ctx->static_enabled) {

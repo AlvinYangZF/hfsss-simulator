@@ -1,4 +1,5 @@
 #include "controller/qos.h"
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -86,13 +87,18 @@ u64 lat_monitor_percentile(const struct ns_latency_monitor *mon,
     for (u32 i = 0; i < QOS_HIST_BUCKETS; i++) {
         cumulative += mon->buckets[i];
         if (cumulative >= target) {
-            /* Return upper bound of this bucket in microseconds */
+            /* Return upper bound of this bucket in microseconds.
+             * Clamp the shift: at i == QOS_HIST_BUCKETS - 1 (last bucket)
+             * a shift by QOS_HIST_BUCKETS would be UB on a 64-bit int. */
+            if (i + 1 >= QOS_HIST_BUCKETS) {
+                return UINT64_MAX;
+            }
             return (1ULL << (i + 1));
         }
     }
 
-    /* Should not reach here; return max bucket upper bound */
-    return (1ULL << QOS_HIST_BUCKETS);
+    /* Exhausted all buckets without reaching target: return saturated max */
+    return UINT64_MAX;
 }
 
 bool lat_monitor_check_sla(struct ns_latency_monitor *mon)

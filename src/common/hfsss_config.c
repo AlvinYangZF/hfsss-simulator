@@ -4,6 +4,7 @@
 #include "common/common.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
@@ -159,6 +160,10 @@ int hfsss_config_load(const char *path, struct hfsss_config *cfg,
 
     while (fgets(line, sizeof(line), f)) {
         lineno++;
+        /* Detect whether the line is indented BEFORE trimming, so we can
+         * tell section children (indented) from top-level keys (flush-left).
+         * A top-level non-blank line resets the current section. */
+        bool indented = (line[0] == ' ' || line[0] == '\t');
         char *p = trim(line);
         if (*p == '#' || *p == '\0') continue;
 
@@ -177,6 +182,13 @@ int hfsss_config_load(const char *path, struct hfsss_config *cfg,
         }
 
         unquote(val);
+
+        /* Top-level key (no indentation) closes any active section so that
+         * e.g. "log_level: 3" after a "persist:" block is applied at the
+         * root, not as "persist.log_level". */
+        if (!indented) {
+            section[0] = '\0';
+        }
 
         if (apply_kv(cfg, section, key, val) != 0) {
             HFSSS_LOG_WARN("CFG", "unknown key '%s.%s' at line %d (ignored)",

@@ -1,6 +1,10 @@
 #include "media/media.h"
+#include "sssim.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 /* Forward declarations */
 static void media_wait_until_available(struct media_ctx *ctx, enum op_type op,
@@ -936,28 +940,70 @@ int media_load(struct media_ctx *ctx, const char *filepath)
     return HFSSS_OK;
 }
 
-int media_create_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir)
+/* Join a directory and filename into out buffer. Caller must ensure out_sz
+ * is large enough; returns HFSSS_ERR_INVAL on truncation. */
+static int build_ckpt_path(char *out, size_t out_sz, const char *dir,
+                           const char *filename)
 {
-    (void)checkpoint_dir; /* TODO: Implement directory-based checkpointing */
-    int ret = media_save(ctx, "checkpoint.bin");
-    if (ret == HFSSS_OK) {
-        media_mark_all_clean(ctx);
+    if (!out || !dir || !filename || out_sz == 0) {
+        return HFSSS_ERR_INVAL;
     }
-    return ret;
+    int n = snprintf(out, out_sz, "%s/%s", dir, filename);
+    if (n < 0 || (size_t)n >= out_sz) {
+        return HFSSS_ERR_INVAL;
+    }
+    return HFSSS_OK;
 }
 
-int media_create_incremental_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir)
+int media_create_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir)
 {
-    (void)checkpoint_dir; /* TODO: Implement directory-based checkpointing */
-    int ret = media_save_incremental(ctx, "checkpoint_inc.bin");
-    if (ret == HFSSS_OK) {
+    if (!ctx || !checkpoint_dir) {
+        return HFSSS_ERR_INVAL;
+    }
+    /* Ensure directory exists (idempotent) */
+    mkdir(checkpoint_dir, 0755);
+
+    char path[SSSIM_PATH_LEN];
+    int rc = build_ckpt_path(path, sizeof(path), checkpoint_dir,
+                             "checkpoint.bin");
+    if (rc != HFSSS_OK) return rc;
+
+    rc = media_save(ctx, path);
+    if (rc == HFSSS_OK) {
         media_mark_all_clean(ctx);
     }
-    return ret;
+    return rc;
+}
+
+int media_create_incremental_checkpoint(struct media_ctx *ctx,
+                                        const char *checkpoint_dir)
+{
+    if (!ctx || !checkpoint_dir) {
+        return HFSSS_ERR_INVAL;
+    }
+    mkdir(checkpoint_dir, 0755);
+
+    char path[SSSIM_PATH_LEN];
+    int rc = build_ckpt_path(path, sizeof(path), checkpoint_dir,
+                             "checkpoint_inc.bin");
+    if (rc != HFSSS_OK) return rc;
+
+    rc = media_save_incremental(ctx, path);
+    if (rc == HFSSS_OK) {
+        media_mark_all_clean(ctx);
+    }
+    return rc;
 }
 
 int media_restore_checkpoint(struct media_ctx *ctx, const char *checkpoint_dir)
 {
-    (void)checkpoint_dir; /* TODO: Implement directory-based checkpointing */
-    return media_load(ctx, "checkpoint.bin");
+    if (!ctx || !checkpoint_dir) {
+        return HFSSS_ERR_INVAL;
+    }
+    char path[SSSIM_PATH_LEN];
+    int rc = build_ckpt_path(path, sizeof(path), checkpoint_dir,
+                             "checkpoint.bin");
+    if (rc != HFSSS_OK) return rc;
+
+    return media_load(ctx, path);
 }
