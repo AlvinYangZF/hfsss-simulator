@@ -11,7 +11,7 @@ extern void *wl_thread_main(void *arg);
 
 /* Global pointers set by ftl_mt_start() so worker threads can signal GC */
 pthread_mutex_t *ftl_mt_gc_mutex_ptr = NULL;
-pthread_cond_t  *ftl_mt_gc_cond_ptr  = NULL;
+pthread_cond_t *ftl_mt_gc_cond_ptr = NULL;
 
 static void *ftl_worker_main(void *arg)
 {
@@ -43,9 +43,9 @@ static void *ftl_worker_main(void *arg)
             u32 data_step = req.data_stride ? req.data_stride : page_size;
             u8 *ptr = req.data;
             for (u32 i = 0; i < req.count; i++) {
-                rc = ftl_read_page_mt(w->ftl, w->taa,
-                                      req.lba + (u64)i * lba_step, ptr);
-                if (rc != HFSSS_OK) break;
+                rc = ftl_read_page_mt(w->ftl, w->taa, req.lba + (u64)i * lba_step, ptr);
+                if (rc != HFSSS_OK)
+                    break;
                 ptr += data_step;
             }
             break;
@@ -56,9 +56,9 @@ static void *ftl_worker_main(void *arg)
             u32 data_step = req.data_stride ? req.data_stride : page_size;
             const u8 *ptr = req.data;
             for (u32 i = 0; i < req.count; i++) {
-                rc = ftl_write_page_mt(w->ftl, w->taa,
-                                       req.lba + (u64)i * lba_step, ptr);
-                if (rc != HFSSS_OK) break;
+                rc = ftl_write_page_mt(w->ftl, w->taa, req.lba + (u64)i * lba_step, ptr);
+                if (rc != HFSSS_OK)
+                    break;
                 ptr += data_step;
             }
             break;
@@ -66,9 +66,9 @@ static void *ftl_worker_main(void *arg)
         case IO_OP_TRIM: {
             u32 lba_step = req.lba_stride ? req.lba_stride : 1;
             for (u32 i = 0; i < req.count; i++) {
-                rc = ftl_trim_page_mt(w->ftl, w->taa,
-                                      req.lba + (u64)i * lba_step);
-                if (rc != HFSSS_OK) break;
+                rc = ftl_trim_page_mt(w->ftl, w->taa, req.lba + (u64)i * lba_step);
+                if (rc != HFSSS_OK)
+                    break;
             }
             break;
         }
@@ -85,7 +85,8 @@ static void *ftl_worker_main(void *arg)
         cpl.byte_len = req.byte_len;
         cpl.status = rc;
         w->ops_completed++;
-        if (rc != HFSSS_OK) w->ops_failed++;
+        if (rc != HFSSS_OK)
+            w->ops_failed++;
 
         while (!io_ring_push(&w->completion_ring, &cpl)) {
             sched_yield();
@@ -95,8 +96,7 @@ static void *ftl_worker_main(void *arg)
     return NULL;
 }
 
-int ftl_mt_init(struct ftl_mt_ctx *ctx, struct ftl_config *config,
-                struct hal_ctx *hal)
+int ftl_mt_init(struct ftl_mt_ctx *ctx, struct ftl_config *config, struct hal_ctx *hal)
 {
     int ret;
 
@@ -113,15 +113,10 @@ int ftl_mt_init(struct ftl_mt_ctx *ctx, struct ftl_config *config,
     }
 
     /* Initialize TAA with 256 shards */
-    u64 total_pages = (u64)config->channel_count *
-                      config->chips_per_channel *
-                      config->dies_per_chip *
-                      config->planes_per_die *
-                      config->blocks_per_plane *
-                      config->pages_per_block;
+    u64 total_pages = (u64)config->channel_count * config->chips_per_channel * config->dies_per_chip *
+                      config->planes_per_die * config->blocks_per_plane * config->pages_per_block;
 
-    ret = taa_init(&ctx->taa, config->total_lbas, total_pages,
-                   TAA_DEFAULT_SHARDS);
+    ret = taa_init(&ctx->taa, config->total_lbas, total_pages, TAA_DEFAULT_SHARDS);
     if (ret != HFSSS_OK) {
         ftl_cleanup(&ctx->ftl);
         return ret;
@@ -138,13 +133,13 @@ int ftl_mt_init(struct ftl_mt_ctx *ctx, struct ftl_config *config,
         w->ops_failed = 0;
         w->request_sync_initialized = false;
 
-        ret = io_ring_init(&w->request_ring, sizeof(struct io_request),
-                           IO_RING_DEFAULT_CAPACITY);
-        if (ret != HFSSS_OK) goto fail;
+        ret = io_ring_init(&w->request_ring, sizeof(struct io_request), IO_RING_DEFAULT_CAPACITY);
+        if (ret != HFSSS_OK)
+            goto fail;
 
-        ret = io_ring_init(&w->completion_ring, sizeof(struct io_completion),
-                           IO_RING_DEFAULT_CAPACITY);
-        if (ret != HFSSS_OK) goto fail;
+        ret = io_ring_init(&w->completion_ring, sizeof(struct io_completion), IO_RING_DEFAULT_CAPACITY);
+        if (ret != HFSSS_OK)
+            goto fail;
 
         ret = pthread_mutex_init(&w->request_lock, NULL);
         if (ret != 0) {
@@ -171,7 +166,8 @@ fail:
 
 void ftl_mt_cleanup(struct ftl_mt_ctx *ctx)
 {
-    if (!ctx) return;
+    if (!ctx)
+        return;
 
     ftl_mt_stop(ctx);
 
@@ -189,6 +185,28 @@ void ftl_mt_cleanup(struct ftl_mt_ctx *ctx)
     memset(ctx, 0, sizeof(*ctx));
 }
 
+/* Tear down already-started workers on partial-startup failure.
+ * Mirrors ftl_mt_stop(): push STOP, then signal request_cond under
+ * the lock before joining, so workers blocked in pthread_cond_wait()
+ * actually wake up and see the stop message. Without the signal the
+ * join will deadlock. */
+static void rollback_started_workers(struct ftl_mt_ctx *ctx, int count)
+{
+    for (int j = 0; j < count; j++) {
+        struct io_request stop;
+        memset(&stop, 0, sizeof(stop));
+        stop.opcode = IO_OP_STOP;
+        while (!io_ring_push(&ctx->workers[j].request_ring, &stop)) {
+            sched_yield();
+        }
+        pthread_mutex_lock(&ctx->workers[j].request_lock);
+        pthread_cond_signal(&ctx->workers[j].request_cond);
+        pthread_mutex_unlock(&ctx->workers[j].request_lock);
+        pthread_join(ctx->workers[j].thread, NULL);
+        ctx->workers[j].running = false;
+    }
+}
+
 int ftl_mt_start(struct ftl_mt_ctx *ctx)
 {
     if (!ctx || !ctx->initialized) {
@@ -197,17 +215,10 @@ int ftl_mt_start(struct ftl_mt_ctx *ctx)
 
     for (int i = 0; i < FTL_NUM_WORKERS; i++) {
         ctx->workers[i].running = true;
-        int ret = pthread_create(&ctx->workers[i].thread, NULL,
-                                  ftl_worker_main, &ctx->workers[i]);
+        int ret = pthread_create(&ctx->workers[i].thread, NULL, ftl_worker_main, &ctx->workers[i]);
         if (ret != 0) {
-            /* Stop already-started workers */
-            for (int j = 0; j < i; j++) {
-                struct io_request stop;
-                memset(&stop, 0, sizeof(stop));
-                stop.opcode = IO_OP_STOP;
-                io_ring_push(&ctx->workers[j].request_ring, &stop);
-                pthread_join(ctx->workers[j].thread, NULL);
-            }
+            ctx->workers[i].running = false;
+            rollback_started_workers(ctx, i);
             return HFSSS_ERR_INVAL;
         }
     }
@@ -216,20 +227,44 @@ int ftl_mt_start(struct ftl_mt_ctx *ctx)
     pthread_mutex_init(&ctx->gc_mutex, NULL);
     pthread_cond_init(&ctx->gc_cond, NULL);
     ctx->gc_running = true;
-    pthread_create(&ctx->gc_thread, NULL, gc_thread_main, ctx);
+    int gc_rc = pthread_create(&ctx->gc_thread, NULL, gc_thread_main, ctx);
+    if (gc_rc != 0) {
+        /* GC thread failed to start: clean up cond/mutex, unwind workers */
+        ctx->gc_running = false;
+        pthread_cond_destroy(&ctx->gc_cond);
+        pthread_mutex_destroy(&ctx->gc_mutex);
+        rollback_started_workers(ctx, FTL_NUM_WORKERS);
+        return HFSSS_ERR_INVAL;
+    }
     ftl_mt_gc_mutex_ptr = &ctx->gc_mutex;
-    ftl_mt_gc_cond_ptr  = &ctx->gc_cond;
+    ftl_mt_gc_cond_ptr = &ctx->gc_cond;
 
     /* Start WL/Read Disturb background thread */
     ctx->wl_running = true;
-    pthread_create(&ctx->wl_thread, NULL, wl_thread_main, ctx);
+    int wl_rc = pthread_create(&ctx->wl_thread, NULL, wl_thread_main, ctx);
+    if (wl_rc != 0) {
+        /* WL failed: stop GC first (signal cond to unblock), then workers */
+        ctx->wl_running = false;
+        ctx->gc_running = false;
+        pthread_mutex_lock(&ctx->gc_mutex);
+        pthread_cond_signal(&ctx->gc_cond);
+        pthread_mutex_unlock(&ctx->gc_mutex);
+        pthread_join(ctx->gc_thread, NULL);
+        ftl_mt_gc_mutex_ptr = NULL;
+        ftl_mt_gc_cond_ptr = NULL;
+        pthread_cond_destroy(&ctx->gc_cond);
+        pthread_mutex_destroy(&ctx->gc_mutex);
+        rollback_started_workers(ctx, FTL_NUM_WORKERS);
+        return HFSSS_ERR_INVAL;
+    }
 
     return HFSSS_OK;
 }
 
 void ftl_mt_stop(struct ftl_mt_ctx *ctx)
 {
-    if (!ctx) return;
+    if (!ctx)
+        return;
 
     /* Stop GC thread */
     if (ctx->gc_running) {
@@ -237,7 +272,7 @@ void ftl_mt_stop(struct ftl_mt_ctx *ctx)
         pthread_cond_signal(&ctx->gc_cond);
         pthread_join(ctx->gc_thread, NULL);
         ftl_mt_gc_mutex_ptr = NULL;
-        ftl_mt_gc_cond_ptr  = NULL;
+        ftl_mt_gc_cond_ptr = NULL;
         pthread_mutex_destroy(&ctx->gc_mutex);
         pthread_cond_destroy(&ctx->gc_cond);
     }
@@ -268,7 +303,8 @@ void ftl_mt_stop(struct ftl_mt_ctx *ctx)
 
 bool ftl_mt_submit(struct ftl_mt_ctx *ctx, const struct io_request *req)
 {
-    if (!ctx || !req) return false;
+    if (!ctx || !req)
+        return false;
 
     /* Route by LBA to worker: worker_id = lba % NUM_WORKERS */
     u32 wid = (u32)(req->lba % FTL_NUM_WORKERS);
@@ -282,10 +318,10 @@ bool ftl_mt_submit(struct ftl_mt_ctx *ctx, const struct io_request *req)
     return true;
 }
 
-bool ftl_mt_poll_completion(struct ftl_mt_ctx *ctx,
-                            struct io_completion *out)
+bool ftl_mt_poll_completion(struct ftl_mt_ctx *ctx, struct io_completion *out)
 {
-    if (!ctx || !out) return false;
+    if (!ctx || !out)
+        return false;
 
     /* Round-robin poll all workers for completions */
     for (int i = 0; i < FTL_NUM_WORKERS; i++) {
