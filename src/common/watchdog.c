@@ -165,7 +165,14 @@ int watchdog_feed(struct watchdog_ctx *ctx, int task_id)
     pthread_mutex_lock(&ctx->mutex);
 
     struct watchdog_task *task = &ctx->tasks[task_id];
-    if (task->state != WATCHDOG_TASK_ACTIVE) {
+    /* Accept feeds for ACTIVE and TIMEOUT tasks. A TIMEOUT task being
+     * fed is the recovery path: the task is signalling that it has
+     * woken up and wants to resume. The old code rejected every
+     * non-ACTIVE task up front, making the TIMEOUT -> ACTIVE transition
+     * on the line below unreachable. INACTIVE tasks still cannot be
+     * fed -- they must be enabled first. */
+    if (task->state != WATCHDOG_TASK_ACTIVE &&
+        task->state != WATCHDOG_TASK_TIMEOUT) {
         pthread_mutex_unlock(&ctx->mutex);
         return HFSSS_ERR_NOENT;
     }

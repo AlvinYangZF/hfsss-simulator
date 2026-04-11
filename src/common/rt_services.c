@@ -192,16 +192,26 @@ int trace_ring_write(struct trace_ring *ring, enum trace_level level,
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 
-    /* Atomic-ish slot acquisition using __sync built-ins */
-    uint32_t seq = __sync_fetch_and_add(&ring->write_idx, 1);
-    uint32_t slot = seq % TRACE_RING_CAPACITY;
-
-    /* Check for overrun: if consumer hasn't caught up, increment dropped */
-    uint32_t pending = seq - ring->read_idx;
-    if (pending >= TRACE_RING_CAPACITY) {
-        __sync_fetch_and_add(&ring->dropped, 1);
-        return HFSSS_ERR_NOSPC;
+    /* Claim a slot using a CAS loop. The previous implementation did
+     * an unconditional fetch_and_add on write_idx and only then checked
+     * fullness, which left write_idx advanced even when the write was
+     * rejected as NOSPC -- making trace_ring_pending() report more
+     * entries than were actually committed. */
+    uint32_t seq;
+    for (;;) {
+        uint32_t w = __sync_fetch_and_add(&ring->write_idx, 0);
+        uint32_t r = __sync_fetch_and_add(&ring->read_idx, 0);
+        if ((w - r) >= TRACE_RING_CAPACITY) {
+            __sync_fetch_and_add(&ring->dropped, 1);
+            return HFSSS_ERR_NOSPC;
+        }
+        if (__sync_bool_compare_and_swap(&ring->write_idx, w, w + 1)) {
+            seq = w;
+            break;
+        }
+        /* Raced with another writer; retry */
     }
+    uint32_t slot = seq % TRACE_RING_CAPACITY;
 
     struct trace_entry *e = &ring->entries[slot];
     e->timestamp_ns = now;

@@ -37,7 +37,10 @@ struct log_lock {
 
 int log_init(struct log_ctx *ctx, u32 buffer_size, u32 level)
 {
-    if (!ctx) {
+    if (!ctx || buffer_size == 0) {
+        /* A zero-size ring buffer is not valid: log_printf() would later
+         * divide by buffer_size to compute head/tail, producing UB. Reject
+         * it at init time instead of building a broken context. */
         return HFSSS_ERR_INVAL;
     }
 

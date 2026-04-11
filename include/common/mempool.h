@@ -7,7 +7,9 @@
 extern "C" {
 #endif
 
-/* Memory Pool Block */
+/* Memory Pool Block Metadata.
+ * Kept in a parallel array, NOT embedded in user memory, so that
+ * user writes to allocated blocks cannot corrupt allocator state. */
 struct mem_block {
     struct mem_block *next;
     int in_use;
@@ -19,7 +21,8 @@ struct mem_pool {
     u32 block_count;
     u32 free_count;
     u32 used_count;
-    void *memory;
+    void *memory;               /* user data area: block_count * block_size */
+    struct mem_block *blocks;   /* metadata array: block_count entries */
     struct mem_block *free_list;
     void *lock;
     u64 alloc_count;

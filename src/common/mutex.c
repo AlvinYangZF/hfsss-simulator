@@ -1,5 +1,7 @@
 #include "common/mutex.h"
+#include <errno.h>
 #include <pthread.h>
+#include <time.h>
 
 struct mutex_lock {
     pthread_mutex_t mutex;
@@ -65,19 +67,51 @@ int mutex_trylock(struct mutex *mtx)
     }
 }
 
+static u64 mutex_now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000000000ULL + (u64)ts.tv_nsec;
+}
+
 int mutex_lock(struct mutex *mtx, u64 timeout_ns)
 {
     if (!mtx) {
         return HFSSS_ERR_INVAL;
     }
 
-    (void)timeout_ns; /* pthread mutex doesn't support timed lock easily with recursive */
-
     struct mutex_lock *lock = (struct mutex_lock *)mtx->lock;
-    pthread_mutex_lock(&lock->mutex);
-    mtx->lock_count++;
 
-    return HFSSS_OK;
+    /* timeout_ns == 0 preserves the original blocking-forever semantics. */
+    if (timeout_ns == 0) {
+        pthread_mutex_lock(&lock->mutex);
+        mtx->lock_count++;
+        return HFSSS_OK;
+    }
+
+    /* Timed path: trylock in a short-sleep loop. pthread_mutex_timedlock
+     * is not portable (absent on macOS), and we need to keep the mutex
+     * recursive, so emulate via trylock + nanosleep. Poll resolution is
+     * ~100us, good enough for tests and OOB wait-paths. Previously this
+     * function ignored timeout_ns entirely and always blocked, which
+     * silently broke every caller that relied on the timeout budget. */
+    const u64 deadline = mutex_now_ns() + timeout_ns;
+    const struct timespec sleep_step = { .tv_sec = 0, .tv_nsec = 100000 };
+
+    for (;;) {
+        int rc = pthread_mutex_trylock(&lock->mutex);
+        if (rc == 0) {
+            mtx->lock_count++;
+            return HFSSS_OK;
+        }
+        if (rc != EBUSY) {
+            return HFSSS_ERR_IO;
+        }
+        if (mutex_now_ns() >= deadline) {
+            return HFSSS_ERR_BUSY;
+        }
+        nanosleep(&sleep_step, NULL);
+    }
 }
 
 int mutex_unlock(struct mutex *mtx)

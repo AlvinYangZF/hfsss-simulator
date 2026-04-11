@@ -68,7 +68,17 @@ static uint64_t hist_percentile(const uint64_t *hist, uint64_t total, double pct
 {
     if (total == 0)
         return 0;
-    uint64_t target = (uint64_t)(total * pct / 100.0);
+    /* Use ceil, not truncation. For small totals (e.g. total == 1) the old
+     * truncating cast produced target == 0, which made "cum >= target" true
+     * on the first bucket regardless of where the only sample actually
+     * landed, so every percentile returned bucket 0. Floor the result at 1
+     * so we always look for at least one sample. */
+    uint64_t target = (uint64_t)ceil((double)total * pct / 100.0);
+    if (target == 0)
+        target = 1;
+    if (target > total)
+        target = total;
+
     uint64_t cum = 0;
     for (int i = 0; i < PERF_LAT_HIST_BUCKETS; i++) {
         cum += hist[i];
