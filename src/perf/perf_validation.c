@@ -136,7 +136,31 @@ struct worker_state {
     uint64_t                lat_hist[PERF_LAT_HIST_BUCKETS];
     uint64_t                elapsed_ns;
     uint64_t                rng_state;
+    /* Shared cancellation flag set by bench_run on the rollback path
+     * (e.g. when a later pthread_create() fails). Workers consult this
+     * inside the hot loop so they can be terminated promptly without
+     * waiting out the configured duration. The pointer is owned by
+     * bench_run; lifetime ends after pthread_join. */
+    volatile bool          *stop;
 };
+
+/* ------------------------------------------------------------------
+ * Test injection seam for pthread_create
+ *
+ * bench_run() launches workers via this indirection so unit tests can
+ * force pthread_create() failures and verify the rollback path is
+ * fast — independent of the host's actual thread limits. The setter is
+ * intentionally NOT in the public header; tests declare it extern.
+ * Pass NULL to restore the real implementation.
+ * ------------------------------------------------------------------ */
+typedef int (*perf_pthread_create_fn)(pthread_t *, const pthread_attr_t *,
+                                       void *(*)(void *), void *);
+
+static perf_pthread_create_fn g_pthread_create = pthread_create;
+
+void __perf_test_set_pthread_create(perf_pthread_create_fn fn) {
+    g_pthread_create = fn ? fn : pthread_create;
+}
 
 /*
  * Compute simulated per-operation latency in µs for a single IO.
@@ -243,6 +267,12 @@ static void *bench_worker(void *arg) {
 
     uint64_t ops = 0;
     while (ops < max_ops) {
+        /* Cooperative cancellation: bench_run() may flip this on the
+         * rollback path when a sibling pthread_create() fails. The
+         * old code zeroed ws->op_count here, but max_ops was already
+         * snapshotted into a local at startup, so the worker never
+         * noticed — and duration-based runs ran out the full clock. */
+        if (ws->stop && __atomic_load_n(ws->stop, __ATOMIC_ACQUIRE)) break;
         if (end_time && now_ns() >= end_time) break;
 
         bool is_read;
@@ -319,10 +349,16 @@ int bench_run(const struct bench_cfg *cfg, struct bench_result *out) {
     uint64_t base_ops    = cfg->op_count ? (cfg->op_count / nt) : default_ops;
     uint64_t extra_ops   = cfg->op_count ? (cfg->op_count % nt) : 0;
 
+    /* Shared cancellation flag for all workers in this run. Lifetime is
+     * the bench_run() stack frame, which extends past every pthread_join
+     * below, so the workers' pointers always reference live storage. */
+    volatile bool stop_flag = false;
+
     for (uint32_t i = 0; i < nt; i++) {
         ws[i].cfg       = cfg;
         ws[i].op_count  = base_ops + (i < extra_ops ? 1 : 0);
         ws[i].rng_state = 0xDEADBEEF12345678ULL ^ ((uint64_t)i * 0x9E3779B97F4A7C15ULL);
+        ws[i].stop      = &stop_flag;
         if (cfg->duration_s > 0) ws[i].op_count = UINT64_MAX;
     }
 
@@ -336,27 +372,21 @@ int bench_run(const struct bench_cfg *cfg, struct bench_result *out) {
     }
 
     int create_rc = 0;
-    uint32_t created = 0;
     for (uint32_t i = 0; i < nt; i++) {
-        int prc = pthread_create(&threads[i], NULL, bench_worker, &ws[i]);
+        int prc = g_pthread_create(&threads[i], NULL, bench_worker, &ws[i]);
         if (prc != 0) {
             create_rc = prc;
             break;
         }
         started[i] = true;
-        created++;
     }
 
     if (create_rc != 0) {
-        /* Signal already-started workers to finish by zeroing their
-         * remaining op_count budget — the loop termination checks it
-         * on each iteration. Duration-based runs still exit when the
-         * deadline is reached; those cannot be shortened from outside
-         * without a shared stop flag, so we just join and surface the
-         * failure. */
-        for (uint32_t i = 0; i < created; i++) {
-            ws[i].op_count = 0;
-        }
+        /* Raise the cancellation flag so already-started workers exit
+         * their hot loop on the next iteration instead of waiting out
+         * cfg->duration_s (or running through their op_count budget).
+         * Release pairs with the worker's acquire load. */
+        __atomic_store_n(&stop_flag, true, __ATOMIC_RELEASE);
         for (uint32_t i = 0; i < nt; i++) {
             if (started[i]) pthread_join(threads[i], NULL);
         }

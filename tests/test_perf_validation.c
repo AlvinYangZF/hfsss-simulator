@@ -9,6 +9,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <inttypes.h>
+#include <pthread.h>
+#include <errno.h>
+#include <time.h>
 
 #include "perf/perf_validation.h"
 #include "common/common.h"
@@ -410,6 +413,102 @@ static void test_null_safety(void) {
 }
 
 /* ------------------------------------------------------------------
+ * Test 16: bench_run rollback path fails fast on pthread_create error
+ *
+ * Regression for the case where bench_run() returned the correct error
+ * code but the already-started workers ran out the configured duration
+ * (or op_count budget) before joining. The fix is a shared cancellation
+ * flag the workers consult inside their hot loop. We verify it by
+ * injecting a fake pthread_create() that succeeds for the first worker
+ * and fails for the second, then asserting bench_run() returns long
+ * before duration_s elapses.
+ * ------------------------------------------------------------------ */
+
+/* Test seam exposed by perf_validation.c (intentionally not in the
+ * public header — see the comment near g_pthread_create). */
+typedef int (*perf_pthread_create_fn)(pthread_t *, const pthread_attr_t *,
+                                       void *(*)(void *), void *);
+extern void __perf_test_set_pthread_create(perf_pthread_create_fn fn);
+
+static int g_create_calls = 0;
+static int g_create_fail_after = 0;  /* fail when calls exceed this count */
+
+static int failing_pthread_create(pthread_t *t, const pthread_attr_t *a,
+                                   void *(*start)(void *), void *arg) {
+    g_create_calls++;
+    if (g_create_calls > g_create_fail_after) {
+        return EAGAIN;
+    }
+    return pthread_create(t, a, start, arg);
+}
+
+static uint64_t test_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+}
+
+static void test_bench_run_create_fail_fast(void) {
+    separator("bench_run pthread_create-failure rollback fails fast");
+
+    /* Duration-based config: without the cancellation flag, an
+     * already-started worker would run the full duration_s before its
+     * loop exits, defeating any rollback attempt. */
+    struct bench_cfg cfg = {
+        .workload       = BENCH_RAND_READ,
+        .block_size     = 4096,
+        .queue_depth    = 1,
+        .duration_s     = 5,        /* would block 5s without the fix */
+        .op_count       = 0,
+        .num_threads    = 4,        /* fail on the 2nd of 4 */
+        .capacity_bytes = 64ULL * 1024 * 1024,
+    };
+
+    g_create_calls = 0;
+    g_create_fail_after = 1;        /* let #1 succeed, fail #2 */
+    __perf_test_set_pthread_create(failing_pthread_create);
+
+    struct bench_result res;
+    uint64_t t0 = test_now_ms();
+    int rc = bench_run(&cfg, &res);
+    uint64_t elapsed_ms = test_now_ms() - t0;
+
+    __perf_test_set_pthread_create(NULL); /* restore real pthread_create */
+
+    TEST_ASSERT(rc != HFSSS_OK,
+                "bench_run returns error when a worker create fails");
+    TEST_ASSERT(g_create_calls == 2,
+                "bench_run attempted exactly 2 creates (1 ok + 1 fail)");
+    TEST_ASSERT(elapsed_ms < 1000,
+                "rollback fails fast (< 1s) instead of waiting out duration");
+
+    /* Sanity: also exercise count-based mode. With the old behavior the
+     * already-started worker would still drain its op_count budget. */
+    g_create_calls = 0;
+    g_create_fail_after = 0;        /* fail on the very first create */
+    __perf_test_set_pthread_create(failing_pthread_create);
+
+    struct bench_cfg cfg_count = {
+        .workload       = BENCH_RAND_READ,
+        .block_size     = 4096,
+        .queue_depth    = 1,
+        .op_count       = 1000000,  /* large budget to amplify the bug */
+        .num_threads    = 2,
+        .capacity_bytes = 64ULL * 1024 * 1024,
+    };
+    t0 = test_now_ms();
+    rc = bench_run(&cfg_count, &res);
+    elapsed_ms = test_now_ms() - t0;
+
+    __perf_test_set_pthread_create(NULL);
+
+    TEST_ASSERT(rc != HFSSS_OK,
+                "bench_run errors when first create fails");
+    TEST_ASSERT(elapsed_ms < 500,
+                "no started workers means immediate return");
+}
+
+/* ------------------------------------------------------------------
  * main
  * ------------------------------------------------------------------ */
 int main(void) {
@@ -446,6 +545,8 @@ int main(void) {
     test_report_print_no_crash();
     printf("\n");
     test_null_safety();
+    printf("\n");
+    test_bench_run_create_fail_fast();
 
     printf("\n========================================\n");
     printf("Total: %d  Passed: %d  Failed: %d\n", total, passed, failed);
