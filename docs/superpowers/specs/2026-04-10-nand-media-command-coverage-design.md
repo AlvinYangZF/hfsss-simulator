@@ -31,6 +31,7 @@ The current implementation provides:
 
 - basic NAND geometry and page/block hierarchy in [`include/media/nand.h`](../../../include/media/nand.h)
 - a timing model with coarse `tR`, `tPROG`, and `tERS`-style latency APIs in [`src/media/timing.c`](../../../src/media/timing.c)
+- timing parameter structs that already carry more detailed fields such as `tCCS`, `tADL`, `tWB`, `tWHR`, and `tRHW`, but those fields are not yet driving command-state behavior in the simulator
 - direct `media_nand_read()`, `media_nand_program()`, and `media_nand_erase()` execution paths in [`src/media/media.c`](../../../src/media/media.c)
 - a thin HAL NAND wrapper in [`include/hal/hal_nand.h`](../../../include/hal/hal_nand.h) and [`src/hal/hal_nand.c`](../../../src/hal/hal_nand.c)
 - EAT tracking and reliability/error-count accounting
@@ -69,7 +70,7 @@ This design uses public standard and public vendor collateral as guidance, with 
 
 - **ONFI 4.2** is the minimum practical baseline for modern enterprise TLC/QLC command behavior and relaxed multi-plane constraints.
 - **ONFI 5.x and 6.0** inform higher-speed interface evolution and more modern host/device interaction assumptions.
-- **JESD230 ONFI/Toggle interoperability guidance** is used to define the Toggle-side “standard-equivalent” behavior rather than inventing a second execution model in phase 1.
+- **JEDEC JESD230** is used as the NAND interface/Toggle-side standards reference that informs the first-pass Toggle-equivalent behavior instead of inventing a second execution model in phase 1.
 
 ### 3.2 Public industry signals used for prioritization
 
@@ -163,9 +164,11 @@ Responsibilities:
 
 ## 6. Standard Command Coverage Model
 
-### 6.1 Priority tiering
+### 6.1 Command coverage classes
 
-#### P0: Foundational standard commands
+These classes describe semantic scope, not implementation order. Implementation order is defined only in [Section 11](#11-phase-plan).
+
+#### C0: Foundational standard commands
 
 - `read`
 - `program`
@@ -180,18 +183,18 @@ Responsibilities:
 - `erase suspend`
 - `erase resume`
 
-#### P1: Standard multi-plane commands
+#### C1: Standard multi-plane commands
 
 - `multi-plane read`
 - `multi-plane program`
 - `multi-plane erase`
 
-#### P2: Standard cache commands
+#### C2: Standard cache commands
 
 - `cache read`
 - `cache program`
 
-#### P3: Future standard/profile-adjacent commands
+#### C3: Future standard/profile-adjacent commands
 
 - `copyback read/program`
 - `set feature`
@@ -201,6 +204,22 @@ Responsibilities:
 ### 6.2 Why multi-plane comes before cache
 
 The current simulator already models planes as explicit geometry objects, so multi-plane is the more structurally natural next capability. It also aligns better with public enterprise TLC/QLC collateral that emphasizes internal parallelism. Cache commands should come after the state machine and multi-plane legality rules are stable.
+
+### 6.3 Read Parameter Page Minimum Contract
+
+The first implementation of `read parameter page` does not need to emulate every standard field, but it must expose a stable minimum contract for tests and profile identity.
+
+The minimum field set is:
+
+- manufacturer ID and device ID
+- bytes per page and spare bytes per page
+- pages per block and blocks per LUN/die where the simulator geometry exposes that distinction
+- planes per die
+- addressing/geometry fields required to derive page/block layout from the active profile
+- ECC requirement or capability advertisement fields
+- standard command capability advertisement that matches the active profile's supported command bitmap
+
+Fields outside that minimum contract may remain profile-defaulted or zero-filled until a later phase needs them.
 
 ---
 
@@ -236,6 +255,8 @@ Each in-flight command should record:
 - plane mask or target plane set
 - result/status snapshot
 
+The command-state object should live on the NAND side, either embedded in `nand_die` or in a dedicated `struct nand_die_cmd_state`. It should **not** be folded into `eat_ctx`. EAT remains the availability/timing accounting surface, while the command-state object owns detailed in-flight execution state.
+
 ### 7.3 Resource ownership
 
 - **channel** owns command/address/data transfer serialization
@@ -243,6 +264,19 @@ Each in-flight command should record:
 - **plane** owns multi-plane address legality and occupancy relationships
 
 This prevents the current model’s oversimplification where a single latency update substitutes for all resource interactions.
+
+### 7.4 Concurrency Model
+
+For phases 1 through 3, the external behavior of `media_nand_*` remains synchronous from the caller's point of view. A call still returns only after the modeled command has reached its defined completion boundary.
+
+Internally:
+
+- channel-level serialization remains the first-order command submission boundary in early phases
+- each die owns a protected in-flight command-state object guarded by a die-level lock or equivalent per-die synchronization primitive
+- plane legality checks run while holding the die command-state lock and any required geometry metadata lock
+- `read status` and `read status enhanced` may be issued concurrently with an in-flight operation, but they must observe a snapshot taken under the same die-level protection that guards the command-state object
+
+This keeps the first implementation thread-safe without forcing an event-loop or lock-free design before the command model is stable.
 
 ---
 
@@ -253,9 +287,12 @@ This prevents the current model’s oversimplification where a single latency up
 - `program suspend` is valid only during `DIE_PROG_ARRAY_BUSY`
 - `erase suspend` is valid only during `DIE_ERASE_ARRAY_BUSY`
 - successful suspend moves the die to `DIE_SUSPENDED_PROG` or `DIE_SUSPENDED_ERASE`
-- a `read` may execute while the die is in a suspended program/erase state
+- a `read` may execute while the die is in a suspended program/erase state only when it targets a different physical page than the suspended operation and does not violate the active profile's same-plane restrictions
+- a `read` targeting the suspended address, or any other profile-forbidden target while suspended, returns a deterministic profile-defined rejection or defer status
 - a `resume` is only legal for the matching suspended command type
 - `reset` aborts any in-flight command and returns the die to a clean state
+
+When `reset` aborts a partially completed `program`, `erase`, or multi-plane command, the affected target pages/blocks must transition to a deterministic simulator-defined invalid outcome. The default design assumption is "not successfully committed" rather than silent partial success.
 
 ### 8.2 Timing implications
 
@@ -305,6 +342,8 @@ The design does **not** require cycle-accurate bus simulation. It does require p
 - multi-plane commands do not look identical to serial single-plane commands
 - future profiles can override meaningful timing points
 
+Phase 1 should implement this as phase-aware latency composition behind the existing synchronous wrappers, not as a full event-driven or cycle-accurate engine. In other words, the simulator needs stage-aware timing semantics first, not a new global timing loop.
+
 ---
 
 ## 10. Profile Model
@@ -320,6 +359,7 @@ Suggested profile dimensions:
 - multi-plane legality rules
 - suspend/resume timing constants
 - parameter-page identity and capability advertisement
+- reset-abort outcome policy for partially completed operations
 
 Initial generic profiles:
 
@@ -329,6 +369,8 @@ Initial generic profiles:
 - `generic_toggle_enterprise_qlc`
 
 These should all share the same command engine and differ only in declarative capability/timing tables unless a later phase proves a real behavioral split is necessary.
+
+The initial storage format should be compile-time C profile tables. YAML or other runtime-loaded profile descriptions can come later if the standard command model proves stable enough to justify externalized profile data.
 
 ---
 
@@ -344,7 +386,7 @@ Deliverables:
 
 Exit criteria:
 
-- every target command is classified as `P0/P1/P2/P3`
+- every target command is classified as `C0/C1/C2/C3`
 - every deferred command has an explicit reason
 
 ### Phase 1: Command Engine Skeleton
@@ -355,11 +397,21 @@ Deliverables:
 - in-flight command context objects
 - execution-phase-aware EAT updates
 - compatibility wrapper path for current `media_nand_*` entry points
+- phase-specific regression coverage for existing synchronous entry points
 
 Exit criteria:
 
 - existing `read/program/erase/reset/status` flow through the new engine
-- existing functional tests still pass with no intended behavior regressions
+- functional compatibility remains unchanged for existing callers: data correctness, page/block state transitions, and error-handling behavior stay equivalent unless a later phase explicitly broadens the command surface
+- timing compatibility remains wrapper-compatible: internal stage timing may become more detailed, but the caller-visible completion boundary and aggregate latency behavior stay equivalent except for documented suspend/status-related deltas introduced in later phases
+- the existing compatibility-sensitive test set continues to pass, at minimum:
+  - `tests/test_media.c`
+  - `tests/test_hal.c`
+  - `tests/test_reliability.c`
+  - `tests/test_ftl_reliability.c`
+  - `tests/test_mt_ftl.c`
+  - `tests/systest_data_integrity.c`
+  - `tests/systest_wear_gc.c`
 
 ### Phase 2: Foundational Standard Commands
 
@@ -375,6 +427,7 @@ Deliverables:
 Exit criteria:
 
 - busy/idle/resetting/suspended states produce deterministic status outputs
+- `read parameter page` exposes the minimum field contract defined in [Section 6.3](#63-read-parameter-page-minimum-contract)
 
 ### Phase 3: Suspend/Resume
 
@@ -387,7 +440,7 @@ Deliverables:
 
 Exit criteria:
 
-- suspended program/erase can be interrupted by read
+- suspended program/erase can be interrupted by legal reads against non-conflicting physical targets
 - resume continues the interrupted command without full restart
 
 ### Phase 4: Multi-Plane Simulation
@@ -432,15 +485,13 @@ Exit criteria:
 
 Deliverables:
 
-- unit tests for every new command
-- state-machine legality tests
-- suspend/resume timing tests
-- multi-plane legality matrix tests
-- compatibility regression tests for existing media behavior
+- cross-phase integration tests that combine status, suspend/resume, and multi-plane behavior
+- broader profile-matrix validation for generic ONFI and generic Toggle-equivalent profiles
+- long-form compatibility regression tests for existing media behavior
 
 Exit criteria:
 
-- each command has success, illegal-state, and edge-case tests
+- each command has success, illegal-state, and edge-case tests by the phase that introduces it
 - standard profiles are covered by at least one focused validation suite
 
 ---
@@ -455,15 +506,19 @@ Exit criteria:
 - **resource tests**: plane/channel/die occupancy conflicts
 - **compatibility tests**: existing media/hal tests still behave as expected
 
+Validation is not deferred until phase 7. Each implementation phase adds the command-specific and compatibility tests needed for that phase, while phase 7 broadens the coverage into cross-phase integration and profile-matrix regression.
+
 ### 12.2 Must-have behavior checks
 
 - suspend only succeeds in legal busy phases
 - resume only succeeds for matching suspended command type
 - reset aborts in-flight commands cleanly
-- read during suspended program/erase is legal
+- read during suspended program/erase is legal only for non-conflicting physical targets allowed by the active profile
 - read during non-suspended program/erase is rejected or deferred according to model
 - multi-plane legality is deterministic and profile-aware
 - `read parameter page` and `read id` expose profile-consistent identity
+
+Command-context plane masks should use a width chosen for realistic simulator geometry, with `u32` sufficient for the expected enterprise TLC/QLC profile set in this phase.
 
 ---
 
@@ -512,7 +567,8 @@ The following decisions are now fixed for this design:
 
 - ONFI specs page: <https://onfi.org/specs.html>
 - ONFI 6.0 final PDF: <https://onfi.org/files/ONFI_6_0_Final.pdf>
-- JESD230 interoperability PDF hosted by ONFI: <https://onfi.org/files/jesd230c-nov2016.pdf>
+- JEDEC NAND landing page: <https://www.jedec.org/standards-documents/focus/flash/nand-flash>
+- JESD230 PDF hosted by ONFI: <https://onfi.org/files/jesd230c-nov2016.pdf>
 - Micron G9 NAND overview: <https://www.micron.com/products/storage/nand-flash/g9-nand>
 - Micron G9 QLC NAND overview: <https://www.micron.com/products/storage/nand-flash/qlc-nand/g9-qlc-nand>
 - Kioxia enterprise SSD built with BiCS8 TLC: <https://americas.kioxia.com/en-us/business/news/2025/ssd-20250515-2.html>
