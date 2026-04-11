@@ -49,11 +49,11 @@ HFSSS already has a useful controller/NVMe foundation:
 The current controller shape is still much closer to a single generic SSD model than to an enterprise controller family:
 
 - no explicit **controller profile** abstraction
-- no first-class distinction between 8-channel, 16-channel, or 16/18-channel controller personas
+- no first-class distinction between 8-channel and 16-channel enterprise controller profiles, or between single-port and dual-port variants
 - no **dual-port** host model
-- no PF/VF or tenant-partitioning model
+- no storage-centric multi-domain or tenant-partitioning model
 - scheduler behavior is materially simpler than public enterprise QoS / arbiter claims
-- no controller-level **ZNS / FDP / SEF / Open Channel** persona split
+- no namespace-scoped **ZNS / FDP** capability model or deferred mode-extension path for **SEF / Open Channel**
 - no controller-level **atomic write** or offload abstraction
 - telemetry, QoS, security, and NAND/media timing are present as separate subsystems rather than one coherent enterprise-controller behavior
 
@@ -62,6 +62,9 @@ The current controller shape is still much closer to a single generic SSD model 
 This design should be read alongside:
 
 - [`2026-04-10-nand-media-command-coverage-design.md`](2026-04-10-nand-media-command-coverage-design.md)
+- [`HLD_01_PCIE_NVMe_EMULATION_EN.md`](../../../docs/HLD_01_PCIE_NVMe_EMULATION_EN.md)
+- [`LLD_18_QOS_DETERMINISM_EN.md`](../../../docs/LLD_18_QOS_DETERMINISM_EN.md)
+- [`LLD_19_SECURITY_ENCRYPTION_EN.md`](../../../docs/LLD_19_SECURITY_ENCRYPTION_EN.md)
 
 The NAND/media design handles command-state and media-side realism. This controller design handles **host-facing policy, persona, and enterprise feature behavior**.
 
@@ -74,7 +77,7 @@ The NAND/media design handles command-state and media-side realism. This control
 Across the three public controller families, the following common signals are strong enough to drive a simulator design:
 
 - PCIe **Gen5 x4** is the baseline host link
-- high NAND parallelism is normal: **8 / 16 / 16-18 channels**
+- high NAND parallelism is normal: **8-channel and 16-channel classes**, with vendor-specific extension beyond that
 - enterprise controllers expose stronger **QoS, latency isolation, and namespace behavior**
 - media and controller behavior are increasingly coupled through **high-speed ONFI/Toggle timing**
 - enterprise deployment modes now routinely include **ZNS** and other placement-aware behavior
@@ -88,13 +91,13 @@ Across the three public controller families, the following common signals are st
 ### 3.2 Vendor-specific emphasis
 
 - **Marvell Bravera SC5**
-  - strongest inputs: 8/16-channel split, dual-port, PF/VF-like partitioning, SLA/QoS, SEF/ZNS/Open Channel flexibility
+  - strongest inputs: 8/16-channel split, dual-port, multi-domain isolation, SLA/QoS, SEF/ZNS/Open Channel flexibility
 
 - **Silicon Motion SM8366**
   - strongest inputs: 16-channel enterprise profile, 1024 queue pairs, 128 namespaces, PerformaShape, FDP, host-based FTL cooperation
 
 - **InnoGrit Tacoma IG5669**
-  - strongest inputs: 16/18-channel coupling to NAND/media profile, ZNS, atomic write, low-latency persona, optional offload behavior
+  - strongest inputs: 16-channel enterprise profile with tight NAND/media coupling, ZNS, atomic write, low-latency persona, optional offload behavior
 
 ### 3.3 What is explicitly out of scope
 
@@ -117,7 +120,7 @@ Those should remain abstract or deferred.
 - introduce a first-class **controller profile** abstraction
 - make controller behavior configurable by enterprise persona instead of one generic default
 - improve namespace-aware scheduling, arbitration, and maintenance interference behavior
-- add host-visible enterprise mode differences such as ZNS and FDP-oriented behavior
+- add host-visible namespace-mode differences such as ZNS and FDP-oriented behavior
 - couple controller timing and policy more tightly to NAND/media profile
 - add controller telemetry and security lifecycle modeling that is coherent at the persona level
 - preserve a compatible baseline path for existing NVMe and controller tests where enterprise features are not enabled
@@ -126,7 +129,7 @@ Those should remain abstract or deferred.
 
 - exact reproduction of Marvell, Silicon Motion, or InnoGrit firmware internals
 - vendor-private command-set emulation in the first implementation
-- SR-IOV, PF/VF, or computational-storage API fidelity beyond public behavior classes
+- SR-IOV-style virtualization fidelity or computational-storage API fidelity beyond public behavior classes
 - cycle-accurate host interface timing
 - full cloud-SSD software stack emulation outside the controller boundary
 
@@ -142,16 +145,16 @@ This layer defines the public controller persona.
 
 Responsibilities:
 
-- define controller class such as:
-  - `gen5_enterprise_8ch`
-  - `gen5_enterprise_16ch`
-  - `gen5_enterprise_16_18ch`
-- define host-facing capability surface:
-  - NVMe version persona
-  - queue/namespace scale
-  - dual-port support
-  - ZNS/FDP/atomic-write availability
+- define stable **orthogonal axes** for controller modeling:
+  - topology
+  - host-visible capability surface
+  - namespace-mode capability matrix
+  - policy bundle
+  - lifecycle bundle
 - define power, latency, and throughput envelopes
+- bind these axes into a concrete shipped profile without collapsing the axes themselves into one monolithic preset
+
+The key rule is: **topology, namespace mode, and policy are separate axes**. A controller profile is a composition of those axes, not a single bag of flags.
 
 ### 5.2 Enterprise Isolation Layer
 
@@ -159,23 +162,41 @@ This layer models how the controller separates workloads and controls latency.
 
 Responsibilities:
 
-- queue arbitration and dispatch policy
+- queue arbitration and dispatch policy across explicit arbitration domains
 - namespace-aware QoS
 - latency target enforcement
-- multi-tenant isolation hooks
+- multi-domain isolation hooks
 - maintenance interference accounting
+
+The initial arbitration domains are:
+
+- admin
+- foreground host I/O
+- metadata and controller housekeeping
+- background maintenance
+- port/path management
+
+This layer owns **how** work is scheduled once a capability is legal. It does not decide which namespace modes are legal or which telemetry fields exist.
 
 ### 5.3 Mode And Placement Layer
 
-This layer represents controller-visible storage modes.
+This layer represents controller-visible **namespace** and placement semantics.
 
 Responsibilities:
 
-- conventional namespace mode
-- ZNS mode
-- FDP-oriented placement behavior
+- conventional namespace semantics
+- ZNS namespace semantics
+- FDP-oriented placement semantics
 - later extension for SEF / Open Channel
-- atomic write capability and failure behavior
+
+This layer defines the host-visible contract for:
+
+- identify data exposed to the host
+- command legality
+- completion semantics
+- namespace-scoped invariants such as zone state and write-pointer behavior
+
+`atomic write` is **not** owned by this layer. It is a command-semantic capability that affects completion and failure behavior across layers.
 
 ### 5.4 Media Coupling Layer
 
@@ -186,6 +207,15 @@ Responsibilities:
 - bind controller profile to NAND/media profile
 - vary controller timing by NAND interface generation and media class
 - express how channel count, ONFI/Toggle generation, and media type affect controller-level performance and latency
+
+This layer owns the contract between controller and NAND/media. It must define:
+
+- timing vectors the controller may consume
+- legality/capability feed from media to controller
+- suspend/status snapshot surfaces exposed upward from media
+- reset-abort and media-error propagation semantics
+
+This layer does **not** override host-visible capability surfaces on its own; it feeds timing and legality into the higher controller layers.
 
 ### 5.5 Enterprise Lifecycle Layer
 
@@ -199,6 +229,27 @@ Responsibilities:
 - maintenance-state visibility
 - optional offload / in-storage-compute abstraction in later phases
 
+This layer must be defined as an explicit controller lifecycle and recovery state machine rather than a loose collection of features.
+
+### 5.6 Layer Ownership And Precedence
+
+The layers above are not peers. Conflict resolution must follow a fixed order:
+
+1. **Lifecycle layer**
+   - global safety gates
+   - boot / failed / recovering / sanitize / crypto-erase / failover states
+2. **Mode and placement layer**
+   - namespace legality
+   - host-visible command and identify semantics
+3. **Controller profile layer**
+   - topology, scale limits, and capability envelopes
+4. **Enterprise isolation layer**
+   - arbitration, QoS, and maintenance prioritization within legal work
+5. **Media coupling layer**
+   - latency, legality refinement, and error propagation from NAND/media
+
+This prevents capability gating, maintenance throttling, and media-derived timing from turning into scattered special cases.
+
 ---
 
 ## 6. Controller Capability Model
@@ -207,36 +258,42 @@ Responsibilities:
 
 The first controller-profile abstraction should at minimum define:
 
+- `profile_version`
 - `profile_name`
 - `pcie_gen`
 - `pcie_lane_width`
-- `nvme_version_persona`
+- `port_topology`
+- `port_count`
+- `lanes_per_port`
+- `identify_ctrl_surface`
+- `identify_ns_surface`
+- `command_set_bitmap`
+- `feature_bitmap`
+- `log_page_bitmap`
 - `channel_count`
 - `namespace_limit`
 - `queue_pair_limit`
 - `supports_dual_port`
-- `supports_zns`
-- `supports_fdp`
 - `supports_atomic_write`
-- `supports_pf_vf_partitioning`
+- `supports_multi_domain_partitioning`
 - `supports_offload`
+- `namespace_mode_matrix`
 - `latency_envelope`
 - `bandwidth_envelope`
 - `power_envelope`
-- `telemetry_class`
-- `security_class`
+- `telemetry_families`
+- `telemetry_sampling_contract`
+- `security_lifecycle_class`
 - `nand_media_profile_ref`
+- `maintenance_service_class`
 
 ### 6.2 Initial persona set
 
 The first wave should define generic personas rather than vendor-branded replicas:
 
-- `generic_gen5_enterprise_8ch`
-- `generic_gen5_enterprise_16ch`
-- `generic_gen5_enterprise_16_18ch`
+- `generic_gen5_enterprise_8ch_single_port`
+- `generic_gen5_enterprise_16ch_single_port`
 - `generic_gen5_enterprise_16ch_dual_port`
-- `generic_gen5_enterprise_zns`
-- `generic_gen5_enterprise_fdp`
 
 Vendor-inspired presets can then map onto these generic personas:
 
@@ -244,9 +301,102 @@ Vendor-inspired presets can then map onto these generic personas:
 - SM8366-inspired profile family
 - Tacoma-inspired profile family
 
+Namespace-mode capability is layered on top of those personas through `namespace_mode_matrix`, not by creating device-wide `zns` or `fdp` controller identities.
+
 ### 6.3 Why generic personas come first
 
 The public data is sufficient to justify **behavior classes**, but not sufficient to justify faithful vendor replication. Generic personas avoid fake precision while still letting HFSSS simulate meaningful enterprise-controller differences.
+
+### 6.4 Port And Path Model
+
+Dual-port must be modeled as a path-state system, not just as port contention.
+
+The minimum path states are:
+
+- `PATH_ACTIVE_OPTIMIZED`
+- `PATH_ACTIVE_NONOPTIMIZED`
+- `PATH_STANDBY`
+- `PATH_FAILING_OVER`
+- `PATH_FAILED`
+
+Path state is host-visible through telemetry and affects queue admission, ownership, and failover behavior.
+
+The minimum path transitions that must be explicit are:
+
+- optimized path degraded to non-optimized after ownership change or controlled failover
+- active path to failing-over when path loss or controller-side fault is detected
+- failing-over to active/non-optimized or failed depending on recovery outcome
+- standby to active/non-optimized when takeover succeeds
+
+The first implementation does not need ANA-perfect emulation, but it must preserve deterministic path-state transitions and machine-readable readback.
+
+### 6.5 Namespace Mode Matrix
+
+The namespace-mode contract is namespace-scoped, not controller-wide.
+
+The first implementation should support a matrix such as:
+
+- conventional namespaces allowed
+- ZNS namespaces allowed
+- FDP-enabled namespaces allowed
+- coexistence rules between those namespace classes
+
+This allows one controller persona to expose mixed conventional and ZNS/FDP namespaces where the active capability set permits it.
+
+### 6.6 Controller-To-FTL And Application Contract
+
+The controller simulator must define what it owns versus what the FTL/application layers own.
+
+Controller-owned contracts:
+
+- identify and capability exposure
+- host-visible command legality
+- completion status and ordering guarantees
+- atomic-write completion/failure semantics
+- namespace-mode invariants visible to the host
+
+FTL/application-owned contracts:
+
+- physical placement algorithms
+- persistent zone bookkeeping implementation
+- placement-policy realization behind FDP-like hints
+- metadata persistence and recovery details
+
+Shared contract:
+
+- zone-state transitions
+- write-pointer updates
+- reset-abort outcome propagation
+- media error to completion mapping
+- placement-hint to media execution bridge
+
+This keeps ZNS/FDP from becoming decorative labels or from swallowing FTL responsibility into controller code.
+
+### 6.7 Controller Lifecycle And Recovery State Model
+
+The lifecycle layer must be represented as an explicit state machine with named states and externally visible transitions.
+
+The minimum controller lifecycle states are:
+
+- `CTRL_BOOTSTRAPPING`
+- `CTRL_READY`
+- `CTRL_DEGRADED`
+- `CTRL_FAILING_OVER`
+- `CTRL_RECOVERING`
+- `CTRL_SANITIZING`
+- `CTRL_LOCKED_DOWN`
+- `CTRL_FAILED`
+
+The first implementation must define deterministic entry conditions and externally visible effects for at least:
+
+- cold boot to ready
+- firmware authentication failure to locked-down or failed
+- path or controller fault to degraded or failing-over
+- recovery completion back to ready or degraded
+- sanitize or crypto-erase entry and completion
+- fatal unrecoverable fault to failed
+
+This state machine owns controller-wide safety gates. Queue admission, maintenance execution, telemetry visibility, and security-sensitive command legality must all respect the active lifecycle state.
 
 ---
 
@@ -272,24 +422,26 @@ Primary public inputs:
 
 ### 7.2 Dual-Port And Tenant Isolation
 
-Dual-port is public for Marvell and SM8366. Tenant isolation is strongly implied by PF/VF and namespace/QoS claims.
+Dual-port is public for Marvell and SM8366. Tenant isolation is strongly implied by multi-function and namespace/QoS claims.
 
 The simulator should therefore support:
 
 - optional dual-port host persona
-- queue ownership and contention between host ports
+- queue ownership and contention between host paths
 - namespace and controller-resource partitioning
-- later PF/VF-style partition abstraction
+- later multi-domain or multi-function partition abstraction
+
+The terminology should stay storage-centric. This design should avoid importing a NIC-style PF/VF mental model unless later public evidence requires it.
 
 ### 7.3 Mode And Placement Personas
 
-Controller mode differences should be explicit, not hidden inside namespace metadata.
+Namespace-mode differences should be explicit, but they should remain namespace-scoped rather than controller-wide.
 
 Required early behaviors:
 
 - conventional namespace mode
-- ZNS persona
-- FDP-oriented placement persona
+- ZNS namespace support
+- FDP-oriented placement support
 
 Deferred behaviors:
 
@@ -327,6 +479,53 @@ The model should expose:
 - health and telemetry counters
 - maintenance and reliability event visibility
 
+The telemetry surface should be broken into explicit families:
+
+- health
+- error
+- endurance and wear
+- thermal and power
+- maintenance
+- port/path
+- QoS and latency
+
+### 7.6 Maintenance Service Model
+
+Maintenance must be a first-class controller service class, not just an interference note.
+
+The first named maintenance operations are:
+
+- garbage collection
+- wear leveling
+- media scan / refresh
+- rebuild or parity recovery
+- metadata scrub or checkpoint work
+
+For each service class, the design must define:
+
+- whether it is preemptible by host I/O
+- which arbitration domain it belongs to
+- which telemetry counters it updates
+- whether it may be paused or degraded during failover or security transitions
+
+### 7.7 External Observability Contract
+
+Every state introduced by this design must have a machine-readable readback path.
+
+The minimum external observability contract must expose:
+
+- active controller profile id and version
+- namespace-mode matrix currently enabled
+- path state per host path
+- queue depth and dispatch counters
+- SLA violation counters and latency histogram window
+- maintenance service states
+- secure boot and firmware-protection state
+- key lifecycle state
+- active NAND/media profile reference
+
+The first implementation may expose this through an OOB or debug API. Later phases may map parts of it onto NVMe telemetry and log pages, but the observability contract must exist from the beginning.
+
 ---
 
 ## 8. Phase Plan
@@ -338,6 +537,8 @@ Deliverables:
 - controller capability matrix derived from the three research documents
 - generic enterprise persona definitions
 - mapping from vendor-inspired inputs to generic personas
+- capability-to-observable-to-test traceability matrix
+- axis ownership matrix covering topology, mode, policy, lifecycle, and media coupling
 
 Exit criteria:
 
@@ -352,9 +553,10 @@ Exit criteria:
 Deliverables:
 
 - controller profile abstraction
-- generic 8ch / 16ch / 16-18ch persona presets
+- generic 8ch / 16ch persona presets
 - controller configuration path updated to consume a profile instead of only flat defaults
 - compatibility wrapper path for existing controller startup
+- compatibility and migration matrix from current flat configs to the profile model
 
 Exit criteria:
 
@@ -362,51 +564,57 @@ Exit criteria:
 - channel count, queue scale, and enterprise capability flags come from the active profile
 - existing controller and NVMe tests still pass in baseline mode
 
-### Phase 2: Enterprise QoS And Telemetry
+### Phase 2: Namespace Mode And Placement Contract
+
+Deliverables:
+
+- conventional namespace contract
+- ZNS namespace contract
+- FDP-oriented placement contract
+- controller-to-FTL/application contract for namespace-mode behavior
+- initial external observability contract
+
+Exit criteria:
+
+- namespace-mode legality is explicit and machine-testable
+- ZNS/FDP remain namespace-scoped and can coexist with conventional namespaces where the profile allows it
+- baseline personas reject unsupported namespace modes deterministically
+
+### Phase 3: Enterprise QoS, Telemetry, And Maintenance Arbitration
 
 Deliverables:
 
 - stronger namespace-aware scheduling behavior
 - persona-aware latency/QoS policy layer
-- telemetry counters tied to queueing and maintenance state
-- maintenance interference visibility
+- telemetry families and sampling contract
+- maintenance service model and arbitration rules
 
 Exit criteria:
 
-- mixed-load behavior differs across controller personas in a deterministic, testable way
-- telemetry reflects queue pressure, latency, and maintenance state
-
-### Phase 3: Mode And Placement Personas
-
-Deliverables:
-
-- conventional mode and ZNS persona split
-- FDP-oriented placement abstraction
-- profile-driven namespace/placement policy behavior
-
-Exit criteria:
-
-- the active persona can alter host-visible behavior beyond peak throughput
-- ZNS and FDP behaviors are profile-driven, not ad hoc
+- mixed-load behavior differs across controller personas within declared envelope tolerances
+- telemetry reflects queue pressure, latency, maintenance state, and path state using the published schema
+- Phase 3 scheduling behavior is explicitly defined for conventional-mode semantics plus the namespace-mode rules frozen in Phase 2
 
 ### Phase 4: Dual-Port And Enterprise Lifecycle
 
 Deliverables:
 
 - dual-port host model
+- path-state model
 - enterprise security lifecycle state machine
 - firmware protection and key-lifecycle state
 
 Exit criteria:
 
 - dual-port contention and failover behavior are testable
+- lifecycle transitions are machine-readable and tied to explicit queue-admission or command-legality effects
 - security state affects controller behavior in deterministic ways
 
 ### Phase 5: Advanced Enterprise Extensions
 
 Deliverables:
 
-- PF/VF-style tenant partition abstraction
+- multi-domain or multi-function tenant partition abstraction
 - atomic write capability model
 - optional offload / in-storage-compute abstraction
 - deferred mode personas such as SEF or Open Channel where justified
@@ -428,16 +636,63 @@ Exit criteria:
 - **telemetry tests**: queue pressure, maintenance state, and health visibility
 - **security lifecycle tests**: secure boot, key state, firmware protection transitions
 - **compatibility tests**: existing baseline NVMe/controller behavior remains stable when advanced persona features are off
+- **negative and fault-injection tests**: unsupported namespace modes, failover, reset-abort, rollback, power-cycle, and profile mismatch behavior
 
 ### 9.2 Must-Have Checks
 
 - baseline profile preserves today's expected controller behavior
-- 8ch and 16ch personas produce measurably different envelopes
+- 8ch and 16ch personas produce envelope differences under a fixed workload, fixed seed, fixed warm-up, and declared tolerance band
 - dual-port support is persona-gated and testable
-- ZNS/FDP behavior is persona-driven rather than hard-coded globally
+- ZNS/FDP behavior is namespace-scoped and profile-gated rather than hard-coded globally
 - telemetry reflects maintenance and queue pressure
 - security lifecycle changes controller state in observable ways
 - controller timing changes consistently when the underlying NAND/media profile changes
+- unsupported namespace-mode or path-state operations fail with deterministic status and observable counters
+- path failover, key rotation, and reset-abort transitions have explicit observable outcomes
+
+### 9.3 Measurable Acceptance Contract
+
+The terms `deterministic`, `observable`, and `different envelope` must map to explicit pass/fail rules.
+
+Each testable persona feature must define:
+
+- workload shape
+- warm-up duration
+- sampling window
+- fixed seed or deterministic stimulus
+- primary metric
+- comparison baseline
+- pass/fail tolerance
+
+Examples:
+
+- throughput or queue-pressure envelope comparisons use a fixed workload and assert against the profile's declared envelope within a configured tolerance band
+- latency behavior uses fixed histogram windows and named percentiles such as P50/P99/P99.9
+- failover and lifecycle tests assert on explicit state transitions and externally readable counters, not just command success
+
+### 9.4 Observability And Telemetry Schema Contract
+
+The validation plan depends on a stable machine-readable schema.
+
+The first schema must include:
+
+- `profile_id`
+- `profile_version`
+- `namespace_mode_matrix`
+- `path_id`
+- `path_state`
+- `queue_depth_current`
+- `queue_depth_peak`
+- `sla_violation_count`
+- `maintenance_state`
+- `maintenance_op`
+- `latency_histogram_window`
+- `secure_boot_state`
+- `firmware_state`
+- `key_lifecycle_state`
+- `nand_media_profile_ref`
+
+Tests should assert against these named fields rather than ad hoc implementation details.
 
 ---
 
@@ -469,7 +724,7 @@ Mitigation:
 Mitigation:
 
 - split enhancement into profile, QoS, mode, lifecycle, and advanced-extension phases
-- keep PF/VF, offload, and SEF/Open Channel clearly deferred
+- keep multi-domain partitioning, offload, and SEF/Open Channel clearly deferred
 
 ---
 
@@ -480,7 +735,7 @@ The following decisions are fixed for this design:
 - the controller simulator should be organized by **common enterprise capability classes**, not by vendor-specific clone efforts
 - Marvell, SM8366, and Tacoma act as **input sources**, not exact emulation targets
 - generic controller personas come before vendor-inspired presets
-- ZNS and FDP are earlier-priority controller modes than PF/VF or compute offload
+- ZNS and FDP are earlier-priority namespace capabilities than multi-domain partitioning or compute offload
 - controller/media coupling is a design requirement, not a later optimization
 
 ---
