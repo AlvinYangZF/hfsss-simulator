@@ -26,8 +26,8 @@ u64 eat_get_for_plane(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane)
         return 0;
     }
 
-    if (ch >= MAX_CHANNELS || chip >= MAX_CHIPS_PER_CHANNEL ||
-        die >= MAX_DIES_PER_CHIP || plane >= MAX_PLANES_PER_DIE) {
+    if (ch >= MAX_CHANNELS || chip >= MAX_CHIPS_PER_CHANNEL || die >= MAX_DIES_PER_CHIP ||
+        plane >= MAX_PLANES_PER_DIE) {
         return 0;
     }
 
@@ -40,8 +40,7 @@ u64 eat_get_for_die(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die)
         return 0;
     }
 
-    if (ch >= MAX_CHANNELS || chip >= MAX_CHIPS_PER_CHANNEL ||
-        die >= MAX_DIES_PER_CHIP) {
+    if (ch >= MAX_CHANNELS || chip >= MAX_CHIPS_PER_CHANNEL || die >= MAX_DIES_PER_CHIP) {
         return 0;
     }
 
@@ -74,8 +73,7 @@ u64 eat_get_for_channel(struct eat_ctx *ctx, u32 ch)
     return ctx->channel_eat[ch];
 }
 
-u64 eat_get_max(struct eat_ctx *ctx, enum op_type op,
-                u32 ch, u32 chip, u32 die, u32 plane)
+u64 eat_get_max(struct eat_ctx *ctx, enum op_type op, u32 ch, u32 chip, u32 die, u32 plane)
 {
     u64 max_eat = 0;
     u64 eat;
@@ -95,24 +93,27 @@ u64 eat_get_max(struct eat_ctx *ctx, enum op_type op,
         break;
     default:
         eat = eat_get_for_channel(ctx, ch);
-        if (eat > max_eat) max_eat = eat;
+        if (eat > max_eat)
+            max_eat = eat;
         break;
     }
 
     eat = eat_get_for_chip(ctx, ch, chip);
-    if (eat > max_eat) max_eat = eat;
+    if (eat > max_eat)
+        max_eat = eat;
 
     eat = eat_get_for_die(ctx, ch, chip, die);
-    if (eat > max_eat) max_eat = eat;
+    if (eat > max_eat)
+        max_eat = eat;
 
     eat = eat_get_for_plane(ctx, ch, chip, die, plane);
-    if (eat > max_eat) max_eat = eat;
+    if (eat > max_eat)
+        max_eat = eat;
 
     return max_eat;
 }
 
-void eat_update(struct eat_ctx *ctx, enum op_type op,
-                u32 ch, u32 chip, u32 die, u32 plane, u64 duration)
+void eat_update(struct eat_ctx *ctx, enum op_type op, u32 ch, u32 chip, u32 die, u32 plane, u64 duration)
 {
     u64 current_time;
     u64 new_eat;
@@ -121,8 +122,8 @@ void eat_update(struct eat_ctx *ctx, enum op_type op,
         return;
     }
 
-    if (ch >= MAX_CHANNELS || chip >= MAX_CHIPS_PER_CHANNEL ||
-        die >= MAX_DIES_PER_CHIP || plane >= MAX_PLANES_PER_DIE) {
+    if (ch >= MAX_CHANNELS || chip >= MAX_CHIPS_PER_CHANNEL || die >= MAX_DIES_PER_CHIP ||
+        plane >= MAX_PLANES_PER_DIE) {
         return;
     }
 
@@ -155,6 +156,11 @@ void eat_update(struct eat_ctx *ctx, enum op_type op,
     if (new_eat > ctx->plane_eat[ch][chip][die][plane]) {
         ctx->plane_eat[ch][chip][die][plane] = new_eat;
     }
+}
+
+void eat_update_stage(struct eat_ctx *ctx, enum op_type op, u32 ch, u32 chip, u32 die, u32 plane, u64 stage_duration)
+{
+    eat_update(ctx, op, ch, chip, die, plane, stage_duration);
 }
 
 void eat_reset(struct eat_ctx *ctx)

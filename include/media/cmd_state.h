@@ -1,0 +1,70 @@
+#ifndef __HFSSS_NAND_CMD_STATE_H
+#define __HFSSS_NAND_CMD_STATE_H
+
+#include "common/common.h"
+#include "common/mutex.h"
+
+enum nand_die_state {
+    DIE_IDLE = 0,
+    DIE_READ_SETUP,
+    DIE_READ_ARRAY_BUSY,
+    DIE_READ_DATA_XFER,
+    DIE_PROG_SETUP,
+    DIE_PROG_ARRAY_BUSY,
+    DIE_ERASE_SETUP,
+    DIE_ERASE_ARRAY_BUSY,
+    DIE_SUSPENDED_PROG,
+    DIE_SUSPENDED_ERASE,
+    DIE_RESETTING,
+    DIE_STATE_COUNT
+};
+
+enum nand_cmd_phase {
+    CMD_PHASE_NONE = 0,
+    CMD_PHASE_SETUP,
+    CMD_PHASE_ARRAY_BUSY,
+    CMD_PHASE_DATA_XFER,
+    CMD_PHASE_COMPLETE,
+    CMD_PHASE_COUNT
+};
+
+/*
+ * Engine-level opcode enum. Distinct from the hardware-facing enum nand_cmd
+ * in nand.h which encodes raw NAND command bytes.
+ */
+enum nand_cmd_opcode { NAND_OP_READ = 0, NAND_OP_PROG, NAND_OP_ERASE, NAND_OP_RESET, NAND_OP_COUNT };
+
+struct nand_cmd_target {
+    u32 ch;
+    u32 chip;
+    u32 die;
+    u32 plane_mask;
+    u32 block;
+    u32 page;
+};
+
+struct nand_die_cmd_state {
+    enum nand_die_state state;
+    enum nand_cmd_phase phase;
+    enum nand_cmd_opcode opcode;
+    struct nand_cmd_target target;
+    u64 start_ts_ns;
+    u64 phase_start_ts_ns;
+    u64 total_budget_ns;
+    u64 remaining_ns;
+    u32 suspend_count;
+    u64 last_suspend_ts_ns;
+    int result_status;
+    bool in_flight;
+};
+
+void nand_cmd_state_init(struct nand_die_cmd_state *s);
+void nand_cmd_state_reset(struct nand_die_cmd_state *s);
+void nand_cmd_state_begin(struct nand_die_cmd_state *s, enum nand_cmd_opcode op, const struct nand_cmd_target *target,
+                          u64 total_budget_ns);
+void nand_cmd_state_advance_phase(struct nand_die_cmd_state *s, enum nand_cmd_phase next_phase,
+                                  enum nand_die_state next_state);
+void nand_cmd_state_snapshot(const struct nand_die_cmd_state *s, struct nand_die_cmd_state *out);
+void nand_cmd_state_abort(struct nand_die_cmd_state *s, int result_status);
+
+#endif /* __HFSSS_NAND_CMD_STATE_H */

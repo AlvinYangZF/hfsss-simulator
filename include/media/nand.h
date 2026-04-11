@@ -3,6 +3,7 @@
 
 #include "common/common.h"
 #include "common/mutex.h"
+#include "media/cmd_state.h"
 #include "media/eat.h"
 #include "media/timing.h"
 
@@ -45,7 +46,7 @@ struct nand_page {
     u32 erase_count;
     u32 bit_errors;
     u32 read_count;
-    bool dirty;  /* Dirty flag for incremental checkpointing */
+    bool dirty; /* Dirty flag for incremental checkpointing */
     u8 *data;
     u8 *spare;
 };
@@ -55,7 +56,7 @@ struct nand_block {
     u32 block_id;
     enum block_state state;
     u32 pages_written;
-    bool dirty;  /* Dirty flag for incremental checkpointing */
+    bool dirty; /* Dirty flag for incremental checkpointing */
     struct nand_page *pages;
     u32 page_count;
 };
@@ -74,6 +75,8 @@ struct nand_die {
     struct nand_plane planes[MAX_PLANES_PER_DIE];
     u32 plane_count;
     u64 next_available_ts;
+    struct nand_die_cmd_state cmd_state;
+    struct mutex die_lock;
 };
 
 /* Chip */
@@ -102,15 +105,11 @@ struct nand_device {
 };
 
 /* Function Prototypes */
-int nand_device_init(struct nand_device *dev, u32 channel_count, u32 chips_per_channel,
-                     u32 dies_per_chip, u32 planes_per_die, u32 blocks_per_plane,
-                     u32 pages_per_block, u32 page_size, u32 spare_size);
+int nand_device_init(struct nand_device *dev, u32 channel_count, u32 chips_per_channel, u32 dies_per_chip,
+                     u32 planes_per_die, u32 blocks_per_plane, u32 pages_per_block, u32 page_size, u32 spare_size);
 void nand_device_cleanup(struct nand_device *dev);
-struct nand_page *nand_get_page(struct nand_device *dev, u32 ch, u32 chip, u32 die,
-                                 u32 plane, u32 block, u32 page);
-struct nand_block *nand_get_block(struct nand_device *dev, u32 ch, u32 chip, u32 die,
-                                   u32 plane, u32 block);
-int nand_validate_address(struct nand_device *dev, u32 ch, u32 chip, u32 die,
-                          u32 plane, u32 block, u32 page);
+struct nand_page *nand_get_page(struct nand_device *dev, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page);
+struct nand_block *nand_get_block(struct nand_device *dev, u32 ch, u32 chip, u32 die, u32 plane, u32 block);
+int nand_validate_address(struct nand_device *dev, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page);
 
 #endif /* __HFSSS_NAND_H */

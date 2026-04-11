@@ -2,10 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int nand_init_hierarchy(struct nand_device *dev, u32 channel_count,
-                                 u32 chips_per_channel, u32 dies_per_chip,
-                                 u32 planes_per_die, u32 blocks_per_plane,
-                                 u32 pages_per_block, u32 page_size, u32 spare_size)
+static int nand_init_hierarchy(struct nand_device *dev, u32 channel_count, u32 chips_per_channel, u32 dies_per_chip,
+                               u32 planes_per_die, u32 blocks_per_plane, u32 pages_per_block, u32 page_size,
+                               u32 spare_size)
 {
     u32 ch, chip, die, plane, block;
 
@@ -36,6 +35,13 @@ static int nand_init_hierarchy(struct nand_device *dev, u32 channel_count,
                 nand_die->die_id = die;
                 nand_die->plane_count = planes_per_die;
                 nand_die->next_available_ts = 0;
+                nand_cmd_state_init(&nand_die->cmd_state);
+                {
+                    int die_ret = mutex_init(&nand_die->die_lock);
+                    if (die_ret != HFSSS_OK) {
+                        return die_ret;
+                    }
+                }
 
                 for (plane = 0; plane < planes_per_die; plane++) {
                     struct nand_plane *nand_plane = &nand_die->planes[plane];
@@ -98,20 +104,16 @@ static int nand_init_hierarchy(struct nand_device *dev, u32 channel_count,
     return HFSSS_OK;
 }
 
-int nand_device_init(struct nand_device *dev, u32 channel_count, u32 chips_per_channel,
-                     u32 dies_per_chip, u32 planes_per_die, u32 blocks_per_plane,
-                     u32 pages_per_block, u32 page_size, u32 spare_size)
+int nand_device_init(struct nand_device *dev, u32 channel_count, u32 chips_per_channel, u32 dies_per_chip,
+                     u32 planes_per_die, u32 blocks_per_plane, u32 pages_per_block, u32 page_size, u32 spare_size)
 {
     if (!dev) {
         return HFSSS_ERR_INVAL;
     }
 
-    if (channel_count > MAX_CHANNELS ||
-        chips_per_channel > MAX_CHIPS_PER_CHANNEL ||
-        dies_per_chip > MAX_DIES_PER_CHIP ||
-        planes_per_die > MAX_PLANES_PER_DIE ||
-        blocks_per_plane > MAX_BLOCKS_PER_PLANE ||
-        pages_per_block > MAX_PAGES_PER_BLOCK) {
+    if (channel_count > MAX_CHANNELS || chips_per_channel > MAX_CHIPS_PER_CHANNEL ||
+        dies_per_chip > MAX_DIES_PER_CHIP || planes_per_die > MAX_PLANES_PER_DIE ||
+        blocks_per_plane > MAX_BLOCKS_PER_PLANE || pages_per_block > MAX_PAGES_PER_BLOCK) {
         return HFSSS_ERR_INVAL;
     }
 
@@ -122,9 +124,8 @@ int nand_device_init(struct nand_device *dev, u32 channel_count, u32 chips_per_c
     dev->eat = NULL;
 
     /* Initialize NAND hierarchy */
-    return nand_init_hierarchy(dev, channel_count, chips_per_channel,
-                                dies_per_chip, planes_per_die, blocks_per_plane,
-                                pages_per_block, page_size, spare_size);
+    return nand_init_hierarchy(dev, channel_count, chips_per_channel, dies_per_chip, planes_per_die, blocks_per_plane,
+                               pages_per_block, page_size, spare_size);
 }
 
 static void nand_cleanup_hierarchy(struct nand_device *dev)
@@ -141,6 +142,8 @@ static void nand_cleanup_hierarchy(struct nand_device *dev)
 
             for (die = 0; die < nand_chip->die_count; die++) {
                 struct nand_die *nand_die = &nand_chip->dies[die];
+
+                mutex_cleanup(&nand_die->die_lock);
 
                 for (plane = 0; plane < nand_die->plane_count; plane++) {
                     struct nand_plane *nand_plane = &nand_die->planes[plane];
@@ -175,8 +178,7 @@ void nand_device_cleanup(struct nand_device *dev)
     nand_cleanup_hierarchy(dev);
 }
 
-struct nand_page *nand_get_page(struct nand_device *dev, u32 ch, u32 chip, u32 die,
-                                 u32 plane, u32 block, u32 page)
+struct nand_page *nand_get_page(struct nand_device *dev, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page)
 {
     struct nand_block *blk;
 
@@ -196,8 +198,7 @@ struct nand_page *nand_get_page(struct nand_device *dev, u32 ch, u32 chip, u32 d
     return &blk->pages[page];
 }
 
-struct nand_block *nand_get_block(struct nand_device *dev, u32 ch, u32 chip, u32 die,
-                                   u32 plane, u32 block)
+struct nand_block *nand_get_block(struct nand_device *dev, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 {
     struct nand_channel *channel;
     struct nand_chip *nand_chip;
@@ -235,8 +236,7 @@ struct nand_block *nand_get_block(struct nand_device *dev, u32 ch, u32 chip, u32
     return &nand_plane->blocks[block];
 }
 
-int nand_validate_address(struct nand_device *dev, u32 ch, u32 chip, u32 die,
-                          u32 plane, u32 block, u32 page)
+int nand_validate_address(struct nand_device *dev, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page)
 {
     struct nand_block *blk;
 

@@ -1,0 +1,245 @@
+#include "media/cmd_engine.h"
+
+#include "common/mutex.h"
+#include "media/cmd_legality.h"
+#include "media/cmd_state.h"
+#include "media/eat.h"
+#include "media/nand.h"
+#include "media/timing.h"
+
+static struct nand_die *engine_get_die(struct nand_device *dev, u32 ch, u32 chip, u32 die)
+{
+    if (!dev) {
+        return NULL;
+    }
+    if (ch >= dev->channel_count) {
+        return NULL;
+    }
+    struct nand_channel *channel = &dev->channels[ch];
+    if (chip >= channel->chip_count) {
+        return NULL;
+    }
+    struct nand_chip *nand_chip = &channel->chips[chip];
+    if (die >= nand_chip->die_count) {
+        return NULL;
+    }
+    return &nand_chip->dies[die];
+}
+
+static int plane_index_from_mask(u32 plane_mask, u32 *out)
+{
+    if (plane_mask == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+    if ((plane_mask & (plane_mask - 1)) != 0) {
+        /* The engine currently supports a single plane per command. */
+        return HFSSS_ERR_NOTSUPP;
+    }
+    *out = (u32)__builtin_ctz(plane_mask);
+    return HFSSS_OK;
+}
+
+static enum op_type op_to_eat_op(enum nand_cmd_opcode op)
+{
+    switch (op) {
+    case NAND_OP_READ:
+        return OP_READ;
+    case NAND_OP_PROG:
+        return OP_PROGRAM;
+    case NAND_OP_ERASE:
+        return OP_ERASE;
+    default:
+        return OP_READ;
+    }
+}
+
+static u64 engine_total_budget(struct timing_model *timing, enum nand_cmd_opcode op, u32 page)
+{
+    switch (op) {
+    case NAND_OP_READ:
+        return timing_get_read_latency(timing, page);
+    case NAND_OP_PROG:
+        return timing_get_prog_latency(timing, page);
+    case NAND_OP_ERASE:
+        return timing_get_erase_latency(timing);
+    case NAND_OP_RESET:
+    default:
+        return 0;
+    }
+}
+
+static void engine_wait_until_available(struct eat_ctx *eat, enum op_type op, u32 ch, u32 chip, u32 die, u32 plane)
+{
+    u64 deadline = eat_get_max(eat, op, ch, chip, die, plane);
+    while (get_time_ns() < deadline) {
+        /* Busy spin preserves wait semantics observed by timing-sensitive tests. */
+    }
+}
+
+static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const struct nand_cmd_target *target,
+                         const struct nand_cmd_ops *ops, void *cb_ctx)
+{
+    if (!dev || !dev->eat || !dev->timing || !target) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    u32 plane = 0;
+    int rc = plane_index_from_mask(target->plane_mask, &plane);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+
+    struct nand_die *die = engine_get_die(dev, target->ch, target->chip, target->die);
+    if (!die) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    mutex_lock(&die->die_lock, 0);
+
+    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, op)) {
+        mutex_unlock(&die->die_lock);
+        return HFSSS_ERR_BUSY;
+    }
+
+    enum op_type eat_op = op_to_eat_op(op);
+
+    engine_wait_until_available(dev->eat, eat_op, target->ch, target->chip, target->die, plane);
+
+    u64 total_ns = engine_total_budget(dev->timing, op, target->page);
+    nand_cmd_state_begin(&die->cmd_state, op, target, total_ns);
+
+    u64 setup_ns = 0;
+    u64 array_ns = 0;
+    u64 xfer_ns = 0;
+    nand_cmd_stage_budget(op, total_ns, &setup_ns, &array_ns, &xfer_ns);
+
+    int stage_rc = HFSSS_OK;
+
+    /* Setup stage runs the setup hook first so address/target validation can
+     * reject the command without burning any array/xfer time, matching the
+     * legacy short-circuit where a failed read of an unwritten page consumed
+     * no EAT. */
+    if (ops && ops->on_setup_commit) {
+        stage_rc = ops->on_setup_commit(cb_ctx);
+    }
+    if (stage_rc == HFSSS_OK) {
+        eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, setup_ns);
+    }
+
+    /* Array-busy stage: EAT is committed before the commit hook so the
+     * caller-visible completion boundary is reached at the start of the
+     * array mutation, matching the legacy eat-before-memcpy ordering. */
+    if (stage_rc == HFSSS_OK) {
+        enum nand_die_state next_array_state = nand_cmd_next_state_on_complete(die->cmd_state.state, op);
+        nand_cmd_state_advance_phase(&die->cmd_state, CMD_PHASE_ARRAY_BUSY, next_array_state);
+        eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, array_ns);
+        if (ops && ops->on_array_commit) {
+            stage_rc = ops->on_array_commit(cb_ctx);
+        }
+    }
+
+    /* Data transfer stage is only exercised by the read path today, but the
+     * transition is wired so future opcodes can plug in without engine
+     * changes. */
+    if (stage_rc == HFSSS_OK && op == NAND_OP_READ) {
+        enum nand_die_state next_xfer_state = nand_cmd_next_state_on_complete(die->cmd_state.state, op);
+        nand_cmd_state_advance_phase(&die->cmd_state, CMD_PHASE_DATA_XFER, next_xfer_state);
+        eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, xfer_ns);
+        if (ops && ops->on_data_xfer_commit) {
+            stage_rc = ops->on_data_xfer_commit(cb_ctx);
+        }
+    }
+
+    /* Drive the die back to IDLE regardless of commit status so a failed
+     * hook does not strand the die. */
+    die->cmd_state.result_status = stage_rc;
+    die->cmd_state.in_flight = false;
+    die->cmd_state.phase = CMD_PHASE_COMPLETE;
+    die->cmd_state.state = DIE_IDLE;
+
+    mutex_unlock(&die->die_lock);
+    return stage_rc;
+}
+
+int nand_cmd_engine_init(struct nand_device *dev, struct eat_ctx *eat, struct timing_model *timing)
+{
+    if (!dev) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (eat) {
+        dev->eat = eat;
+    }
+    if (timing) {
+        dev->timing = timing;
+    }
+    return HFSSS_OK;
+}
+
+void nand_cmd_engine_cleanup(struct nand_device *dev)
+{
+    (void)dev;
+}
+
+int nand_cmd_engine_submit_read(struct nand_device *dev, const struct nand_cmd_target *target,
+                                const struct nand_cmd_ops *ops, void *cb_ctx)
+{
+    return engine_submit(dev, NAND_OP_READ, target, ops, cb_ctx);
+}
+
+int nand_cmd_engine_submit_program(struct nand_device *dev, const struct nand_cmd_target *target,
+                                   const struct nand_cmd_ops *ops, void *cb_ctx)
+{
+    return engine_submit(dev, NAND_OP_PROG, target, ops, cb_ctx);
+}
+
+int nand_cmd_engine_submit_erase(struct nand_device *dev, const struct nand_cmd_target *target,
+                                 const struct nand_cmd_ops *ops, void *cb_ctx)
+{
+    return engine_submit(dev, NAND_OP_ERASE, target, ops, cb_ctx);
+}
+
+int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_target *target)
+{
+    if (!dev || !target) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nand_die *die = engine_get_die(dev, target->ch, target->chip, target->die);
+    if (!die) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    mutex_lock(&die->die_lock, 0);
+
+    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, NAND_OP_RESET)) {
+        mutex_unlock(&die->die_lock);
+        return HFSSS_ERR_BUSY;
+    }
+
+    nand_cmd_state_begin(&die->cmd_state, NAND_OP_RESET, target, 0);
+    die->cmd_state.state = DIE_IDLE;
+    die->cmd_state.phase = CMD_PHASE_COMPLETE;
+    die->cmd_state.in_flight = false;
+    die->cmd_state.result_status = HFSSS_OK;
+
+    mutex_unlock(&die->die_lock);
+    return HFSSS_OK;
+}
+
+int nand_cmd_engine_snapshot(struct nand_device *dev, const struct nand_cmd_target *target,
+                             struct nand_die_cmd_state *out)
+{
+    if (!dev || !target || !out) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nand_die *die = engine_get_die(dev, target->ch, target->chip, target->die);
+    if (!die) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    mutex_lock(&die->die_lock, 0);
+    nand_cmd_state_snapshot(&die->cmd_state, out);
+    mutex_unlock(&die->die_lock);
+    return HFSSS_OK;
+}
