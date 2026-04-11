@@ -13,10 +13,21 @@ int mem_pool_init(struct mem_pool *pool, u32 block_size, u32 block_count)
 
     memset(pool, 0, sizeof(*pool));
 
-    /* User data area: exactly block_size per block. Allocator metadata
+    /* Round the per-slot stride up to MEMPOOL_MIN_ALIGN so every block
+     * address is naturally aligned for any standard type. Small
+     * block_size values (e.g. 1) would otherwise hand out addresses
+     * that differ by a single byte, breaking uint64_t / pointer loads
+     * on strict-alignment targets and causing UB everywhere else. */
+    u32 slot_size = (block_size + (MEMPOOL_MIN_ALIGN - 1)) &
+                    ~(u32)(MEMPOOL_MIN_ALIGN - 1);
+
+    /* User data area: exactly slot_size per block. Allocator metadata
      * lives in a parallel blocks[] array so user writes to allocated
-     * memory cannot corrupt allocator state. */
-    u64 total_data = (u64)block_size * block_count;
+     * memory cannot corrupt allocator state. calloc() is guaranteed
+     * to return a pointer suitably aligned for any standard type, so
+     * the base of pool->memory plus any multiple of slot_size also
+     * meets MEMPOOL_MIN_ALIGN. */
+    u64 total_data = (u64)slot_size * block_count;
     pool->memory = calloc(1, total_data);
     if (!pool->memory) {
         return HFSSS_ERR_NOMEM;
@@ -31,6 +42,7 @@ int mem_pool_init(struct mem_pool *pool, u32 block_size, u32 block_count)
     }
 
     pool->block_size = block_size;
+    pool->slot_size = slot_size;
     pool->block_count = block_count;
     pool->free_count = block_count;
     pool->used_count = 0;
@@ -97,9 +109,10 @@ void *mem_pool_alloc(struct mem_pool *pool)
         pool->free_list = block->next;
         block->in_use = 1;
         block->next = NULL;
-        /* Translate metadata index to user data address */
+        /* Translate metadata index to user data address using slot_size
+         * so every returned pointer is MEMPOOL_MIN_ALIGN-aligned. */
         u32 idx = (u32)(block - pool->blocks);
-        ptr = (char *)pool->memory + (u64)idx * pool->block_size;
+        ptr = (char *)pool->memory + (u64)idx * pool->slot_size;
         pool->free_count--;
         pool->used_count++;
         pool->alloc_count++;
@@ -115,17 +128,20 @@ void mem_pool_free(struct mem_pool *pool, void *ptr)
         return;
     }
 
-    /* Check if pointer is within pool memory and block-aligned */
+    /* Check if pointer is within pool memory and slot-aligned. The
+     * bounds and offset math use slot_size (the effective stride),
+     * not block_size, so mem_pool_free() still recognises valid
+     * addresses after the alignment round-up. */
     char *base = (char *)pool->memory;
-    char *end  = base + (u64)pool->block_size * pool->block_count;
+    char *end  = base + (u64)pool->slot_size * pool->block_count;
     if ((char *)ptr < base || (char *)ptr >= end) {
         return;
     }
     u64 offset = (char *)ptr - base;
-    if (offset % pool->block_size != 0) {
+    if (offset % pool->slot_size != 0) {
         return;
     }
-    u32 idx = (u32)(offset / pool->block_size);
+    u32 idx = (u32)(offset / pool->slot_size);
 
     struct mempool_lock *lock = (struct mempool_lock *)pool->lock;
     pthread_mutex_lock(&lock->mutex);

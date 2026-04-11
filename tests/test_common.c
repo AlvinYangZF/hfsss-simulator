@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <assert.h>
 #include "common/log.h"
 #include "common/mempool.h"
@@ -146,6 +147,69 @@ static int test_mempool(void)
     }
 
     mem_pool_cleanup(&pool);
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Memory Pool Alignment Regression
+ *
+ * When allocator metadata was moved out-of-band, an earlier version
+ * of this file used raw block_size as the slot stride. That meant
+ * mem_pool_alloc() with block_size=1 could return addresses only one
+ * byte apart — so only one of every MEMPOOL_MIN_ALIGN allocations was
+ * naturally aligned for wider types. Any caller storing a uint64_t or
+ * a pointer in such a block would hit UB. The fix rounds the internal
+ * stride up to MEMPOOL_MIN_ALIGN and uses it for all address math. */
+static int test_mempool_alignment(void)
+{
+    printf("\n=== Memory Pool Alignment Regression ===\n");
+
+    /* Try several small sizes that are NOT multiples of the minimum
+     * alignment. Each must still hand out MEMPOOL_MIN_ALIGN-aligned
+     * pointers for every slot. */
+    const u32 sizes[] = {1, 3, 7, 9, 15, 17};
+    const int n_sizes = (int)(sizeof(sizes) / sizeof(sizes[0]));
+
+    for (int s = 0; s < n_sizes; s++) {
+        struct mem_pool pool;
+        int ret = mem_pool_init(&pool, sizes[s], 32);
+        TEST_ASSERT(ret == HFSSS_OK, "init with small block_size");
+
+        TEST_ASSERT(pool.slot_size >= MEMPOOL_MIN_ALIGN,
+                    "slot_size rounded up to MEMPOOL_MIN_ALIGN");
+        TEST_ASSERT((pool.slot_size % MEMPOOL_MIN_ALIGN) == 0,
+                    "slot_size is a multiple of MEMPOOL_MIN_ALIGN");
+
+        void *ptrs[32];
+        int all_aligned = 1;
+        for (int i = 0; i < 32; i++) {
+            ptrs[i] = mem_pool_alloc(&pool);
+            if (!ptrs[i]) {
+                all_aligned = 0;
+                break;
+            }
+            if (((uintptr_t)ptrs[i] % MEMPOOL_MIN_ALIGN) != 0) {
+                all_aligned = 0;
+                break;
+            }
+        }
+        TEST_ASSERT(all_aligned,
+                    "every alloc is MEMPOOL_MIN_ALIGN-aligned");
+
+        /* round-trip each one to confirm free() still recognises the
+         * address under the new slot_size stride. */
+        for (int i = 0; i < 32; i++) {
+            if (ptrs[i]) {
+                mem_pool_free(&pool, ptrs[i]);
+            }
+        }
+        u32 used, free_c;
+        u64 at, ft;
+        mem_pool_stats(&pool, &used, &free_c, &at, &ft);
+        TEST_ASSERT(used == 0, "all slots freed after round-trip");
+
+        mem_pool_cleanup(&pool);
+    }
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
@@ -531,6 +595,7 @@ int main(void)
     test_log();
     test_assert();
     test_mempool();
+    test_mempool_alignment();
     test_msgqueue();
     test_semaphore();
     test_mutex();
