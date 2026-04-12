@@ -1288,6 +1288,111 @@ static int test_cmd_phase4_multi_plane(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* PR #75 review fix coverage */
+static int test_pr75_review_fixes(void)
+{
+    printf("\n=== PR #75 Review Fix Coverage ===\n");
+
+    struct media_config config = {
+        .channel_count = 1,
+        .chips_per_channel = 1,
+        .dies_per_chip = 1,
+        .planes_per_die = 1,
+        .blocks_per_plane = 16,
+        .pages_per_block = 16,
+        .page_size = 4096,
+        .spare_size = 64,
+        .nand_type = NAND_TYPE_TLC,
+    };
+
+    struct media_ctx ctx;
+    int ret = media_init(&ctx, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "PR75-fix: media_init succeeds");
+    if (ret != HFSSS_OK) {
+        return TEST_FAIL;
+    }
+
+    /* SM-51: reset during live array-busy (NOT after suspend-ack).
+     * This tests the wider abort sampling window: reset fires while
+     * the worker is in engine_run_array_busy before any suspend. */
+    struct worker_ctx wctx = {.ctx = &ctx, .block = 0, .page = 0, .rc = -1};
+    pthread_t thr;
+    pthread_create(&thr, NULL, prog_worker, &wctx);
+    bool saw_busy = wait_for_state(&ctx, DIE_PROG_ARRAY_BUSY, 5000000000ULL);
+    TEST_ASSERT(saw_busy, "SM-51: observed DIE_PROG_ARRAY_BUSY");
+
+    /* Reset directly without suspending first. */
+    ret = media_nand_reset(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-51: reset during array-busy OK");
+    pthread_join(thr, NULL);
+    TEST_ASSERT(wctx.rc == HFSSS_ERR_BUSY, "SM-51: worker returns BUSY (aborted mid-flight)");
+
+    struct nand_die_cmd_state snap51;
+    nand_cmd_engine_snapshot(ctx.nand, &(struct nand_cmd_target){.ch = 0, .chip = 0, .die = 0, .plane_mask = 1},
+                             &snap51);
+    TEST_ASSERT(snap51.state == DIE_IDLE, "SM-51: state == DIE_IDLE");
+    TEST_ASSERT(snap51.in_flight == false, "SM-51: in_flight false");
+    /* Verify page was NOT committed (reset prevented the commit hook). */
+    u8 rb51[4096];
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 0, 0, rb51, NULL);
+    TEST_ASSERT(ret != HFSSS_OK, "SM-51: aborted PROG did not commit page");
+
+    /* SM-52: read during suspend completes in the suspended window,
+     * not serialized behind the original PROG EAT deadline.
+     * Approach: program on a worker, suspend, then time a read. If the
+     * read were serialized by the PROG EAT, it would take at least
+     * remaining_ns of the suspended PROG. We verify the read completes
+     * in much less time than that. */
+    u8 preprog[4096];
+    memset(preprog, 0x77, sizeof(preprog));
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 1, 0, preprog, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-52: pre-program page for read test");
+
+    wctx = (struct worker_ctx){.ctx = &ctx, .block = 2, .page = 0, .rc = -1};
+    pthread_create(&thr, NULL, prog_worker, &wctx);
+    saw_busy = wait_for_state(&ctx, DIE_PROG_ARRAY_BUSY, 5000000000ULL);
+    ret = media_nand_program_suspend(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-52: suspend OK");
+
+    struct nand_die_cmd_state snap_sus;
+    nand_cmd_engine_snapshot(ctx.nand, &(struct nand_cmd_target){.ch = 0, .chip = 0, .die = 0, .plane_mask = 1},
+                             &snap_sus);
+    u64 remaining_prog = snap_sus.remaining_ns;
+
+    u64 read_start = get_time_ns();
+    u8 rb52[4096];
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 1, 0, rb52, NULL);
+    u64 read_elapsed = get_time_ns() - read_start;
+    TEST_ASSERT(ret == HFSSS_OK, "SM-52: read during suspend succeeds");
+    TEST_ASSERT(rb52[0] == 0x77, "SM-52: read data correct");
+    /* The read must complete MUCH faster than the remaining PROG time.
+     * If it were serialized, read_elapsed >= remaining_prog. We assert
+     * it completes in less than half the remaining PROG budget. */
+    TEST_ASSERT(remaining_prog > 0, "SM-52: remaining_ns positive");
+    TEST_ASSERT(read_elapsed < remaining_prog / 2, "SM-52: read NOT serialized by PROG EAT");
+
+    /* SM-53: reset fully clears enhanced status fields (opcode, target,
+     * timestamps, suspend_count). */
+    struct nand_status_enhanced enh53;
+    ret = media_nand_read_status_enhanced(&ctx, 0, 0, 0, &enh53);
+    /* Die is suspended — status should show suspend state. */
+    TEST_ASSERT(enh53.suspend_count > 0, "SM-53: suspend_count > 0 before reset");
+
+    ret = media_nand_reset(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-53: reset OK");
+    pthread_join(thr, NULL);
+
+    ret = media_nand_read_status_enhanced(&ctx, 0, 0, 0, &enh53);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-53: enhanced status after reset OK");
+    TEST_ASSERT(enh53.state == DIE_IDLE, "SM-53: state == DIE_IDLE");
+    TEST_ASSERT(enh53.suspend_count == 0, "SM-53: suspend_count zeroed by reset");
+    TEST_ASSERT(enh53.start_ts_ns == 0, "SM-53: start_ts_ns zeroed by reset");
+    TEST_ASSERT(enh53.remaining_ns == 0, "SM-53: remaining_ns zeroed by reset");
+
+    media_cleanup(&ctx);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -1310,6 +1415,7 @@ int main(void)
     test_cmd_phase2_commands();
     test_cmd_phase3_suspend_resume();
     test_cmd_phase4_multi_plane();
+    test_pr75_review_fixes();
 
     printf("\n========================================\n");
     printf("Test Summary\n");

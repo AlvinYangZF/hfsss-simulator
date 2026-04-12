@@ -351,7 +351,13 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     if (is_read_during_suspend) {
         mutex_unlock(&die->die_lock);
 
-        engine_wait_until_available_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask);
+        /* Skip the EAT wait: the suspended PROG/ERASE already booked its
+         * full array_ns into EAT, so eat_get_max would return a deadline
+         * in the future that blocks until the PROG/ERASE would have
+         * completed. The ONFI contract says a legal read during suspend
+         * runs in the suspended window, not after the suspended op. The
+         * read's own EAT stages are still committed below so subsequent
+         * operations see the correct timeline. */
 
         if (ops && ops->on_setup_commit) {
             stage_rc = ops->on_setup_commit(cb_ctx);
@@ -381,23 +387,31 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
 
     engine_wait_until_available_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask);
 
+    enum engine_wait_result wait_rc = ENGINE_WAIT_DONE;
+
+    /* Check for abort before each stage so a reset that lands between
+     * nand_cmd_state_begin and the array-busy loop is caught here
+     * instead of allowing the setup/commit hooks to execute on a die
+     * that reset already force-cleaned. */
+    if (atomic_load(&die->cmd_state.abort_request)) {
+        wait_rc = ENGINE_WAIT_ABORT;
+    }
+
     /* Setup stage runs the setup hook first so address/target validation can
      * reject the command without burning any array/xfer time, matching the
      * legacy short-circuit where a failed read of an unwritten page consumed
      * no EAT. */
-    if (ops && ops->on_setup_commit) {
+    if (wait_rc != ENGINE_WAIT_ABORT && ops && ops->on_setup_commit) {
         stage_rc = ops->on_setup_commit(cb_ctx);
     }
-    if (stage_rc == HFSSS_OK) {
+    if (wait_rc != ENGINE_WAIT_ABORT && stage_rc == HFSSS_OK) {
         eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask, setup_ns);
     }
-
-    enum engine_wait_result wait_rc = ENGINE_WAIT_DONE;
 
     /* Array-busy stage: EAT is committed before the commit hook so the
      * caller-visible completion boundary is reached at the start of the
      * array mutation, matching the legacy eat-before-memcpy ordering. */
-    if (stage_rc == HFSSS_OK) {
+    if (wait_rc != ENGINE_WAIT_ABORT && stage_rc == HFSSS_OK) {
         mutex_lock(&die->die_lock, 0);
         enum nand_die_state next_array_state = nand_cmd_next_state_on_complete(die->cmd_state.state, op);
         nand_cmd_state_advance_phase(&die->cmd_state, CMD_PHASE_ARRAY_BUSY, next_array_state);
@@ -417,6 +431,12 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
             mutex_lock(&channel->lock, 0);
         }
 
+        /* Recheck abort after the spin returns DONE: a reset could land
+         * between the spin exit and this point (the channel lock was just
+         * re-acquired, but die_lock was not held across the gap). */
+        if (wait_rc == ENGINE_WAIT_DONE && atomic_load(&die->cmd_state.abort_request)) {
+            wait_rc = ENGINE_WAIT_ABORT;
+        }
         if (wait_rc == ENGINE_WAIT_ABORT) {
             stage_rc = HFSSS_ERR_BUSY;
         } else if (ops && ops->on_array_commit) {
@@ -537,17 +557,16 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
     /* Signal any running worker to bail. Harmless if no worker exists
      * (synthetic test state, or die is already IDLE). */
     atomic_store(&die->cmd_state.abort_request, 1);
-    atomic_store(&die->cmd_state.suspend_request, 0);
 
-    die->cmd_state.state = DIE_IDLE;
+    /* Full state reset: zero every field to canonical post-reset baseline
+     * so enhanced status never leaks stale opcode, target, timestamps,
+     * or suspend counters from the prior operation. nand_cmd_state_init
+     * does a memset(0) + sets state=DIE_IDLE, phase=CMD_PHASE_NONE.
+     * We override phase to COMPLETE to match the "just finished reset"
+     * observable behavior, then re-arm abort_request for the worker. */
+    nand_cmd_state_init(&die->cmd_state);
     die->cmd_state.phase = CMD_PHASE_COMPLETE;
-    die->cmd_state.in_flight = false;
-    die->cmd_state.remaining_ns = 0;
-    die->cmd_state.result_status = HFSSS_OK;
-    die->cmd_state.array_budget_ns = 0;
-    die->cmd_state.array_started_ns = 0;
-    /* ONFI 4.2: RESET clears the sticky FAIL latch. */
-    die->cmd_state.latched_fail = false;
+    atomic_store(&die->cmd_state.abort_request, 1);
 
     mutex_unlock(&die->die_lock);
     return HFSSS_OK;
@@ -638,6 +657,12 @@ static int engine_submit_resume(struct nand_device *dev, enum nand_cmd_opcode op
     u64 resume_ov = timing_get_resume_overhead_ns(dev->timing);
     if (resume_ov > 0) {
         eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, suspended_mask, resume_ov);
+        /* Drain wall-clock for tRSBSY, symmetric with the tSSBSY
+         * wall-clock spin in the suspend arm of engine_run_array_busy. */
+        u64 res_deadline = get_time_ns() + resume_ov;
+        while (get_time_ns() < res_deadline) {
+            /* busy spin */
+        }
     }
     return HFSSS_OK;
 }
