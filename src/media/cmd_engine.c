@@ -106,8 +106,16 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         return HFSSS_ERR_INVAL;
     }
 
-    /* Channel-level serialization is the first-order command submission
-     * boundary in early phases; per-die work is gated underneath it. */
+    /*
+     * Channel-level serialization is the first-order command submission
+     * boundary in early phases; per-die work is gated underneath it. The
+     * die_lock is held only across the short cmd_state transactional
+     * updates (begin, each advance_phase, completion) so a concurrent
+     * status reader can take a coherent snapshot while the command is
+     * busy-waiting or running its commit hook — satisfying the
+     * "status observable concurrently with in-flight command" contract
+     * in the design spec concurrency section.
+     */
     mutex_lock(&channel->lock, 0);
     mutex_lock(&die->die_lock, 0);
 
@@ -117,12 +125,12 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         return HFSSS_ERR_BUSY;
     }
 
-    enum op_type eat_op = op_to_eat_op(op);
-
-    engine_wait_until_available(dev->eat, eat_op, target->ch, target->chip, target->die, plane);
-
     u64 total_ns = engine_total_budget(dev->timing, op, target->page);
     nand_cmd_state_begin(&die->cmd_state, op, target, total_ns);
+    mutex_unlock(&die->die_lock);
+
+    enum op_type eat_op = op_to_eat_op(op);
+    engine_wait_until_available(dev->eat, eat_op, target->ch, target->chip, target->die, plane);
 
     u64 setup_ns = 0;
     u64 array_ns = 0;
@@ -146,8 +154,10 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
      * caller-visible completion boundary is reached at the start of the
      * array mutation, matching the legacy eat-before-memcpy ordering. */
     if (stage_rc == HFSSS_OK) {
+        mutex_lock(&die->die_lock, 0);
         enum nand_die_state next_array_state = nand_cmd_next_state_on_complete(die->cmd_state.state, op);
         nand_cmd_state_advance_phase(&die->cmd_state, CMD_PHASE_ARRAY_BUSY, next_array_state);
+        mutex_unlock(&die->die_lock);
         eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, array_ns);
         if (ops && ops->on_array_commit) {
             stage_rc = ops->on_array_commit(cb_ctx);
@@ -158,8 +168,10 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
      * transition is wired so future opcodes can plug in without engine
      * changes. */
     if (stage_rc == HFSSS_OK && op == NAND_OP_READ) {
+        mutex_lock(&die->die_lock, 0);
         enum nand_die_state next_xfer_state = nand_cmd_next_state_on_complete(die->cmd_state.state, op);
         nand_cmd_state_advance_phase(&die->cmd_state, CMD_PHASE_DATA_XFER, next_xfer_state);
+        mutex_unlock(&die->die_lock);
         eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, xfer_ns);
         if (ops && ops->on_data_xfer_commit) {
             stage_rc = ops->on_data_xfer_commit(cb_ctx);
@@ -167,13 +179,19 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     }
 
     /* Drive the die back to IDLE regardless of commit status so a failed
-     * hook does not strand the die. */
+     * hook does not strand the die. PROG/ERASE completions update the
+     * ONFI sticky FAIL latch: a successful completion clears the latch,
+     * a failed completion sets it; any intervening READ or identity op
+     * must not touch it (spec "Suspend/Resume Semantics" status layer). */
+    mutex_lock(&die->die_lock, 0);
     die->cmd_state.result_status = stage_rc;
     die->cmd_state.in_flight = false;
     die->cmd_state.phase = CMD_PHASE_COMPLETE;
     die->cmd_state.state = DIE_IDLE;
     die->cmd_state.remaining_ns = 0;
-
+    if (op == NAND_OP_PROG || op == NAND_OP_ERASE) {
+        die->cmd_state.latched_fail = (stage_rc != HFSSS_OK);
+    }
     mutex_unlock(&die->die_lock);
     mutex_unlock(&channel->lock);
     return stage_rc;
@@ -252,6 +270,8 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
     die->cmd_state.in_flight = false;
     die->cmd_state.remaining_ns = 0;
     die->cmd_state.result_status = HFSSS_OK;
+    /* ONFI 4.2: RESET clears the sticky FAIL latch. */
+    die->cmd_state.latched_fail = false;
 
     mutex_unlock(&die->die_lock);
     mutex_unlock(&channel->lock);
@@ -274,4 +294,133 @@ int nand_cmd_engine_snapshot(struct nand_device *dev, const struct nand_cmd_targ
     nand_cmd_state_snapshot(&die->cmd_state, out);
     mutex_unlock(&die->die_lock);
     return HFSSS_OK;
+}
+
+/*
+ * Lightweight status path. LOCKING: die_lock only — the channel lock is
+ * deliberately skipped so a status read never blocks on an in-flight command.
+ * A snapshot is taken under the die lock, then decoded on the caller's stack.
+ */
+static int engine_submit_status_byte(struct nand_device *dev, const struct nand_cmd_target *target, u8 *out_byte)
+{
+    if (!dev || !target || !out_byte) {
+        return HFSSS_ERR_INVAL;
+    }
+    struct nand_die *die = engine_get_die(dev, target->ch, target->chip, target->die);
+    if (!die) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nand_die_cmd_state snap;
+    mutex_lock(&die->die_lock, 0);
+    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, NAND_OP_READ_STATUS)) {
+        mutex_unlock(&die->die_lock);
+        return HFSSS_ERR_BUSY;
+    }
+    nand_cmd_state_snapshot(&die->cmd_state, &snap);
+    mutex_unlock(&die->die_lock);
+
+    nand_status_byte_from_cmd_state(&snap, out_byte);
+    return HFSSS_OK;
+}
+
+static int engine_submit_status_enhanced(struct nand_device *dev, const struct nand_cmd_target *target,
+                                         struct nand_status_enhanced *out)
+{
+    if (!dev || !target || !out) {
+        return HFSSS_ERR_INVAL;
+    }
+    struct nand_die *die = engine_get_die(dev, target->ch, target->chip, target->die);
+    if (!die) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nand_die_cmd_state snap;
+    mutex_lock(&die->die_lock, 0);
+    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, NAND_OP_READ_STATUS_ENHANCED)) {
+        mutex_unlock(&die->die_lock);
+        return HFSSS_ERR_BUSY;
+    }
+    nand_cmd_state_snapshot(&die->cmd_state, &snap);
+    mutex_unlock(&die->die_lock);
+
+    nand_status_enhanced_from_cmd_state(&snap, out);
+    return HFSSS_OK;
+}
+
+/*
+ * Identity path for READ_ID / READ_PARAM_PAGE. Takes the channel→die lock
+ * order so the data bus is serialized against concurrent submits. The helper
+ * performs a pure payload copy and does NOT disturb the in-flight command
+ * bookkeeping: it must not touch cmd_state.opcode/target/state/phase/
+ * result_status/in_flight/remaining_ns/latched_fail, because identity reads
+ * are legal while a program or erase is suspended (DIE_SUSPENDED_*) and
+ * clobbering those fields would destroy the suspension context for the
+ * later resume path, and would also clear the ONFI sticky FAIL latch on
+ * every identity read. EAT is intentionally not advanced: these are
+ * bus-bound ops and the current timing model does not expose
+ * tWHR / tRR / tDCBSYR1 fidelity — that is a later-phase refinement.
+ */
+static int engine_submit_identity(struct nand_device *dev, enum nand_cmd_opcode op,
+                                  const struct nand_cmd_target *target, void *out)
+{
+    if (!dev || !target || !out) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (op != NAND_OP_READ_ID && op != NAND_OP_READ_PARAM_PAGE) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nand_channel *channel = engine_get_channel(dev, target->ch);
+    if (!channel) {
+        return HFSSS_ERR_INVAL;
+    }
+    struct nand_die *die = engine_get_die(dev, target->ch, target->chip, target->die);
+    if (!die) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    mutex_lock(&channel->lock, 0);
+    mutex_lock(&die->die_lock, 0);
+
+    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, op)) {
+        mutex_unlock(&die->die_lock);
+        mutex_unlock(&channel->lock);
+        return HFSSS_ERR_BUSY;
+    }
+
+    if (op == NAND_OP_READ_ID) {
+        struct nand_id *dst = (struct nand_id *)out;
+        *dst = dev->nand_id;
+    } else {
+        struct nand_parameter_page *dst = (struct nand_parameter_page *)out;
+        *dst = dev->param_page;
+    }
+
+    mutex_unlock(&die->die_lock);
+    mutex_unlock(&channel->lock);
+    return HFSSS_OK;
+}
+
+int nand_cmd_engine_submit_read_status(struct nand_device *dev, const struct nand_cmd_target *target,
+                                       u8 *out_status_byte)
+{
+    return engine_submit_status_byte(dev, target, out_status_byte);
+}
+
+int nand_cmd_engine_submit_read_status_enhanced(struct nand_device *dev, const struct nand_cmd_target *target,
+                                                struct nand_status_enhanced *out)
+{
+    return engine_submit_status_enhanced(dev, target, out);
+}
+
+int nand_cmd_engine_submit_read_id(struct nand_device *dev, const struct nand_cmd_target *target, struct nand_id *out)
+{
+    return engine_submit_identity(dev, NAND_OP_READ_ID, target, out);
+}
+
+int nand_cmd_engine_submit_read_param_page(struct nand_device *dev, const struct nand_cmd_target *target,
+                                           struct nand_parameter_page *out)
+{
+    return engine_submit_identity(dev, NAND_OP_READ_PARAM_PAGE, target, out);
 }

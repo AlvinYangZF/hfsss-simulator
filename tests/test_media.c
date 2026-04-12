@@ -570,6 +570,274 @@ static int test_cmd_state_machine(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Phase 2 foundational standard commands */
+static int test_cmd_phase2_commands(void)
+{
+    printf("\n=== NAND Phase 2 Foundational Command Tests ===\n");
+
+    struct media_config config = {
+        .channel_count = 1,
+        .chips_per_channel = 1,
+        .dies_per_chip = 1,
+        .planes_per_die = 1,
+        .blocks_per_plane = 4,
+        .pages_per_block = 16,
+        .page_size = 4096,
+        .spare_size = 64,
+        .nand_type = NAND_TYPE_TLC,
+    };
+
+    struct media_ctx ctx;
+    int ret = media_init(&ctx, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "Phase2: media_init succeeds");
+    if (ret != HFSSS_OK) {
+        return TEST_FAIL;
+    }
+
+    /* SM-14: read status byte on fresh idle die */
+    u8 sr = 0;
+    ret = media_nand_read_status_byte(&ctx, 0, 0, 0, &sr);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-14: status byte on fresh die OK");
+    TEST_ASSERT((sr & NAND_STATUS_RDY) != 0, "SM-14: RDY set on idle die");
+    TEST_ASSERT((sr & NAND_STATUS_ARDY) != 0, "SM-14: ARDY set on idle die");
+    TEST_ASSERT((sr & NAND_STATUS_WP_N) != 0, "SM-14: WP_N asserted");
+    TEST_ASSERT((sr & NAND_STATUS_FAIL) == 0, "SM-14: FAIL clear on fresh die");
+
+    /* SM-15: status byte after a completed program */
+    u8 prog_buf[4096];
+    memset(prog_buf, 0x5A, sizeof(prog_buf));
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 0, 0, prog_buf, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-15: program succeeds");
+    ret = media_nand_read_status_byte(&ctx, 0, 0, 0, &sr);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-15: status byte after program OK");
+    TEST_ASSERT((sr & NAND_STATUS_RDY) != 0, "SM-15: RDY set post-program");
+    TEST_ASSERT((sr & NAND_STATUS_ARDY) != 0, "SM-15: ARDY set post-program");
+    TEST_ASSERT((sr & NAND_STATUS_FAIL) == 0, "SM-15: FAIL clear on successful program");
+
+    /* SM-16: enhanced status decode after reset */
+    struct nand_cmd_target target = {
+        .ch = 0,
+        .chip = 0,
+        .die = 0,
+        .plane_mask = 1u,
+        .block = 0,
+        .page = 0,
+    };
+    ret = nand_cmd_engine_submit_reset(ctx.nand, &target);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-16: reset submit OK");
+    struct nand_status_enhanced enh;
+    ret = media_nand_read_status_enhanced(&ctx, 0, 0, 0, &enh);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-16: enhanced status OK after reset");
+    TEST_ASSERT(enh.state == DIE_IDLE, "SM-16: state is DIE_IDLE after reset");
+    TEST_ASSERT(enh.ready == true, "SM-16: ready bit set");
+    TEST_ASSERT(enh.array_ready == true, "SM-16: array_ready bit set");
+    TEST_ASSERT(enh.resetting == false, "SM-16: resetting bit clear");
+    TEST_ASSERT(enh.last_op_failed == false, "SM-16: last_op_failed clear");
+    TEST_ASSERT(enh.result_status == HFSSS_OK, "SM-16: result_status OK");
+    TEST_ASSERT((enh.classic_status & NAND_STATUS_RDY) != 0, "SM-16: classic status RDY set");
+
+    /* SM-17: exhaustive legality matrix for status/identity opcodes */
+    for (int s = 0; s < DIE_STATE_COUNT; s++) {
+        TEST_ASSERT(nand_cmd_is_legal_in_state((enum nand_die_state)s, NAND_OP_READ_STATUS) == true,
+                    "SM-17: READ_STATUS legal in every die state");
+        TEST_ASSERT(nand_cmd_is_legal_in_state((enum nand_die_state)s, NAND_OP_READ_STATUS_ENHANCED) == true,
+                    "SM-17: READ_STATUS_ENHANCED legal in every die state");
+    }
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_IDLE, NAND_OP_READ_ID) == true, "SM-17: READ_ID legal in DIE_IDLE");
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_READ_ARRAY_BUSY, NAND_OP_READ_ID) == false,
+                "SM-17: READ_ID illegal in DIE_READ_ARRAY_BUSY");
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_SUSPENDED_PROG, NAND_OP_READ_ID) == true,
+                "SM-17: READ_ID legal in DIE_SUSPENDED_PROG");
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_SUSPENDED_ERASE, NAND_OP_READ_PARAM_PAGE) == true,
+                "SM-17: READ_PARAM_PAGE legal in DIE_SUSPENDED_ERASE");
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_RESETTING, NAND_OP_READ_ID) == false,
+                "SM-17: READ_ID illegal in DIE_RESETTING");
+
+    /* SM-18: read id structural correctness */
+    struct nand_id id;
+    memset(&id, 0, sizeof(id));
+    ret = media_nand_read_id(&ctx, 0, 0, 0, &id);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-18: read id returns OK");
+    TEST_ASSERT(id.bytes[0] == NAND_ID_MFR_SIMULATOR, "SM-18: manufacturer byte matches simulator code");
+    TEST_ASSERT(id.bytes[1] != 0, "SM-18: device code populated");
+    TEST_ASSERT(((id.bytes[2] >> 4) & 0x3) == NAND_ID_CELL_TYPE_TLC, "SM-18: cell_type encodes TLC");
+    TEST_ASSERT(id.bytes[5] == 0 && id.bytes[6] == 0 && id.bytes[7] == 0, "SM-18: Toggle-extended bytes zero-filled");
+
+    /* SM-19: parameter page minimum contract */
+    struct nand_parameter_page pp;
+    memset(&pp, 0, sizeof(pp));
+    ret = media_nand_read_parameter_page(&ctx, 0, 0, 0, &pp);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-19: read parameter page OK");
+    TEST_ASSERT(pp.revision == NAND_PARAMETER_PAGE_REVISION, "SM-19: revision matches constant");
+    TEST_ASSERT(pp.size_bytes == sizeof(struct nand_parameter_page), "SM-19: size_bytes matches struct size");
+    TEST_ASSERT(pp.bytes_per_page == 4096, "SM-19: bytes_per_page matches config");
+    TEST_ASSERT(pp.spare_bytes_per_page == 64, "SM-19: spare_bytes_per_page matches config");
+    TEST_ASSERT(pp.pages_per_block == 16, "SM-19: pages_per_block matches config");
+    TEST_ASSERT(pp.blocks_per_lun == 4, "SM-19: blocks_per_lun derived from blocks_per_plane*planes_per_die");
+    TEST_ASSERT(pp.planes_per_die == 1, "SM-19: planes_per_die matches config");
+    TEST_ASSERT(pp.bits_per_cell == 3, "SM-19: TLC bits_per_cell == 3");
+    TEST_ASSERT(pp.ecc_bits_required > 0, "SM-19: ECC advertisement non-zero");
+    TEST_ASSERT((pp.supported_cmd_bitmap & (1u << NAND_OP_READ)) != 0, "SM-19: READ advertised");
+    TEST_ASSERT((pp.supported_cmd_bitmap & (1u << NAND_OP_PROG)) != 0, "SM-19: PROG advertised");
+    TEST_ASSERT((pp.supported_cmd_bitmap & (1u << NAND_OP_ERASE)) != 0, "SM-19: ERASE advertised");
+    TEST_ASSERT((pp.supported_cmd_bitmap & (1u << NAND_OP_READ_STATUS)) != 0, "SM-19: READ_STATUS advertised");
+    TEST_ASSERT((pp.supported_cmd_bitmap & (1u << NAND_OP_READ_STATUS_ENHANCED)) != 0,
+                "SM-19: READ_STATUS_ENHANCED advertised");
+    TEST_ASSERT((pp.supported_cmd_bitmap & (1u << NAND_OP_READ_ID)) != 0, "SM-19: READ_ID advertised");
+    TEST_ASSERT((pp.supported_cmd_bitmap & (1u << NAND_OP_READ_PARAM_PAGE)) != 0, "SM-19: READ_PARAM_PAGE advertised");
+    TEST_ASSERT(pp.tR_ns == timing_get_read_latency(ctx.timing, 0), "SM-19: tR_ns matches timing model");
+    TEST_ASSERT(pp.tPROG_ns == timing_get_prog_latency(ctx.timing, 0), "SM-19: tPROG_ns matches timing model");
+    TEST_ASSERT(pp.tBERS_ns == timing_get_erase_latency(ctx.timing), "SM-19: tBERS_ns matches timing model");
+    TEST_ASSERT(pp.manufacturer_id == id.bytes[0], "SM-19: parameter page manufacturer matches ID");
+    TEST_ASSERT(pp.crc != 0, "SM-19: parameter page CRC computed");
+
+    /* SM-20: parameter page is stable across reads */
+    struct nand_parameter_page pp2;
+    ret = media_nand_read_parameter_page(&ctx, 0, 0, 0, &pp2);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-20: second parameter page read OK");
+    TEST_ASSERT(memcmp(&pp, &pp2, sizeof(pp)) == 0, "SM-20: parameter page stable across reads");
+
+    /* SM-21: reset produces deterministic clean baseline with no EAT drift */
+    u64 eat_before_reset = eat_get_for_plane(ctx.eat, 0, 0, 0, 0);
+    ret = nand_cmd_engine_submit_reset(ctx.nand, &target);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-21: reset returns OK");
+    u64 eat_after_reset = eat_get_for_plane(ctx.eat, 0, 0, 0, 0);
+    TEST_ASSERT(eat_after_reset == eat_before_reset, "SM-21: reset does not advance plane EAT");
+
+    struct nand_die_cmd_state snap_after_reset;
+    ret = media_nand_read_status(&ctx, 0, 0, 0, &snap_after_reset);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-21: snapshot after reset OK");
+    TEST_ASSERT(snap_after_reset.state == DIE_IDLE, "SM-21: state == DIE_IDLE");
+    TEST_ASSERT(snap_after_reset.in_flight == false, "SM-21: in_flight clear");
+    TEST_ASSERT(snap_after_reset.result_status == HFSSS_OK, "SM-21: result_status OK");
+    TEST_ASSERT(snap_after_reset.remaining_ns == 0, "SM-21: remaining_ns zero");
+
+    u8 sr_after_reset = 0;
+    ret = media_nand_read_status_byte(&ctx, 0, 0, 0, &sr_after_reset);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-21: classic status after reset OK");
+    TEST_ASSERT((sr_after_reset & NAND_STATUS_RDY) != 0, "SM-21: RDY after reset");
+    TEST_ASSERT((sr_after_reset & NAND_STATUS_ARDY) != 0, "SM-21: ARDY after reset");
+
+    /* Identity read must also be available in IDLE post-reset */
+    struct nand_id id2;
+    ret = media_nand_read_id(&ctx, 0, 0, 0, &id2);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-21: read_id OK after reset");
+    TEST_ASSERT(memcmp(&id, &id2, sizeof(id)) == 0, "SM-21: read_id stable across reset");
+
+    /* SM-22: invalid-argument rejection for the four Phase 2 entry points. */
+    ret = media_nand_read_status_byte(&ctx, 0, 0, 0, NULL);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL, "SM-22: status_byte(NULL) returns INVAL");
+    ret = media_nand_read_status_enhanced(&ctx, 0, 0, 0, NULL);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL, "SM-22: status_enhanced(NULL) returns INVAL");
+    ret = media_nand_read_id(&ctx, 0, 0, 0, NULL);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL, "SM-22: read_id(NULL) returns INVAL");
+    ret = media_nand_read_parameter_page(&ctx, 0, 0, 0, NULL);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL, "SM-22: read_param_page(NULL) returns INVAL");
+
+    u8 sr_tmp = 0;
+    ret = media_nand_read_status_byte(&ctx, 99, 0, 0, &sr_tmp);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL, "SM-22: out-of-range channel returns INVAL");
+
+    /* SM-23: FAIL latch stickiness across intervening non-write operations.
+     * Drive the latch directly via nand_die_cmd_state since the sync engine
+     * has no builtin path to produce a failed PROG/ERASE in the test
+     * geometry. This also validates that READ / READ_ID / READ_STATUS do not
+     * clobber the latch. */
+    struct nand_die *die0 = &ctx.nand->channels[0].chips[0].dies[0];
+    die0->cmd_state.latched_fail = true;
+
+    ret = media_nand_read_status_byte(&ctx, 0, 0, 0, &sr_tmp);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-23: status_byte OK with latched FAIL");
+    TEST_ASSERT((sr_tmp & NAND_STATUS_FAIL) != 0, "SM-23: FAIL bit reflects latched state");
+
+    /* An intervening READ must not clear the latch. */
+    u8 read_buf[4096];
+    memset(read_buf, 0, sizeof(read_buf));
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 0, 0, read_buf, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-23: intervening read OK");
+    ret = media_nand_read_status_byte(&ctx, 0, 0, 0, &sr_tmp);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-23: status_byte OK after intervening read");
+    TEST_ASSERT((sr_tmp & NAND_STATUS_FAIL) != 0, "SM-23: FAIL latch persists across read");
+
+    /* An intervening READ_ID must not clear the latch. */
+    struct nand_id id3;
+    ret = media_nand_read_id(&ctx, 0, 0, 0, &id3);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-23: intervening read_id OK");
+    ret = media_nand_read_status_byte(&ctx, 0, 0, 0, &sr_tmp);
+    TEST_ASSERT((sr_tmp & NAND_STATUS_FAIL) != 0, "SM-23: FAIL latch persists across read_id");
+
+    /* RESET must clear the latch. */
+    struct nand_cmd_target target_reset = {
+        .ch = 0,
+        .chip = 0,
+        .die = 0,
+        .plane_mask = 1u,
+        .block = 0,
+        .page = 0,
+    };
+    ret = nand_cmd_engine_submit_reset(ctx.nand, &target_reset);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-23: reset OK");
+    ret = media_nand_read_status_byte(&ctx, 0, 0, 0, &sr_tmp);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-23: status_byte OK after reset");
+    TEST_ASSERT((sr_tmp & NAND_STATUS_FAIL) == 0, "SM-23: reset clears FAIL latch");
+
+    /* A successful PROG must also clear the latch. */
+    die0->cmd_state.latched_fail = true;
+    memset(prog_buf, 0x3C, sizeof(prog_buf));
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 2, 0, prog_buf, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-23: follow-up program OK");
+    ret = media_nand_read_status_byte(&ctx, 0, 0, 0, &sr_tmp);
+    TEST_ASSERT((sr_tmp & NAND_STATUS_FAIL) == 0, "SM-23: successful program clears FAIL latch");
+
+    /* SM-24: identity path does not disturb synthetic suspend context.
+     * Drives the die into DIE_SUSPENDED_PROG by directly manipulating the
+     * cmd_state, issues a READ_ID (legal per matrix), then verifies that
+     * the state, opcode, target.block, and in_flight fields survive.
+     * This is the regression guard for the CRITICAL "identity destroys
+     * suspend context" finding. */
+    struct nand_cmd_target synthetic = {
+        .ch = 0,
+        .chip = 0,
+        .die = 0,
+        .plane_mask = 1u,
+        .block = 1,
+        .page = 3,
+    };
+    die0->cmd_state.state = DIE_SUSPENDED_PROG;
+    die0->cmd_state.phase = CMD_PHASE_ARRAY_BUSY;
+    die0->cmd_state.opcode = NAND_OP_PROG;
+    die0->cmd_state.target = synthetic;
+    die0->cmd_state.in_flight = true;
+    die0->cmd_state.remaining_ns = 123456;
+    die0->cmd_state.suspend_count = 2;
+    die0->cmd_state.result_status = HFSSS_OK;
+
+    struct nand_id id4;
+    ret = media_nand_read_id(&ctx, 0, 0, 0, &id4);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-24: read_id OK during synthetic suspend");
+    TEST_ASSERT(die0->cmd_state.state == DIE_SUSPENDED_PROG, "SM-24: state preserved");
+    TEST_ASSERT(die0->cmd_state.phase == CMD_PHASE_ARRAY_BUSY, "SM-24: phase preserved");
+    TEST_ASSERT(die0->cmd_state.opcode == NAND_OP_PROG, "SM-24: opcode preserved");
+    TEST_ASSERT(die0->cmd_state.target.block == 1, "SM-24: target.block preserved");
+    TEST_ASSERT(die0->cmd_state.target.page == 3, "SM-24: target.page preserved");
+    TEST_ASSERT(die0->cmd_state.in_flight == true, "SM-24: in_flight preserved");
+    TEST_ASSERT(die0->cmd_state.remaining_ns == 123456, "SM-24: remaining_ns preserved");
+    TEST_ASSERT(die0->cmd_state.suspend_count == 2, "SM-24: suspend_count preserved");
+
+    /* READ_PARAM_PAGE during suspend: same invariant. */
+    struct nand_parameter_page pp3;
+    ret = media_nand_read_parameter_page(&ctx, 0, 0, 0, &pp3);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-24: read_param_page OK during synthetic suspend");
+    TEST_ASSERT(die0->cmd_state.state == DIE_SUSPENDED_PROG, "SM-24: state preserved across param_page");
+    TEST_ASSERT(die0->cmd_state.remaining_ns == 123456, "SM-24: remaining_ns preserved across param_page");
+
+    /* Restore the die to a clean state so cleanup doesn't trip. */
+    nand_cmd_engine_submit_reset(ctx.nand, &target_reset);
+
+    media_cleanup(&ctx);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -589,6 +857,7 @@ int main(void)
     test_media();
     test_persistence();
     test_cmd_state_machine();
+    test_cmd_phase2_commands();
 
     printf("\n========================================\n");
     printf("Test Summary\n");

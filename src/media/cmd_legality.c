@@ -4,6 +4,17 @@
  * Legality matrix — rows are current die state, columns are incoming opcode.
  * 'true' means the engine accepts the submission in that state. RESET is
  * always accepted except when the die is already resetting.
+ *
+ * Status operations (READ_STATUS, READ_STATUS_ENHANCED) are legal in every
+ * die state because ONFI 4.2 requires status to be observable mid-flight so
+ * the host can detect RDY/ARDY transitions. They take the lightweight
+ * die-lock-only snapshot path and never cancel or interfere with an in-flight
+ * command.
+ *
+ * Identity operations (READ_ID, READ_PARAM_PAGE) use the data bus and cannot
+ * race an active array operation, so they are legal only in DIE_IDLE and the
+ * suspend states (design spec "Suspend/Resume Semantics" allows
+ * non-conflicting reads during suspend).
  */
 static const bool k_legal[DIE_STATE_COUNT][NAND_OP_COUNT] = {
     [DIE_IDLE] =
@@ -12,17 +23,74 @@ static const bool k_legal[DIE_STATE_COUNT][NAND_OP_COUNT] = {
             [NAND_OP_PROG] = true,
             [NAND_OP_ERASE] = true,
             [NAND_OP_RESET] = true,
+            [NAND_OP_READ_STATUS] = true,
+            [NAND_OP_READ_STATUS_ENHANCED] = true,
+            [NAND_OP_READ_ID] = true,
+            [NAND_OP_READ_PARAM_PAGE] = true,
         },
-    [DIE_READ_SETUP] = {[NAND_OP_RESET] = true},
-    [DIE_READ_ARRAY_BUSY] = {[NAND_OP_RESET] = true},
-    [DIE_READ_DATA_XFER] = {[NAND_OP_RESET] = true},
-    [DIE_PROG_SETUP] = {[NAND_OP_RESET] = true},
-    [DIE_PROG_ARRAY_BUSY] = {[NAND_OP_RESET] = true},
-    [DIE_ERASE_SETUP] = {[NAND_OP_RESET] = true},
-    [DIE_ERASE_ARRAY_BUSY] = {[NAND_OP_RESET] = true},
-    [DIE_SUSPENDED_PROG] = {[NAND_OP_RESET] = true},
-    [DIE_SUSPENDED_ERASE] = {[NAND_OP_RESET] = true},
-    [DIE_RESETTING] = {0},
+    [DIE_READ_SETUP] =
+        {
+            [NAND_OP_RESET] = true,
+            [NAND_OP_READ_STATUS] = true,
+            [NAND_OP_READ_STATUS_ENHANCED] = true,
+        },
+    [DIE_READ_ARRAY_BUSY] =
+        {
+            [NAND_OP_RESET] = true,
+            [NAND_OP_READ_STATUS] = true,
+            [NAND_OP_READ_STATUS_ENHANCED] = true,
+        },
+    [DIE_READ_DATA_XFER] =
+        {
+            [NAND_OP_RESET] = true,
+            [NAND_OP_READ_STATUS] = true,
+            [NAND_OP_READ_STATUS_ENHANCED] = true,
+        },
+    [DIE_PROG_SETUP] =
+        {
+            [NAND_OP_RESET] = true,
+            [NAND_OP_READ_STATUS] = true,
+            [NAND_OP_READ_STATUS_ENHANCED] = true,
+        },
+    [DIE_PROG_ARRAY_BUSY] =
+        {
+            [NAND_OP_RESET] = true,
+            [NAND_OP_READ_STATUS] = true,
+            [NAND_OP_READ_STATUS_ENHANCED] = true,
+        },
+    [DIE_ERASE_SETUP] =
+        {
+            [NAND_OP_RESET] = true,
+            [NAND_OP_READ_STATUS] = true,
+            [NAND_OP_READ_STATUS_ENHANCED] = true,
+        },
+    [DIE_ERASE_ARRAY_BUSY] =
+        {
+            [NAND_OP_RESET] = true,
+            [NAND_OP_READ_STATUS] = true,
+            [NAND_OP_READ_STATUS_ENHANCED] = true,
+        },
+    [DIE_SUSPENDED_PROG] =
+        {
+            [NAND_OP_RESET] = true,
+            [NAND_OP_READ_STATUS] = true,
+            [NAND_OP_READ_STATUS_ENHANCED] = true,
+            [NAND_OP_READ_ID] = true,
+            [NAND_OP_READ_PARAM_PAGE] = true,
+        },
+    [DIE_SUSPENDED_ERASE] =
+        {
+            [NAND_OP_RESET] = true,
+            [NAND_OP_READ_STATUS] = true,
+            [NAND_OP_READ_STATUS_ENHANCED] = true,
+            [NAND_OP_READ_ID] = true,
+            [NAND_OP_READ_PARAM_PAGE] = true,
+        },
+    [DIE_RESETTING] =
+        {
+            [NAND_OP_READ_STATUS] = true,
+            [NAND_OP_READ_STATUS_ENHANCED] = true,
+        },
 };
 
 bool nand_cmd_is_legal_in_state(enum nand_die_state state, enum nand_cmd_opcode op)

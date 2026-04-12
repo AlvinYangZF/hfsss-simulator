@@ -3,6 +3,7 @@
 
 #include "common/common.h"
 #include "media/cmd_state.h"
+#include "media/nand_identity.h"
 
 struct nand_device;
 struct eat_ctx;
@@ -35,6 +36,28 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
 
 int nand_cmd_engine_snapshot(struct nand_device *dev, const struct nand_cmd_target *target,
                              struct nand_die_cmd_state *out);
+
+/*
+ * Status submission paths. Both take only the die-level lock so they remain
+ * observable mid-flight; neither touches the channel lock or the cmd_state
+ * begin/advance path.
+ */
+int nand_cmd_engine_submit_read_status(struct nand_device *dev, const struct nand_cmd_target *target,
+                                       u8 *out_status_byte);
+
+int nand_cmd_engine_submit_read_status_enhanced(struct nand_device *dev, const struct nand_cmd_target *target,
+                                                struct nand_status_enhanced *out);
+
+/*
+ * Identity submission paths. Both take the full channel+die lock order and
+ * are legal only from DIE_IDLE or the suspend states (non-conflicting reads).
+ * Current phase skips EAT advancement for these bus-bound operations — see
+ * engine_submit_identity in cmd_engine.c.
+ */
+int nand_cmd_engine_submit_read_id(struct nand_device *dev, const struct nand_cmd_target *target, struct nand_id *out);
+
+int nand_cmd_engine_submit_read_param_page(struct nand_device *dev, const struct nand_cmd_target *target,
+                                           struct nand_parameter_page *out);
 
 /*
  * Stage-budget split. Kept in its own translation unit so the partition

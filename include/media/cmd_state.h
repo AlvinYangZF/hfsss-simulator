@@ -32,7 +32,17 @@ enum nand_cmd_phase {
  * Engine-level opcode enum. Distinct from the hardware-facing enum nand_cmd
  * in nand.h which encodes raw NAND command bytes.
  */
-enum nand_cmd_opcode { NAND_OP_READ = 0, NAND_OP_PROG, NAND_OP_ERASE, NAND_OP_RESET, NAND_OP_COUNT };
+enum nand_cmd_opcode {
+    NAND_OP_READ = 0,
+    NAND_OP_PROG,
+    NAND_OP_ERASE,
+    NAND_OP_RESET,
+    NAND_OP_READ_STATUS,
+    NAND_OP_READ_STATUS_ENHANCED,
+    NAND_OP_READ_ID,
+    NAND_OP_READ_PARAM_PAGE,
+    NAND_OP_COUNT
+};
 
 struct nand_cmd_target {
     u32 ch;
@@ -56,6 +66,13 @@ struct nand_die_cmd_state {
     u64 last_suspend_ts_ns;
     int result_status;
     bool in_flight;
+    /*
+     * Sticky FAIL latch per ONFI 4.2 Status Register semantics: set when the
+     * most recent PROG/ERASE completes with an error; cleared only by the next
+     * successful PROG/ERASE completion or by RESET. Read-class and identity
+     * operations must not disturb it.
+     */
+    bool latched_fail;
 };
 
 void nand_cmd_state_init(struct nand_die_cmd_state *s);
