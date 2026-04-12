@@ -856,6 +856,25 @@ static void *prog_worker(void *arg)
     return NULL;
 }
 
+struct mp_worker_ctx {
+    struct media_ctx *ctx;
+    u32 plane_mask;
+    u32 block;
+    u32 page;
+    int rc;
+};
+
+static void *mp_prog_worker(void *arg)
+{
+    struct mp_worker_ctx *w = (struct mp_worker_ctx *)arg;
+    u8 d0[4096], d1[4096];
+    memset(d0, 0x5A, sizeof(d0));
+    memset(d1, 0x5B, sizeof(d1));
+    const void *arr[2] = {d0, d1};
+    w->rc = media_nand_multi_plane_program(w->ctx, 0, 0, 0, w->plane_mask, w->block, w->page, arr, NULL);
+    return NULL;
+}
+
 static void *erase_worker(void *arg)
 {
     struct worker_ctx *w = (struct worker_ctx *)arg;
@@ -1283,6 +1302,55 @@ static int test_cmd_phase4_multi_plane(void)
     TEST_ASSERT(ret == HFSSS_OK, "SM-50: single-bit mask multi-plane succeeds");
     ret = media_nand_read(&ctx, 0, 0, 0, 0, 5, 0, r0, NULL);
     TEST_ASSERT(ret == HFSSS_OK && r0[0] == 0x99, "SM-50: data correct with single-bit mask");
+
+    /* SM-54: real multi-plane in-flight suspend/resume */
+    struct mp_worker_ctx mpw = {.ctx = &ctx, .plane_mask = 0x3, .block = 6, .page = 0, .rc = -1};
+    pthread_t mp_thr;
+    pthread_create(&mp_thr, NULL, mp_prog_worker, &mpw);
+    bool saw = wait_for_state(&ctx, DIE_PROG_ARRAY_BUSY, 5000000000ULL);
+    TEST_ASSERT(saw, "SM-54: observed PROG_ARRAY_BUSY on multi-plane op");
+
+    ret = media_nand_program_suspend(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-54: suspend multi-plane prog OK");
+
+    struct nand_die_cmd_state snap54;
+    nand_cmd_engine_snapshot(ctx.nand, &(struct nand_cmd_target){.ch = 0, .chip = 0, .die = 0, .plane_mask = 1},
+                             &snap54);
+    TEST_ASSERT(snap54.state == DIE_SUSPENDED_PROG, "SM-54: state == DIE_SUSPENDED_PROG");
+    TEST_ASSERT(snap54.suspended_target.plane_mask == 0x3, "SM-54: suspended_target.plane_mask == 0x3");
+    TEST_ASSERT(snap54.remaining_ns > 0, "SM-54: remaining_ns > 0");
+
+    ret = media_nand_program_resume(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-54: resume OK");
+    pthread_join(mp_thr, NULL);
+    TEST_ASSERT(mpw.rc == HFSSS_OK, "SM-54: multi-plane worker completed OK");
+
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 6, 0, r0, NULL);
+    TEST_ASSERT(ret == HFSSS_OK && r0[0] == 0x5A, "SM-54: plane 0 data correct after suspend/resume");
+    ret = media_nand_read(&ctx, 0, 0, 0, 1, 6, 0, r1, NULL);
+    TEST_ASSERT(ret == HFSSS_OK && r1[0] == 0x5B, "SM-54: plane 1 data correct after suspend/resume");
+
+    /* SM-55: multi-plane EAT relative deadline assertion */
+    u64 eat_p0_pre = eat_get_for_plane(ctx.eat, 0, 0, 0, 0);
+    u64 eat_p1_pre = eat_get_for_plane(ctx.eat, 0, 0, 0, 1);
+    memset(d0, 0x11, sizeof(d0));
+    memset(d1, 0x22, sizeof(d1));
+    wr_arr[0] = d0;
+    wr_arr[1] = d1;
+    ret = media_nand_multi_plane_program(&ctx, 0, 0, 0, 0x3, 7, 0, wr_arr, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-55: multi-plane program for EAT test");
+    u64 eat_p0_post = eat_get_for_plane(ctx.eat, 0, 0, 0, 0);
+    u64 eat_p1_post = eat_get_for_plane(ctx.eat, 0, 0, 0, 1);
+    u64 delta_p0 = eat_p0_post - eat_p0_pre;
+    u64 delta_p1 = eat_p1_post - eat_p1_pre;
+    TEST_ASSERT(delta_p0 > 0, "SM-55: plane 0 EAT delta > 0");
+    TEST_ASSERT(delta_p1 > 0, "SM-55: plane 1 EAT delta > 0");
+    /* Both planes should advance by approximately the same amount since
+     * multi-plane executes in parallel. Allow 10% tolerance for clock
+     * drift between the two eat_update_stage calls. */
+    u64 max_delta = delta_p0 > delta_p1 ? delta_p0 : delta_p1;
+    u64 min_delta = delta_p0 < delta_p1 ? delta_p0 : delta_p1;
+    TEST_ASSERT(min_delta * 10 >= max_delta * 9, "SM-55: plane EAT deltas within 10% (parallel execution)");
 
     media_cleanup(&ctx);
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;

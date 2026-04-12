@@ -102,7 +102,14 @@ struct nand_die_cmd_state {
     u64 array_budget_ns;
     struct nand_cmd_target suspended_target;
     _Atomic int suspend_request;
-    _Atomic int abort_request;
+    /*
+     * abort_epoch: incremented by RESET to signal abort. Workers snapshot
+     * the epoch at submit time; if the current epoch differs from the
+     * snapshot the worker knows a reset occurred. This avoids the race
+     * where a new command's begin() clears a boolean abort_request
+     * before the old worker observes it.
+     */
+    _Atomic u32 abort_epoch;
 };
 
 void nand_cmd_state_init(struct nand_die_cmd_state *s);

@@ -803,12 +803,21 @@ int media_nand_multi_plane_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die
         return HFSSS_ERR_NOTSUPP;
     }
     u32 remaining = plane_mask;
+    u32 idx = 0;
     while (remaining) {
         u32 p = (u32)__builtin_ctz(remaining);
         remaining &= remaining - 1;
         if (nand_validate_address(ctx->nand, ch, chip, die, p, block, page) != HFSSS_OK) {
             return HFSSS_ERR_INVAL;
         }
+        int is_bad = bbt_is_bad(ctx->bbt, ch, chip, die, p, block);
+        if (is_bad == 1) {
+            return HFSSS_ERR_IO;
+        }
+        if (!data_array[idx]) {
+            return HFSSS_ERR_INVAL;
+        }
+        idx++;
     }
 
     struct mp_read_cb_ctx cbc = {
