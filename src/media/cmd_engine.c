@@ -37,18 +37,46 @@ static struct nand_channel *engine_get_channel(struct nand_device *dev, u32 ch)
     return &dev->channels[ch];
 }
 
-static int plane_index_from_mask(u32 plane_mask, u32 *out)
+/*
+ * Validate that every set bit in plane_mask refers to a plane that
+ * exists in the die geometry. Returns HFSSS_OK and writes the popcount
+ * to *out_count. For single-bit masks the first (and only) plane index
+ * is written to *out_first for backward compat; for multi-bit masks
+ * *out_first receives the lowest set bit.
+ */
+static int engine_validate_planes(u32 plane_mask, u32 plane_count, u32 *out_count, u32 *out_first)
 {
     if (plane_mask == 0) {
         return HFSSS_ERR_INVAL;
     }
-    if ((plane_mask & (plane_mask - 1)) != 0) {
-        /* The engine currently supports a single plane per command. */
-        return HFSSS_ERR_NOTSUPP;
+    u32 remaining = plane_mask;
+    u32 count = 0;
+    u32 first = (u32)__builtin_ctz(remaining);
+    while (remaining) {
+        u32 idx = (u32)__builtin_ctz(remaining);
+        if (idx >= plane_count) {
+            return HFSSS_ERR_INVAL;
+        }
+        count++;
+        remaining &= remaining - 1;
     }
-    *out = (u32)__builtin_ctz(plane_mask);
+    if (out_count) {
+        *out_count = count;
+    }
+    if (out_first) {
+        *out_first = first;
+    }
     return HFSSS_OK;
 }
+
+/*
+ * Helper to iterate set bits in a plane mask. Usage:
+ *   u32 mask = target->plane_mask;
+ *   u32 p;
+ *   FOR_EACH_PLANE(p, mask) { ... use p ... }
+ */
+#define FOR_EACH_PLANE(var, mask_copy)                                                                                 \
+    for (u32 _m = (mask_copy); _m && ((var) = (u32)__builtin_ctz(_m), 1); _m &= _m - 1)
 
 static enum op_type op_to_eat_op(enum nand_cmd_opcode op)
 {
@@ -79,11 +107,30 @@ static u64 engine_total_budget(struct timing_model *timing, enum nand_cmd_opcode
     }
 }
 
-static void engine_wait_until_available(struct eat_ctx *eat, enum op_type op, u32 ch, u32 chip, u32 die, u32 plane)
+static void engine_wait_until_available_mask(struct eat_ctx *eat, enum op_type op, u32 ch, u32 chip, u32 die,
+                                             u32 plane_mask)
 {
-    u64 deadline = eat_get_max(eat, op, ch, chip, die, plane);
+    u64 deadline = 0;
+    u32 p;
+    FOR_EACH_PLANE(p, plane_mask)
+    {
+        u64 d = eat_get_max(eat, op, ch, chip, die, p);
+        if (d > deadline) {
+            deadline = d;
+        }
+    }
     while (get_time_ns() < deadline) {
-        /* Busy spin preserves wait semantics observed by timing-sensitive tests. */
+        sched_yield();
+    }
+}
+
+static void eat_update_stage_mask(struct eat_ctx *eat, enum op_type op, u32 ch, u32 chip, u32 die, u32 plane_mask,
+                                  u64 stage_ns)
+{
+    u32 p;
+    FOR_EACH_PLANE(p, plane_mask)
+    {
+        eat_update_stage(eat, op, ch, chip, die, p, stage_ns);
     }
 }
 
@@ -98,7 +145,7 @@ static void engine_wait_until_available(struct eat_ctx *eat, enum op_type op, u3
  *                          window by waiting for resume (or abort). On return
  *                          the die is back to *_ARRAY_BUSY with a refreshed
  *                          array_started_ns. Caller resumes counting down.
- *   ENGINE_WAIT_ABORT    — abort_request observed (reset-during-suspend, or
+ *   ENGINE_WAIT_ABORT    — abort_epoch changed (reset-during-suspend, or
  *                          reset-while-spinning). Caller MUST skip the
  *                          commit hook and drive the die to IDLE. remaining_ns
  *                          is zeroed.
@@ -114,10 +161,10 @@ enum engine_wait_result {
 
 static enum engine_wait_result engine_run_array_busy(struct nand_device *dev, struct nand_die *die,
                                                      enum nand_cmd_opcode op, const struct nand_cmd_target *target,
-                                                     u32 plane)
+                                                     u32 epoch_at_submit)
 {
     for (;;) {
-        if (atomic_load(&die->cmd_state.abort_request)) {
+        if (atomic_load(&die->cmd_state.abort_epoch) != epoch_at_submit) {
             /* Reset already forced state to DIE_IDLE + in_flight=false
              * under die_lock. We return immediately without touching
              * cmd_state — any mutation here would race with whatever op
@@ -132,7 +179,7 @@ static enum engine_wait_result engine_run_array_busy(struct nand_device *dev, st
              * inside the lock window to avoid overwriting a concurrent
              * reset's clean state with DIE_SUSPENDED_*. */
             mutex_lock(&die->die_lock, 0);
-            if (atomic_load(&die->cmd_state.abort_request)) {
+            if (atomic_load(&die->cmd_state.abort_epoch) != epoch_at_submit) {
                 mutex_unlock(&die->die_lock);
                 return ENGINE_WAIT_ABORT;
             }
@@ -158,11 +205,12 @@ static enum engine_wait_result engine_run_array_busy(struct nand_device *dev, st
             u64 sus_ov = timing_get_suspend_overhead_ns(dev->timing);
             enum op_type sus_eat_op = (op == NAND_OP_PROG) ? OP_PROGRAM : OP_ERASE;
             if (sus_ov > 0) {
-                eat_update_stage(dev->eat, sus_eat_op, target->ch, target->chip, target->die, plane, sus_ov);
+                eat_update_stage_mask(dev->eat, sus_eat_op, target->ch, target->chip, target->die, target->plane_mask,
+                                      sus_ov);
             }
             u64 sus_deadline = get_time_ns() + sus_ov;
             while (get_time_ns() < sus_deadline) {
-                /* busy spin */
+                sched_yield();
             }
 
             /* Wait for resume or abort. While suspended the die state is
@@ -170,7 +218,7 @@ static enum engine_wait_result engine_run_array_busy(struct nand_device *dev, st
              * spin-and-yield pattern bounds CPU cost during test-driven
              * suspend windows. */
             for (;;) {
-                if (atomic_load(&die->cmd_state.abort_request)) {
+                if (atomic_load(&die->cmd_state.abort_epoch) != epoch_at_submit) {
                     return ENGINE_WAIT_ABORT;
                 }
                 enum nand_die_state s;
@@ -201,9 +249,7 @@ static enum engine_wait_result engine_run_array_busy(struct nand_device *dev, st
             mutex_unlock(&die->die_lock);
             return ENGINE_WAIT_DONE;
         }
-        /* Tight spin preserves existing wall-clock semantics for timing
-         * tests. The suspend/abort checks above make this bounded even
-         * during a long tPROG. */
+        sched_yield();
     }
 }
 
@@ -214,18 +260,19 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         return HFSSS_ERR_INVAL;
     }
 
-    u32 plane = 0;
-    int rc = plane_index_from_mask(target->plane_mask, &plane);
+    u32 plane_count = 0;
+    u32 plane_first = 0;
+    struct nand_die *die = engine_get_die(dev, target->ch, target->chip, target->die);
+    if (!die) {
+        return HFSSS_ERR_INVAL;
+    }
+    int rc = engine_validate_planes(target->plane_mask, die->plane_count, &plane_count, &plane_first);
     if (rc != HFSSS_OK) {
         return rc;
     }
 
     struct nand_channel *channel = engine_get_channel(dev, target->ch);
     if (!channel) {
-        return HFSSS_ERR_INVAL;
-    }
-    struct nand_die *die = engine_get_die(dev, target->ch, target->chip, target->die);
-    if (!die) {
         return HFSSS_ERR_INVAL;
     }
 
@@ -266,11 +313,14 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     if (op == NAND_OP_READ &&
         (die->cmd_state.state == DIE_SUSPENDED_PROG || die->cmd_state.state == DIE_SUSPENDED_ERASE)) {
         const struct nand_cmd_target *s = &die->cmd_state.suspended_target;
+        bool planes_overlap = (target->plane_mask & s->plane_mask) != 0;
         bool conflict = false;
-        if (die->cmd_state.state == DIE_SUSPENDED_PROG) {
-            conflict = (target->block == s->block && target->page == s->page);
-        } else {
-            conflict = (target->block == s->block);
+        if (planes_overlap) {
+            if (die->cmd_state.state == DIE_SUSPENDED_PROG) {
+                conflict = (target->block == s->block && target->page == s->page);
+            } else {
+                conflict = (target->block == s->block);
+            }
         }
         if (conflict) {
             mutex_unlock(&die->die_lock);
@@ -300,20 +350,28 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     if (is_read_during_suspend) {
         mutex_unlock(&die->die_lock);
 
-        engine_wait_until_available(dev->eat, eat_op, target->ch, target->chip, target->die, plane);
+        /* Skip the EAT wait: the suspended PROG/ERASE already booked its
+         * full array_ns into EAT, so eat_get_max would return a deadline
+         * in the future that blocks until the PROG/ERASE would have
+         * completed. The ONFI contract says a legal read during suspend
+         * runs in the suspended window, not after the suspended op. The
+         * read's own EAT stages are still committed below so subsequent
+         * operations see the correct timeline. */
 
         if (ops && ops->on_setup_commit) {
             stage_rc = ops->on_setup_commit(cb_ctx);
         }
         if (stage_rc == HFSSS_OK) {
-            eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, setup_ns);
-            eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, array_ns);
+            eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask,
+                                  setup_ns);
+            eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask,
+                                  array_ns);
             if (ops && ops->on_array_commit) {
                 stage_rc = ops->on_array_commit(cb_ctx);
             }
         }
         if (stage_rc == HFSSS_OK) {
-            eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, xfer_ns);
+            eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask, xfer_ns);
             if (ops && ops->on_data_xfer_commit) {
                 stage_rc = ops->on_data_xfer_commit(cb_ctx);
             }
@@ -324,27 +382,35 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     }
 
     nand_cmd_state_begin(&die->cmd_state, op, target, total_ns);
+    u32 epoch_at_submit = atomic_load(&die->cmd_state.abort_epoch);
     mutex_unlock(&die->die_lock);
 
-    engine_wait_until_available(dev->eat, eat_op, target->ch, target->chip, target->die, plane);
+    engine_wait_until_available_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask);
+
+    enum engine_wait_result wait_rc = ENGINE_WAIT_DONE;
+
+    /* Check for abort before each stage. The epoch comparison detects
+     * resets even if a new command was submitted after the reset (which
+     * would have left abort_epoch at the incremented value). */
+    if (atomic_load(&die->cmd_state.abort_epoch) != epoch_at_submit) {
+        wait_rc = ENGINE_WAIT_ABORT;
+    }
 
     /* Setup stage runs the setup hook first so address/target validation can
      * reject the command without burning any array/xfer time, matching the
      * legacy short-circuit where a failed read of an unwritten page consumed
      * no EAT. */
-    if (ops && ops->on_setup_commit) {
+    if (wait_rc != ENGINE_WAIT_ABORT && ops && ops->on_setup_commit) {
         stage_rc = ops->on_setup_commit(cb_ctx);
     }
-    if (stage_rc == HFSSS_OK) {
-        eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, setup_ns);
+    if (wait_rc != ENGINE_WAIT_ABORT && stage_rc == HFSSS_OK) {
+        eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask, setup_ns);
     }
-
-    enum engine_wait_result wait_rc = ENGINE_WAIT_DONE;
 
     /* Array-busy stage: EAT is committed before the commit hook so the
      * caller-visible completion boundary is reached at the start of the
      * array mutation, matching the legacy eat-before-memcpy ordering. */
-    if (stage_rc == HFSSS_OK) {
+    if (wait_rc != ENGINE_WAIT_ABORT && stage_rc == HFSSS_OK) {
         mutex_lock(&die->die_lock, 0);
         enum nand_die_state next_array_state = nand_cmd_next_state_on_complete(die->cmd_state.state, op);
         nand_cmd_state_advance_phase(&die->cmd_state, CMD_PHASE_ARRAY_BUSY, next_array_state);
@@ -353,17 +419,23 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         die->cmd_state.array_started_ns = get_time_ns();
         mutex_unlock(&die->die_lock);
 
-        eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, array_ns);
+        eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask, array_ns);
 
         if (op == NAND_OP_PROG || op == NAND_OP_ERASE) {
             /* Drop the channel lock so a concurrent suspend/reset submit
              * can reach the die. The die state machine guards against any
              * other submit type sneaking in during the window. */
             mutex_unlock(&channel->lock);
-            wait_rc = engine_run_array_busy(dev, die, op, target, plane);
+            wait_rc = engine_run_array_busy(dev, die, op, target, epoch_at_submit);
             mutex_lock(&channel->lock, 0);
         }
 
+        /* Recheck abort after the spin returns DONE: a reset could land
+         * between the spin exit and this point (the channel lock was just
+         * re-acquired, but die_lock was not held across the gap). */
+        if (wait_rc == ENGINE_WAIT_DONE && atomic_load(&die->cmd_state.abort_epoch) != epoch_at_submit) {
+            wait_rc = ENGINE_WAIT_ABORT;
+        }
         if (wait_rc == ENGINE_WAIT_ABORT) {
             stage_rc = HFSSS_ERR_BUSY;
         } else if (ops && ops->on_array_commit) {
@@ -379,7 +451,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         enum nand_die_state next_xfer_state = nand_cmd_next_state_on_complete(die->cmd_state.state, op);
         nand_cmd_state_advance_phase(&die->cmd_state, CMD_PHASE_DATA_XFER, next_xfer_state);
         mutex_unlock(&die->die_lock);
-        eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, xfer_ns);
+        eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask, xfer_ns);
         if (ops && ops->on_data_xfer_commit) {
             stage_rc = ops->on_data_xfer_commit(cb_ctx);
         }
@@ -408,7 +480,8 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     die->cmd_state.array_budget_ns = 0;
     die->cmd_state.array_started_ns = 0;
     atomic_store(&die->cmd_state.suspend_request, 0);
-    atomic_store(&die->cmd_state.abort_request, 0);
+    /* abort_epoch is not cleared here — it is a monotonic counter.
+     * The next command will snapshot whatever value it has. */
     if (op == NAND_OP_PROG || op == NAND_OP_ERASE) {
         die->cmd_state.latched_fail = (stage_rc != HFSSS_OK);
     }
@@ -469,7 +542,7 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
      * Reset takes only the die lock so it can abort an in-flight PROG/ERASE
      * whose worker is spinning in engine_run_array_busy with the channel
      * lock released. The force-reset writes a clean state and sets
-     * abort_request so the worker — if one exists — will observe the flag
+     * abort_epoch so the worker — if one exists — will observe the change
      * on its next iteration and return ENGINE_WAIT_ABORT. The worker's
      * engine_submit final block is skipped on abort so it cannot overwrite
      * the clean state written here.
@@ -481,20 +554,18 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
         return HFSSS_ERR_BUSY;
     }
 
-    /* Signal any running worker to bail. Harmless if no worker exists
-     * (synthetic test state, or die is already IDLE). */
-    atomic_store(&die->cmd_state.abort_request, 1);
-    atomic_store(&die->cmd_state.suspend_request, 0);
+    /* Increment the abort epoch so any running worker (past or present)
+     * detects the reset via its saved epoch snapshot. Save the new epoch
+     * before zeroing the rest of cmd_state so the memset in
+     * nand_cmd_state_init does not revert it to zero. */
+    u32 new_epoch = atomic_load(&die->cmd_state.abort_epoch) + 1;
 
-    die->cmd_state.state = DIE_IDLE;
+    /* Full state reset: zero every field to canonical post-reset baseline
+     * so enhanced status never leaks stale opcode, target, timestamps,
+     * or suspend counters from the prior operation. */
+    nand_cmd_state_init(&die->cmd_state);
     die->cmd_state.phase = CMD_PHASE_COMPLETE;
-    die->cmd_state.in_flight = false;
-    die->cmd_state.remaining_ns = 0;
-    die->cmd_state.result_status = HFSSS_OK;
-    die->cmd_state.array_budget_ns = 0;
-    die->cmd_state.array_started_ns = 0;
-    /* ONFI 4.2: RESET clears the sticky FAIL latch. */
-    die->cmd_state.latched_fail = false;
+    atomic_store(&die->cmd_state.abort_epoch, new_epoch);
 
     mutex_unlock(&die->die_lock);
     return HFSSS_OK;
@@ -572,24 +643,25 @@ static int engine_submit_resume(struct nand_device *dev, enum nand_cmd_opcode op
         return HFSSS_ERR_INVAL;
     }
 
-    u32 plane = 0;
-    /* Resume updates EAT on the same plane as the suspended op. */
     mutex_lock(&die->die_lock, 0);
     if (!nand_cmd_is_legal_in_state(die->cmd_state.state, op)) {
         mutex_unlock(&die->die_lock);
         return HFSSS_ERR_BUSY;
     }
-    int rc = plane_index_from_mask(die->cmd_state.suspended_target.plane_mask, &plane);
-    if (rc != HFSSS_OK) {
-        plane = 0;
-    }
+    u32 suspended_mask = die->cmd_state.suspended_target.plane_mask;
     die->cmd_state.state = (op == NAND_OP_PROG_RESUME) ? DIE_PROG_ARRAY_BUSY : DIE_ERASE_ARRAY_BUSY;
     mutex_unlock(&die->die_lock);
 
     enum op_type eat_op = (op == NAND_OP_PROG_RESUME) ? OP_PROGRAM : OP_ERASE;
     u64 resume_ov = timing_get_resume_overhead_ns(dev->timing);
     if (resume_ov > 0) {
-        eat_update_stage(dev->eat, eat_op, target->ch, target->chip, target->die, plane, resume_ov);
+        eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, suspended_mask, resume_ov);
+        /* Drain wall-clock for tRSBSY, symmetric with the tSSBSY
+         * wall-clock spin in the suspend arm of engine_run_array_busy. */
+        u64 res_deadline = get_time_ns() + resume_ov;
+        while (get_time_ns() < res_deadline) {
+            /* busy spin */
+        }
     }
     return HFSSS_OK;
 }

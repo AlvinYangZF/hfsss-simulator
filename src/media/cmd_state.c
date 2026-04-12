@@ -47,7 +47,10 @@ void nand_cmd_state_begin(struct nand_die_cmd_state *s, enum nand_cmd_opcode op,
     s->array_budget_ns = 0;
     memset(&s->suspended_target, 0, sizeof(s->suspended_target));
     atomic_store(&s->suspend_request, 0);
-    atomic_store(&s->abort_request, 0);
+    /* Do NOT touch abort_epoch here — a new command must not clear an
+     * abort signal that the previous worker has not yet observed. The
+     * worker compares its saved epoch snapshot against the current
+     * value to detect resets. */
 }
 
 void nand_cmd_state_advance_phase(struct nand_die_cmd_state *s, enum nand_cmd_phase next_phase,
