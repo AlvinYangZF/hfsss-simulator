@@ -60,6 +60,19 @@ int nand_cmd_engine_submit_read_param_page(struct nand_device *dev, const struct
                                            struct nand_parameter_page *out);
 
 /*
+ * Suspend/resume submission paths. All four take only the die-level lock
+ * so the submitting thread can reach the running worker without blocking
+ * on the channel lock that the worker released across its array-busy
+ * spin. The suspend entry points only use (ch, chip, die) from target;
+ * block/page/plane_mask fields are ignored because these commands act on
+ * the currently in-flight op of the addressed die.
+ */
+int nand_cmd_engine_submit_prog_suspend(struct nand_device *dev, const struct nand_cmd_target *target);
+int nand_cmd_engine_submit_prog_resume(struct nand_device *dev, const struct nand_cmd_target *target);
+int nand_cmd_engine_submit_erase_suspend(struct nand_device *dev, const struct nand_cmd_target *target);
+int nand_cmd_engine_submit_erase_resume(struct nand_device *dev, const struct nand_cmd_target *target);
+
+/*
  * Stage-budget split. Kept in its own translation unit so the partition
  * can be refined later without touching the engine.
  */

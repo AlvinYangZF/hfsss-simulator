@@ -43,6 +43,11 @@ void nand_cmd_state_begin(struct nand_die_cmd_state *s, enum nand_cmd_opcode op,
     s->in_flight = true;
     s->phase = CMD_PHASE_SETUP;
     s->state = nand_cmd_next_state_on_accept(s->state, op);
+    s->array_started_ns = 0;
+    s->array_budget_ns = 0;
+    memset(&s->suspended_target, 0, sizeof(s->suspended_target));
+    atomic_store(&s->suspend_request, 0);
+    atomic_store(&s->abort_request, 0);
 }
 
 void nand_cmd_state_advance_phase(struct nand_die_cmd_state *s, enum nand_cmd_phase next_phase,

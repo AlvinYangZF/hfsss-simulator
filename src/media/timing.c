@@ -13,6 +13,8 @@ static const struct timing_params default_slc_timing = {
     .tWB = 100,
     .tWHR = 60,
     .tRHW = 60,
+    .tSSBSY = 5000,
+    .tRSBSY = 5000,
 };
 
 /* Default timing parameters for MLC (ns) */
@@ -27,6 +29,8 @@ static const struct timing_params default_mlc_timing = {
     .tWB = 150,
     .tWHR = 80,
     .tRHW = 80,
+    .tSSBSY = 10000,
+    .tRSBSY = 10000,
 };
 
 /* Default timing parameters for TLC (ns) */
@@ -37,6 +41,8 @@ static const struct tlc_timing default_tlc_timing = {
     .tPROG_LSB = 900000,
     .tPROG_CSB = 1100000,
     .tPROG_MSB = 1300000,
+    .tSSBSY = 25000,
+    .tRSBSY = 25000,
 };
 
 /* Default timing parameters for QLC (ns) */
@@ -51,6 +57,8 @@ static const struct timing_params default_qlc_timing = {
     .tWB = 200,
     .tWHR = 100,
     .tRHW = 100,
+    .tSSBSY = 50000,
+    .tRSBSY = 50000,
 };
 
 int timing_model_init(struct timing_model *model, enum nand_type type)
@@ -94,10 +102,14 @@ u64 timing_get_read_latency(struct timing_model *model, u32 page_idx)
     case NAND_TYPE_TLC:
         /* TLC has different read latencies for different page types */
         switch (page_idx % 3) {
-        case 0: return model->tlc.tR_LSB;
-        case 1: return model->tlc.tR_CSB;
-        case 2: return model->tlc.tR_MSB;
-        default: return model->tlc.tR_LSB;
+        case 0:
+            return model->tlc.tR_LSB;
+        case 1:
+            return model->tlc.tR_CSB;
+        case 2:
+            return model->tlc.tR_MSB;
+        default:
+            return model->tlc.tR_LSB;
         }
     case NAND_TYPE_QLC:
         return model->qlc.tR;
@@ -120,10 +132,14 @@ u64 timing_get_prog_latency(struct timing_model *model, u32 page_idx)
     case NAND_TYPE_TLC:
         /* TLC has different program latencies for different page types */
         switch (page_idx % 3) {
-        case 0: return model->tlc.tPROG_LSB;
-        case 1: return model->tlc.tPROG_CSB;
-        case 2: return model->tlc.tPROG_MSB;
-        default: return model->tlc.tPROG_LSB;
+        case 0:
+            return model->tlc.tPROG_LSB;
+        case 1:
+            return model->tlc.tPROG_CSB;
+        case 2:
+            return model->tlc.tPROG_MSB;
+        default:
+            return model->tlc.tPROG_LSB;
         }
     case NAND_TYPE_QLC:
         return model->qlc.tPROG;
@@ -150,5 +166,45 @@ u64 timing_get_erase_latency(struct timing_model *model)
         return model->qlc.tERS;
     default:
         return model->slc.tERS * 2;
+    }
+}
+
+u64 timing_get_suspend_overhead_ns(struct timing_model *model)
+{
+    if (!model) {
+        return 0;
+    }
+
+    switch (model->type) {
+    case NAND_TYPE_SLC:
+        return model->slc.tSSBSY;
+    case NAND_TYPE_MLC:
+        return model->mlc.tSSBSY;
+    case NAND_TYPE_TLC:
+        return model->tlc.tSSBSY;
+    case NAND_TYPE_QLC:
+        return model->qlc.tSSBSY;
+    default:
+        return model->tlc.tSSBSY;
+    }
+}
+
+u64 timing_get_resume_overhead_ns(struct timing_model *model)
+{
+    if (!model) {
+        return 0;
+    }
+
+    switch (model->type) {
+    case NAND_TYPE_SLC:
+        return model->slc.tRSBSY;
+    case NAND_TYPE_MLC:
+        return model->mlc.tRSBSY;
+    case NAND_TYPE_TLC:
+        return model->tlc.tRSBSY;
+    case NAND_TYPE_QLC:
+        return model->qlc.tRSBSY;
+    default:
+        return model->tlc.tRSBSY;
     }
 }

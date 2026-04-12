@@ -1,3 +1,4 @@
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -838,6 +839,292 @@ static int test_cmd_phase2_commands(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Phase 3 suspend/resume tests — worker thread helpers */
+struct worker_ctx {
+    struct media_ctx *ctx;
+    u32 block;
+    u32 page;
+    int rc;
+};
+
+static void *prog_worker(void *arg)
+{
+    struct worker_ctx *w = (struct worker_ctx *)arg;
+    u8 buf[4096];
+    memset(buf, 0x5A, sizeof(buf));
+    w->rc = media_nand_program(w->ctx, 0, 0, 0, 0, w->block, w->page, buf, NULL);
+    return NULL;
+}
+
+static void *erase_worker(void *arg)
+{
+    struct worker_ctx *w = (struct worker_ctx *)arg;
+    w->rc = media_nand_erase(w->ctx, 0, 0, 0, 0, w->block);
+    return NULL;
+}
+
+static bool wait_for_state(struct media_ctx *ctx, enum nand_die_state want, u64 timeout_ns)
+{
+    u64 deadline = get_time_ns() + timeout_ns;
+    while (get_time_ns() < deadline) {
+        struct nand_status_enhanced enh;
+        if (media_nand_read_status_enhanced(ctx, 0, 0, 0, &enh) == HFSSS_OK && enh.state == want) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int test_cmd_phase3_suspend_resume(void)
+{
+    printf("\n=== NAND Phase 3 Suspend/Resume Tests ===\n");
+
+    struct media_config config = {
+        .channel_count = 1,
+        .chips_per_channel = 1,
+        .dies_per_chip = 1,
+        .planes_per_die = 1,
+        .blocks_per_plane = 16,
+        .pages_per_block = 16,
+        .page_size = 4096,
+        .spare_size = 64,
+        .nand_type = NAND_TYPE_TLC,
+    };
+
+    struct media_ctx ctx;
+    int ret = media_init(&ctx, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "Phase3: media_init succeeds");
+    if (ret != HFSSS_OK) {
+        return TEST_FAIL;
+    }
+
+    /* Pre-program a page for read-during-suspend tests. */
+    u8 preprog_buf[4096];
+    memset(preprog_buf, 0xBB, sizeof(preprog_buf));
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 7, 0, preprog_buf, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "Phase3: pre-program block 7 page 0");
+
+    /* SM-25: prog_suspend legal transition */
+    struct worker_ctx wctx = {.ctx = &ctx, .block = 5, .page = 10, .rc = -1};
+    pthread_t thr;
+    pthread_create(&thr, NULL, prog_worker, &wctx);
+    bool saw_busy = wait_for_state(&ctx, DIE_PROG_ARRAY_BUSY, 5000000000ULL);
+    TEST_ASSERT(saw_busy, "SM-25: observed DIE_PROG_ARRAY_BUSY");
+
+    ret = media_nand_program_suspend(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-25: prog_suspend returns OK");
+    struct nand_status_enhanced enh;
+    ret = media_nand_read_status_enhanced(&ctx, 0, 0, 0, &enh);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-25: status after suspend OK");
+    TEST_ASSERT(enh.state == DIE_SUSPENDED_PROG, "SM-25: state == DIE_SUSPENDED_PROG");
+    TEST_ASSERT(enh.suspend_count == 1, "SM-25: suspend_count == 1");
+    TEST_ASSERT(enh.remaining_ns > 0, "SM-25: remaining_ns > 0");
+
+    ret = media_nand_program_resume(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-25: resume returns OK");
+    pthread_join(thr, NULL);
+    TEST_ASSERT(wctx.rc == HFSSS_OK, "SM-25: worker completed OK");
+
+    u8 readback[4096];
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 5, 10, readback, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-25: read-back after suspend/resume OK");
+    TEST_ASSERT(readback[0] == 0x5A, "SM-25: data correct after suspend/resume");
+
+    /* SM-26: suspend-illegal-state matrix */
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_IDLE, NAND_OP_PROG_SUSPEND) == false,
+                "SM-26: prog_suspend illegal in DIE_IDLE");
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_PROG_SETUP, NAND_OP_PROG_SUSPEND) == false,
+                "SM-26: prog_suspend illegal in DIE_PROG_SETUP");
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_ERASE_ARRAY_BUSY, NAND_OP_PROG_SUSPEND) == false,
+                "SM-26: prog_suspend illegal in DIE_ERASE_ARRAY_BUSY (type mismatch)");
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_PROG_ARRAY_BUSY, NAND_OP_ERASE_SUSPEND) == false,
+                "SM-26: erase_suspend illegal in DIE_PROG_ARRAY_BUSY");
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_SUSPENDED_PROG, NAND_OP_PROG_SUSPEND) == false,
+                "SM-26: no nested suspend");
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_SUSPENDED_ERASE, NAND_OP_PROG_RESUME) == false,
+                "SM-26: prog_resume illegal on suspended erase (cross-type)");
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_SUSPENDED_PROG, NAND_OP_ERASE_RESUME) == false,
+                "SM-26: erase_resume illegal on suspended prog (cross-type)");
+
+    /* SM-27: read during suspend, same-page conflict → BUSY */
+    wctx = (struct worker_ctx){.ctx = &ctx, .block = 5, .page = 11, .rc = -1};
+    pthread_create(&thr, NULL, prog_worker, &wctx);
+    saw_busy = wait_for_state(&ctx, DIE_PROG_ARRAY_BUSY, 5000000000ULL);
+    ret = media_nand_program_suspend(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-27: suspend OK");
+
+    u8 conflict_buf[4096];
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 5, 11, conflict_buf, NULL);
+    TEST_ASSERT(ret == HFSSS_ERR_BUSY, "SM-27: same-page read returns BUSY");
+
+    ret = media_nand_program_resume(&ctx, 0, 0, 0);
+    pthread_join(thr, NULL);
+    TEST_ASSERT(wctx.rc == HFSSS_OK, "SM-27: worker completed OK after conflict rejection");
+
+    /* SM-28: read during suspend, different-page → success */
+    wctx = (struct worker_ctx){.ctx = &ctx, .block = 5, .page = 12, .rc = -1};
+    pthread_create(&thr, NULL, prog_worker, &wctx);
+    saw_busy = wait_for_state(&ctx, DIE_PROG_ARRAY_BUSY, 5000000000ULL);
+    ret = media_nand_program_suspend(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-28: suspend OK");
+
+    struct nand_die_cmd_state snap_pre_read;
+    ret = nand_cmd_engine_snapshot(ctx.nand, &(struct nand_cmd_target){.ch = 0, .chip = 0, .die = 0, .plane_mask = 1},
+                                   &snap_pre_read);
+
+    u8 non_conflict_buf[4096];
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 7, 0, non_conflict_buf, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-28: different-block read OK during suspend");
+    TEST_ASSERT(non_conflict_buf[0] == 0xBB, "SM-28: read data correct");
+
+    struct nand_die_cmd_state snap_post_read;
+    ret = nand_cmd_engine_snapshot(ctx.nand, &(struct nand_cmd_target){.ch = 0, .chip = 0, .die = 0, .plane_mask = 1},
+                                   &snap_post_read);
+    TEST_ASSERT(snap_post_read.state == DIE_SUSPENDED_PROG, "SM-28: state preserved after non-conflict read");
+    TEST_ASSERT(snap_post_read.suspend_count == snap_pre_read.suspend_count, "SM-28: suspend_count preserved");
+    TEST_ASSERT(snap_post_read.remaining_ns == snap_pre_read.remaining_ns, "SM-28: remaining_ns preserved across read");
+
+    ret = media_nand_program_resume(&ctx, 0, 0, 0);
+    pthread_join(thr, NULL);
+    TEST_ASSERT(wctx.rc == HFSSS_OK, "SM-28: worker completed OK after non-conflict read");
+
+    /* SM-29: resume completes remaining_ns */
+    wctx = (struct worker_ctx){.ctx = &ctx, .block = 5, .page = 13, .rc = -1};
+    pthread_create(&thr, NULL, prog_worker, &wctx);
+    saw_busy = wait_for_state(&ctx, DIE_PROG_ARRAY_BUSY, 5000000000ULL);
+    ret = media_nand_program_suspend(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-29: suspend OK");
+
+    struct nand_die_cmd_state snap_29;
+    nand_cmd_engine_snapshot(ctx.nand, &(struct nand_cmd_target){.ch = 0, .chip = 0, .die = 0, .plane_mask = 1},
+                             &snap_29);
+    u64 remaining_before_resume = snap_29.remaining_ns;
+    TEST_ASSERT(remaining_before_resume > 0, "SM-29: remaining_ns positive before resume");
+
+    ret = media_nand_program_resume(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-29: resume OK");
+    pthread_join(thr, NULL);
+    TEST_ASSERT(wctx.rc == HFSSS_OK, "SM-29: worker completed successfully");
+
+    u8 rb29[4096];
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 5, 13, rb29, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-29: data persisted after suspend/resume");
+    TEST_ASSERT(rb29[0] == 0x5A, "SM-29: data content matches");
+
+    /* SM-30: reset during suspended_prog aborts cleanly */
+    wctx = (struct worker_ctx){.ctx = &ctx, .block = 6, .page = 0, .rc = -1};
+    pthread_create(&thr, NULL, prog_worker, &wctx);
+    saw_busy = wait_for_state(&ctx, DIE_PROG_ARRAY_BUSY, 5000000000ULL);
+    ret = media_nand_program_suspend(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-30: suspend OK");
+
+    ret = media_nand_reset(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-30: reset OK");
+    pthread_join(thr, NULL);
+    TEST_ASSERT(wctx.rc == HFSSS_ERR_BUSY, "SM-30: worker returns BUSY (aborted)");
+
+    struct nand_die_cmd_state snap_30;
+    nand_cmd_engine_snapshot(ctx.nand, &(struct nand_cmd_target){.ch = 0, .chip = 0, .die = 0, .plane_mask = 1},
+                             &snap_30);
+    TEST_ASSERT(snap_30.state == DIE_IDLE, "SM-30: state == DIE_IDLE after reset-abort");
+    TEST_ASSERT(snap_30.in_flight == false, "SM-30: in_flight false after reset-abort");
+    TEST_ASSERT(snap_30.latched_fail == false, "SM-30: FAIL latch cleared by reset");
+
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 6, 0, readback, NULL);
+    TEST_ASSERT(ret != HFSSS_OK, "SM-30: aborted program did not commit page");
+
+    /* SM-31: erase suspend/resume symmetric path */
+    /* Erase block 8 (unused) — need it non-erased first, program then erase */
+    u8 buf31[4096];
+    memset(buf31, 0xDD, sizeof(buf31));
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 8, 0, buf31, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-31: pre-program block 8 for erase test");
+
+    wctx = (struct worker_ctx){.ctx = &ctx, .block = 8, .page = 0, .rc = -1};
+    pthread_create(&thr, NULL, erase_worker, &wctx);
+    saw_busy = wait_for_state(&ctx, DIE_ERASE_ARRAY_BUSY, 5000000000ULL);
+    TEST_ASSERT(saw_busy, "SM-31: observed DIE_ERASE_ARRAY_BUSY");
+
+    ret = media_nand_erase_suspend(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-31: erase_suspend OK");
+
+    ret = media_nand_read_status_enhanced(&ctx, 0, 0, 0, &enh);
+    TEST_ASSERT(enh.state == DIE_SUSPENDED_ERASE, "SM-31: state == DIE_SUSPENDED_ERASE");
+    TEST_ASSERT(enh.suspend_count == 1, "SM-31: suspend_count == 1");
+
+    ret = media_nand_erase_resume(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-31: erase_resume OK");
+    pthread_join(thr, NULL);
+    TEST_ASSERT(wctx.rc == HFSSS_OK, "SM-31: erase worker completed OK");
+
+    u32 ec = media_nand_get_erase_count(&ctx, 0, 0, 0, 0, 8);
+    TEST_ASSERT(ec >= 1, "SM-31: erase count incremented");
+
+    /* SM-32: reset during erase array-busy aborts cleanly */
+    memset(buf31, 0xFF, sizeof(buf31));
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 11, 0, buf31, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-32: pre-program block 11");
+
+    wctx = (struct worker_ctx){.ctx = &ctx, .block = 11, .page = 0, .rc = -1};
+    pthread_create(&thr, NULL, erase_worker, &wctx);
+    saw_busy = wait_for_state(&ctx, DIE_ERASE_ARRAY_BUSY, 5000000000ULL);
+    TEST_ASSERT(saw_busy, "SM-32: observed DIE_ERASE_ARRAY_BUSY");
+
+    ret = media_nand_erase_suspend(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-32: erase suspend OK");
+
+    ret = media_nand_reset(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-32: reset OK");
+    pthread_join(thr, NULL);
+    TEST_ASSERT(wctx.rc == HFSSS_ERR_BUSY, "SM-32: erase worker returns BUSY (aborted)");
+
+    struct nand_die_cmd_state snap_32;
+    nand_cmd_engine_snapshot(ctx.nand, &(struct nand_cmd_target){.ch = 0, .chip = 0, .die = 0, .plane_mask = 1},
+                             &snap_32);
+    TEST_ASSERT(snap_32.state == DIE_IDLE, "SM-32: state == DIE_IDLE after erase reset-abort");
+    TEST_ASSERT(snap_32.in_flight == false, "SM-32: in_flight false");
+
+    /* SM-33: wrong-type resume illegal */
+    memset(buf31, 0xEE, sizeof(buf31));
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 9, 0, buf31, NULL);
+    wctx = (struct worker_ctx){.ctx = &ctx, .block = 9, .page = 0, .rc = -1};
+    pthread_create(&thr, NULL, erase_worker, &wctx);
+    saw_busy = wait_for_state(&ctx, DIE_ERASE_ARRAY_BUSY, 5000000000ULL);
+    ret = media_nand_erase_suspend(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-33: erase suspend OK");
+
+    ret = media_nand_program_resume(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_ERR_BUSY, "SM-33: prog_resume on suspended erase returns BUSY");
+
+    ret = media_nand_erase_resume(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-33: correct resume type OK");
+    pthread_join(thr, NULL);
+
+    /* SM-34: status_byte during DIE_SUSPENDED_PROG */
+    wctx = (struct worker_ctx){.ctx = &ctx, .block = 10, .page = 0, .rc = -1};
+    pthread_create(&thr, NULL, prog_worker, &wctx);
+    saw_busy = wait_for_state(&ctx, DIE_PROG_ARRAY_BUSY, 5000000000ULL);
+    ret = media_nand_program_suspend(&ctx, 0, 0, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-34: suspend OK");
+
+    u8 sr34 = 0;
+    ret = media_nand_read_status_byte(&ctx, 0, 0, 0, &sr34);
+    TEST_ASSERT(ret == HFSSS_OK, "SM-34: status_byte during suspend OK");
+    TEST_ASSERT((sr34 & NAND_STATUS_RDY) != 0, "SM-34: RDY set during suspend");
+    TEST_ASSERT((sr34 & NAND_STATUS_ARDY) == 0, "SM-34: ARDY clear during suspend");
+    TEST_ASSERT((sr34 & NAND_STATUS_FAIL) == 0, "SM-34: FAIL clear during suspend");
+
+    ret = media_nand_read_status_enhanced(&ctx, 0, 0, 0, &enh);
+    TEST_ASSERT(enh.suspended_program == true, "SM-34: suspended_program flag set");
+    TEST_ASSERT(enh.suspended_erase == false, "SM-34: suspended_erase flag clear");
+
+    ret = media_nand_program_resume(&ctx, 0, 0, 0);
+    pthread_join(thr, NULL);
+
+    media_cleanup(&ctx);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -858,6 +1145,7 @@ int main(void)
     test_persistence();
     test_cmd_state_machine();
     test_cmd_phase2_commands();
+    test_cmd_phase3_suspend_resume();
 
     printf("\n========================================\n");
     printf("Test Summary\n");

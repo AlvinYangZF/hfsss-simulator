@@ -57,6 +57,7 @@ static const bool k_legal[DIE_STATE_COUNT][NAND_OP_COUNT] = {
             [NAND_OP_RESET] = true,
             [NAND_OP_READ_STATUS] = true,
             [NAND_OP_READ_STATUS_ENHANCED] = true,
+            [NAND_OP_PROG_SUSPEND] = true,
         },
     [DIE_ERASE_SETUP] =
         {
@@ -69,22 +70,27 @@ static const bool k_legal[DIE_STATE_COUNT][NAND_OP_COUNT] = {
             [NAND_OP_RESET] = true,
             [NAND_OP_READ_STATUS] = true,
             [NAND_OP_READ_STATUS_ENHANCED] = true,
+            [NAND_OP_ERASE_SUSPEND] = true,
         },
     [DIE_SUSPENDED_PROG] =
         {
+            [NAND_OP_READ] = true,
             [NAND_OP_RESET] = true,
             [NAND_OP_READ_STATUS] = true,
             [NAND_OP_READ_STATUS_ENHANCED] = true,
             [NAND_OP_READ_ID] = true,
             [NAND_OP_READ_PARAM_PAGE] = true,
+            [NAND_OP_PROG_RESUME] = true,
         },
     [DIE_SUSPENDED_ERASE] =
         {
+            [NAND_OP_READ] = true,
             [NAND_OP_RESET] = true,
             [NAND_OP_READ_STATUS] = true,
             [NAND_OP_READ_STATUS_ENHANCED] = true,
             [NAND_OP_READ_ID] = true,
             [NAND_OP_READ_PARAM_PAGE] = true,
+            [NAND_OP_ERASE_RESUME] = true,
         },
     [DIE_RESETTING] =
         {
@@ -108,6 +114,13 @@ enum nand_die_state nand_cmd_next_state_on_accept(enum nand_die_state state, enu
     }
     switch (op) {
     case NAND_OP_READ:
+        /* Read accepted during a suspended program/erase stays in the
+         * suspend state — the read runs to completion on top of the
+         * preserved suspension context and must not disturb it. The engine
+         * drives its own transitions for the read path in that case. */
+        if (state == DIE_SUSPENDED_PROG || state == DIE_SUSPENDED_ERASE) {
+            return state;
+        }
         return DIE_READ_SETUP;
     case NAND_OP_PROG:
         return DIE_PROG_SETUP;
@@ -115,6 +128,14 @@ enum nand_die_state nand_cmd_next_state_on_accept(enum nand_die_state state, enu
         return DIE_ERASE_SETUP;
     case NAND_OP_RESET:
         return DIE_RESETTING;
+    case NAND_OP_PROG_SUSPEND:
+        return DIE_SUSPENDED_PROG;
+    case NAND_OP_ERASE_SUSPEND:
+        return DIE_SUSPENDED_ERASE;
+    case NAND_OP_PROG_RESUME:
+        return DIE_PROG_ARRAY_BUSY;
+    case NAND_OP_ERASE_RESUME:
+        return DIE_ERASE_ARRAY_BUSY;
     default:
         return state;
     }

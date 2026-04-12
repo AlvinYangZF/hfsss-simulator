@@ -214,10 +214,11 @@ static void build_parameter_page(struct nand_parameter_page *pp, const struct me
     pp->ecc_bits_required = ecc_bits_from_nand_type(cfg->nand_type);
     pp->ecc_codeword_size = 1024;
 
-    pp->supported_cmd_bitmap = (1u << NAND_OP_READ) | (1u << NAND_OP_PROG) | (1u << NAND_OP_ERASE) |
-                               (1u << NAND_OP_RESET) | (1u << NAND_OP_READ_STATUS) |
-                               (1u << NAND_OP_READ_STATUS_ENHANCED) | (1u << NAND_OP_READ_ID) |
-                               (1u << NAND_OP_READ_PARAM_PAGE);
+    pp->supported_cmd_bitmap =
+        (1u << NAND_OP_READ) | (1u << NAND_OP_PROG) | (1u << NAND_OP_ERASE) | (1u << NAND_OP_RESET) |
+        (1u << NAND_OP_READ_STATUS) | (1u << NAND_OP_READ_STATUS_ENHANCED) | (1u << NAND_OP_READ_ID) |
+        (1u << NAND_OP_READ_PARAM_PAGE) | (1u << NAND_OP_PROG_SUSPEND) | (1u << NAND_OP_PROG_RESUME) |
+        (1u << NAND_OP_ERASE_SUSPEND) | (1u << NAND_OP_ERASE_RESUME);
 
     if (timing) {
         pp->tR_ns = timing_get_read_latency(timing, 0);
@@ -270,7 +271,7 @@ void nand_status_byte_from_cmd_state(const struct nand_die_cmd_state *s, u8 *out
         break;
     }
 
-    if (!array_busy) {
+    if (!array_busy && !suspended) {
         value |= NAND_STATUS_ARDY;
     }
     if (!array_busy || suspended) {
@@ -330,8 +331,9 @@ void nand_status_enhanced_from_cmd_state(const struct nand_die_cmd_state *s, str
         array_busy = true;
         break;
     }
-    out->array_ready = !array_busy;
-    out->ready = !array_busy || out->suspended_program || out->suspended_erase;
+    bool suspended = out->suspended_program || out->suspended_erase;
+    out->array_ready = !array_busy && !suspended;
+    out->ready = !array_busy || suspended;
 
     out->last_op_failed = s->latched_fail;
 

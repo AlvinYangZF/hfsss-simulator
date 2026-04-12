@@ -585,6 +585,73 @@ int media_nand_read_parameter_page(struct media_ctx *ctx, u32 ch, u32 chip, u32 
     return nand_cmd_engine_submit_read_param_page(ctx->nand, &target, out);
 }
 
+static int media_build_die_target(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_cmd_target *out)
+{
+    if (!ctx || !ctx->initialized || !out) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (ch >= ctx->config.channel_count || chip >= ctx->config.chips_per_channel || die >= ctx->config.dies_per_chip) {
+        return HFSSS_ERR_INVAL;
+    }
+    out->ch = ch;
+    out->chip = chip;
+    out->die = die;
+    out->plane_mask = 1u << 0;
+    out->block = 0;
+    out->page = 0;
+    return HFSSS_OK;
+}
+
+int media_nand_program_suspend(struct media_ctx *ctx, u32 ch, u32 chip, u32 die)
+{
+    struct nand_cmd_target target;
+    int rc = media_build_die_target(ctx, ch, chip, die, &target);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+    return nand_cmd_engine_submit_prog_suspend(ctx->nand, &target);
+}
+
+int media_nand_program_resume(struct media_ctx *ctx, u32 ch, u32 chip, u32 die)
+{
+    struct nand_cmd_target target;
+    int rc = media_build_die_target(ctx, ch, chip, die, &target);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+    return nand_cmd_engine_submit_prog_resume(ctx->nand, &target);
+}
+
+int media_nand_erase_suspend(struct media_ctx *ctx, u32 ch, u32 chip, u32 die)
+{
+    struct nand_cmd_target target;
+    int rc = media_build_die_target(ctx, ch, chip, die, &target);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+    return nand_cmd_engine_submit_erase_suspend(ctx->nand, &target);
+}
+
+int media_nand_erase_resume(struct media_ctx *ctx, u32 ch, u32 chip, u32 die)
+{
+    struct nand_cmd_target target;
+    int rc = media_build_die_target(ctx, ch, chip, die, &target);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+    return nand_cmd_engine_submit_erase_resume(ctx->nand, &target);
+}
+
+int media_nand_reset(struct media_ctx *ctx, u32 ch, u32 chip, u32 die)
+{
+    struct nand_cmd_target target;
+    int rc = media_build_die_target(ctx, ch, chip, die, &target);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+    return nand_cmd_engine_submit_reset(ctx->nand, &target);
+}
+
 int media_nand_is_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
 {
     int is_bad;
