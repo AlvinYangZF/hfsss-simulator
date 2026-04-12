@@ -585,6 +585,314 @@ int media_nand_read_parameter_page(struct media_ctx *ctx, u32 ch, u32 chip, u32 
     return nand_cmd_engine_submit_read_param_page(ctx->nand, &target, out);
 }
 
+/*
+ * Multi-plane callback contexts. Each carries an array of per-plane
+ * data/spare pointers indexed by position within the plane_mask (LSB
+ * first). The commit hooks iterate all planes, performing the same
+ * operation that the single-plane hooks do but once per plane.
+ */
+struct mp_prog_cb_ctx {
+    struct media_ctx *ctx;
+    u32 ch;
+    u32 chip;
+    u32 die;
+    u32 plane_mask;
+    u32 block;
+    u32 page;
+    const void **data_array;
+    const void **spare_array;
+    int out_status;
+};
+
+static int mp_prog_on_array_commit(void *raw)
+{
+    struct mp_prog_cb_ctx *c = (struct mp_prog_cb_ctx *)raw;
+    u32 idx = 0;
+    u32 remaining = c->plane_mask;
+    while (remaining) {
+        u32 p = (u32)__builtin_ctz(remaining);
+        remaining &= remaining - 1;
+        struct nand_page *np = nand_get_page(c->ctx->nand, c->ch, c->chip, c->die, p, c->block, c->page);
+        if (!np) {
+            c->out_status = HFSSS_ERR_INVAL;
+            return HFSSS_ERR_INVAL;
+        }
+        memcpy(np->data, c->data_array[idx], c->ctx->config.page_size);
+        if (c->spare_array && c->spare_array[idx]) {
+            memcpy(np->spare, c->spare_array[idx], c->ctx->config.spare_size);
+        }
+        np->state = PAGE_VALID;
+        np->program_ts = get_time_ns();
+        np->erase_count = bbt_get_erase_count(c->ctx->bbt, c->ch, c->chip, c->die, p, c->block);
+        np->read_count = 0;
+        np->dirty = true;
+        struct nand_block *nb = nand_get_block(c->ctx->nand, c->ch, c->chip, c->die, p, c->block);
+        if (nb) {
+            nb->state = BLOCK_OPEN;
+            nb->pages_written++;
+            nb->dirty = true;
+        }
+        idx++;
+    }
+    return HFSSS_OK;
+}
+
+struct mp_read_cb_ctx {
+    struct media_ctx *ctx;
+    u32 ch;
+    u32 chip;
+    u32 die;
+    u32 plane_mask;
+    u32 block;
+    u32 page;
+    void **data_array;
+    void **spare_array;
+    int out_status;
+};
+
+static int mp_read_on_setup_commit(void *raw)
+{
+    struct mp_read_cb_ctx *c = (struct mp_read_cb_ctx *)raw;
+    u32 remaining = c->plane_mask;
+    while (remaining) {
+        u32 p = (u32)__builtin_ctz(remaining);
+        remaining &= remaining - 1;
+        struct nand_page *np = nand_get_page(c->ctx->nand, c->ch, c->chip, c->die, p, c->block, c->page);
+        if (!np || np->state != PAGE_VALID) {
+            c->out_status = HFSSS_ERR_NOENT;
+            return HFSSS_ERR_NOENT;
+        }
+    }
+    return HFSSS_OK;
+}
+
+static int mp_read_on_data_xfer_commit(void *raw)
+{
+    struct mp_read_cb_ctx *c = (struct mp_read_cb_ctx *)raw;
+    u32 idx = 0;
+    u32 remaining = c->plane_mask;
+    while (remaining) {
+        u32 p = (u32)__builtin_ctz(remaining);
+        remaining &= remaining - 1;
+        struct nand_page *np = nand_get_page(c->ctx->nand, c->ch, c->chip, c->die, p, c->block, c->page);
+        if (!np) {
+            return HFSSS_ERR_INVAL;
+        }
+        media_inject_bit_errors(c->ctx, np, c->data_array[idx], (c->spare_array ? c->spare_array[idx] : NULL),
+                                c->ctx->config.page_size, c->ctx->config.spare_size);
+        np->read_count++;
+        idx++;
+    }
+    return HFSSS_OK;
+}
+
+struct mp_erase_cb_ctx {
+    struct media_ctx *ctx;
+    u32 ch;
+    u32 chip;
+    u32 die;
+    u32 plane_mask;
+    u32 block;
+    int out_status;
+};
+
+static int mp_erase_on_array_commit(void *raw)
+{
+    struct mp_erase_cb_ctx *c = (struct mp_erase_cb_ctx *)raw;
+    u32 remaining = c->plane_mask;
+    while (remaining) {
+        u32 p = (u32)__builtin_ctz(remaining);
+        remaining &= remaining - 1;
+        struct nand_block *nb = nand_get_block(c->ctx->nand, c->ch, c->chip, c->die, p, c->block);
+        if (!nb) {
+            c->out_status = HFSSS_ERR_INVAL;
+            return HFSSS_ERR_INVAL;
+        }
+        for (u32 pg = 0; pg < nb->page_count; pg++) {
+            struct nand_page *np = &nb->pages[pg];
+            memset(np->data, 0xFF, c->ctx->config.page_size);
+            memset(np->spare, 0xFF, c->ctx->config.spare_size);
+            np->state = PAGE_FREE;
+            np->program_ts = 0;
+            np->read_count = 0;
+            np->bit_errors = 0;
+            np->dirty = true;
+        }
+        nb->state = BLOCK_FREE;
+        nb->pages_written = 0;
+        nb->dirty = true;
+        bbt_increment_erase_count(c->ctx->bbt, c->ch, c->chip, c->die, p, c->block);
+        u32 ec = bbt_get_erase_count(c->ctx->bbt, c->ch, c->chip, c->die, p, c->block);
+        if (reliability_is_block_bad(c->ctx->reliability, c->ctx->config.nand_type, ec)) {
+            bbt_mark_bad(c->ctx->bbt, c->ch, c->chip, c->die, p, c->block);
+        }
+    }
+    return HFSSS_OK;
+}
+
+static u32 popcount32(u32 x)
+{
+    return (u32)__builtin_popcount(x);
+}
+
+int media_nand_multi_plane_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane_mask, u32 block,
+                                   u32 page, const void **data_array, const void **spare_array)
+{
+    if (!ctx || !ctx->initialized || !data_array || plane_mask == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (!ctx->config.enable_multi_plane && popcount32(plane_mask) > 1) {
+        return HFSSS_ERR_NOTSUPP;
+    }
+    u32 remaining = plane_mask;
+    u32 idx = 0;
+    while (remaining) {
+        u32 p = (u32)__builtin_ctz(remaining);
+        remaining &= remaining - 1;
+        if (nand_validate_address(ctx->nand, ch, chip, die, p, block, page) != HFSSS_OK) {
+            return HFSSS_ERR_INVAL;
+        }
+        int is_bad = bbt_is_bad(ctx->bbt, ch, chip, die, p, block);
+        if (is_bad == 1) {
+            return HFSSS_ERR_IO;
+        }
+        if (!data_array[idx]) {
+            return HFSSS_ERR_INVAL;
+        }
+        idx++;
+    }
+
+    struct mp_prog_cb_ctx cbc = {
+        .ctx = ctx,
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = plane_mask,
+        .block = block,
+        .page = page,
+        .data_array = data_array,
+        .spare_array = spare_array,
+        .out_status = HFSSS_OK,
+    };
+    struct nand_cmd_target target = {
+        .ch = ch, .chip = chip, .die = die, .plane_mask = plane_mask, .block = block, .page = page};
+    struct nand_cmd_ops ops = {.on_array_commit = mp_prog_on_array_commit};
+
+    u64 start_time = get_time_ns();
+    int rc = nand_cmd_engine_submit_program(ctx->nand, &target, &ops, &cbc);
+    if (rc != HFSSS_OK) {
+        return cbc.out_status != HFSSS_OK ? cbc.out_status : rc;
+    }
+
+    u32 n = popcount32(plane_mask);
+    mutex_lock(&ctx->lock, 0);
+    ctx->stats.write_count += n;
+    ctx->stats.total_write_bytes += (u64)n * ctx->config.page_size;
+    ctx->stats.total_write_ns += get_time_ns() - start_time;
+    mutex_unlock(&ctx->lock);
+    return HFSSS_OK;
+}
+
+int media_nand_multi_plane_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane_mask, u32 block, u32 page,
+                                void **data_array, void **spare_array)
+{
+    if (!ctx || !ctx->initialized || !data_array || plane_mask == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (!ctx->config.enable_multi_plane && popcount32(plane_mask) > 1) {
+        return HFSSS_ERR_NOTSUPP;
+    }
+    u32 remaining = plane_mask;
+    while (remaining) {
+        u32 p = (u32)__builtin_ctz(remaining);
+        remaining &= remaining - 1;
+        if (nand_validate_address(ctx->nand, ch, chip, die, p, block, page) != HFSSS_OK) {
+            return HFSSS_ERR_INVAL;
+        }
+    }
+
+    struct mp_read_cb_ctx cbc = {
+        .ctx = ctx,
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = plane_mask,
+        .block = block,
+        .page = page,
+        .data_array = data_array,
+        .spare_array = spare_array,
+        .out_status = HFSSS_OK,
+    };
+    struct nand_cmd_target target = {
+        .ch = ch, .chip = chip, .die = die, .plane_mask = plane_mask, .block = block, .page = page};
+    struct nand_cmd_ops ops = {.on_setup_commit = mp_read_on_setup_commit,
+                               .on_data_xfer_commit = mp_read_on_data_xfer_commit};
+
+    u64 start_time = get_time_ns();
+    int rc = nand_cmd_engine_submit_read(ctx->nand, &target, &ops, &cbc);
+    if (rc != HFSSS_OK) {
+        return cbc.out_status != HFSSS_OK ? cbc.out_status : rc;
+    }
+
+    u32 n = popcount32(plane_mask);
+    mutex_lock(&ctx->lock, 0);
+    ctx->stats.read_count += n;
+    ctx->stats.total_read_bytes += (u64)n * ctx->config.page_size;
+    ctx->stats.total_read_ns += get_time_ns() - start_time;
+    mutex_unlock(&ctx->lock);
+    return HFSSS_OK;
+}
+
+int media_nand_multi_plane_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane_mask, u32 block)
+{
+    if (!ctx || !ctx->initialized || plane_mask == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (!ctx->config.enable_multi_plane && popcount32(plane_mask) > 1) {
+        return HFSSS_ERR_NOTSUPP;
+    }
+    u32 remaining = plane_mask;
+    while (remaining) {
+        u32 p = (u32)__builtin_ctz(remaining);
+        remaining &= remaining - 1;
+        if (ch >= ctx->config.channel_count || chip >= ctx->config.chips_per_channel ||
+            die >= ctx->config.dies_per_chip || p >= ctx->config.planes_per_die ||
+            block >= ctx->config.blocks_per_plane) {
+            return HFSSS_ERR_INVAL;
+        }
+        int is_bad = bbt_is_bad(ctx->bbt, ch, chip, die, p, block);
+        if (is_bad == 1) {
+            return HFSSS_ERR_IO;
+        }
+    }
+
+    struct mp_erase_cb_ctx cbc = {
+        .ctx = ctx,
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = plane_mask,
+        .block = block,
+        .out_status = HFSSS_OK,
+    };
+    struct nand_cmd_target target = {
+        .ch = ch, .chip = chip, .die = die, .plane_mask = plane_mask, .block = block, .page = 0};
+    struct nand_cmd_ops ops = {.on_array_commit = mp_erase_on_array_commit};
+
+    u64 start_time = get_time_ns();
+    int rc = nand_cmd_engine_submit_erase(ctx->nand, &target, &ops, &cbc);
+    if (rc != HFSSS_OK) {
+        return cbc.out_status != HFSSS_OK ? cbc.out_status : rc;
+    }
+
+    u32 n = popcount32(plane_mask);
+    mutex_lock(&ctx->lock, 0);
+    ctx->stats.erase_count += n;
+    ctx->stats.total_erase_ns += get_time_ns() - start_time;
+    mutex_unlock(&ctx->lock);
+    return HFSSS_OK;
+}
+
 static int media_build_die_target(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_cmd_target *out)
 {
     if (!ctx || !ctx->initialized || !out) {
