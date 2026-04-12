@@ -5,6 +5,7 @@
 #include "common/mutex.h"
 #include "media/cmd_state.h"
 #include "media/eat.h"
+#include "media/nand_identity.h"
 #include "media/timing.h"
 
 #define MAX_BLOCKS_PER_PLANE 4096
@@ -102,6 +103,8 @@ struct nand_device {
     u32 channel_count;
     struct timing_model *timing;
     struct eat_ctx *eat;
+    struct nand_id nand_id;
+    struct nand_parameter_page param_page;
 };
 
 /* Function Prototypes */

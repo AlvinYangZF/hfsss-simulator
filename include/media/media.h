@@ -4,6 +4,7 @@
 #include "common/common.h"
 #include "common/mutex.h"
 #include "media/nand.h"
+#include "media/nand_identity.h"
 #include "media/timing.h"
 #include "media/eat.h"
 #include "media/reliability.h"
@@ -60,6 +61,10 @@ int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 pla
                        const void *data, const void *spare);
 int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block);
 int media_nand_read_status(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_die_cmd_state *out);
+int media_nand_read_status_byte(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u8 *out);
+int media_nand_read_status_enhanced(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_status_enhanced *out);
+int media_nand_read_id(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_id *out);
+int media_nand_read_parameter_page(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_parameter_page *out);
 int media_nand_is_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block);
 int media_nand_mark_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block);
 u32 media_nand_get_erase_count(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block);

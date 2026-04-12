@@ -89,6 +89,11 @@ int media_init(struct media_ctx *ctx, struct media_config *config)
     /* Associate EAT context with NAND device */
     ctx->nand->eat = ctx->eat;
 
+    /* Populate device identity and parameter page from the active config
+     * after timing/EAT wiring so tR/tPROG/tBERS advertisement reflects the
+     * real timing model. */
+    nand_identity_build_from_config(ctx->nand, &ctx->config);
+
     /* Allocate and initialize reliability model */
     ctx->reliability = (struct reliability_model *)malloc(sizeof(struct reliability_model));
     if (!ctx->reliability) {
@@ -514,6 +519,70 @@ int media_nand_read_status(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, str
     };
 
     return nand_cmd_engine_snapshot(ctx->nand, &target, out);
+}
+
+int media_nand_read_status_byte(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u8 *out)
+{
+    if (!ctx || !ctx->initialized || !out) {
+        return HFSSS_ERR_INVAL;
+    }
+    struct nand_cmd_target target = {
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = 0,
+        .block = 0,
+        .page = 0,
+    };
+    return nand_cmd_engine_submit_read_status(ctx->nand, &target, out);
+}
+
+int media_nand_read_status_enhanced(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_status_enhanced *out)
+{
+    if (!ctx || !ctx->initialized || !out) {
+        return HFSSS_ERR_INVAL;
+    }
+    struct nand_cmd_target target = {
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = 0,
+        .block = 0,
+        .page = 0,
+    };
+    return nand_cmd_engine_submit_read_status_enhanced(ctx->nand, &target, out);
+}
+
+int media_nand_read_id(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_id *out)
+{
+    if (!ctx || !ctx->initialized || !out) {
+        return HFSSS_ERR_INVAL;
+    }
+    struct nand_cmd_target target = {
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = 0,
+        .block = 0,
+        .page = 0,
+    };
+    return nand_cmd_engine_submit_read_id(ctx->nand, &target, out);
+}
+
+int media_nand_read_parameter_page(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_parameter_page *out)
+{
+    if (!ctx || !ctx->initialized || !out) {
+        return HFSSS_ERR_INVAL;
+    }
+    struct nand_cmd_target target = {
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane_mask = 0,
+        .block = 0,
+        .page = 0,
+    };
+    return nand_cmd_engine_submit_read_param_page(ctx->nand, &target, out);
 }
 
 int media_nand_is_bad_block(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block)
