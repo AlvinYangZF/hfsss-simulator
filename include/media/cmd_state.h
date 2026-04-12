@@ -1,6 +1,8 @@
 #ifndef __HFSSS_NAND_CMD_STATE_H
 #define __HFSSS_NAND_CMD_STATE_H
 
+#include <stdatomic.h>
+
 #include "common/common.h"
 #include "common/mutex.h"
 
@@ -41,6 +43,10 @@ enum nand_cmd_opcode {
     NAND_OP_READ_STATUS_ENHANCED,
     NAND_OP_READ_ID,
     NAND_OP_READ_PARAM_PAGE,
+    NAND_OP_PROG_SUSPEND,
+    NAND_OP_PROG_RESUME,
+    NAND_OP_ERASE_SUSPEND,
+    NAND_OP_ERASE_RESUME,
     NAND_OP_COUNT
 };
 
@@ -73,6 +79,30 @@ struct nand_die_cmd_state {
      * operations must not disturb it.
      */
     bool latched_fail;
+    /*
+     * Suspend/resume bookkeeping (Phase 3). array_started_ns anchors the
+     * current array-busy segment so the engine can compute how much of
+     * remaining_ns has drained when a suspend preempts it. suspended_target
+     * snapshots the target of the op that is under suspension so a
+     * concurrent read can be matched against it for conflict gating;
+     * relying on target here is unsafe because a non-conflicting read
+     * legitimately rewrites it. suspend_request is the atomic interrupt
+     * flag polled by the array-busy spin loop in engine_submit. abort_request
+     * is set by reset-during-suspend to wake the spin, have it skip the
+     * commit hook, and let it drive the die to IDLE cleanly.
+     */
+    /*
+     * array_started_ns, array_budget_ns, and remaining_ns are read by the
+     * tight spin in engine_run_array_busy without holding die_lock. On
+     * x86-64 and AArch64 (the project's target platforms) aligned u64
+     * loads are naturally atomic. If the simulator is ever ported to a
+     * 32-bit target these should become _Atomic u64.
+     */
+    u64 array_started_ns;
+    u64 array_budget_ns;
+    struct nand_cmd_target suspended_target;
+    _Atomic int suspend_request;
+    _Atomic int abort_request;
 };
 
 void nand_cmd_state_init(struct nand_die_cmd_state *s);

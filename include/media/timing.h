@@ -13,16 +13,18 @@ enum nand_type {
 
 /* Timing Parameters (ns) */
 struct timing_params {
-    u64 tCCS;    /* Change Column Setup */
-    u64 tR;      /* Read */
-    u64 tPROG;   /* Program */
-    u64 tERS;    /* Erase */
-    u64 tWC;     /* Write Cycle */
-    u64 tRC;     /* Read Cycle */
-    u64 tADL;    /* Address Load */
-    u64 tWB;     /* Write Busy */
-    u64 tWHR;    /* Write Hold */
-    u64 tRHW;    /* Read Hold */
+    u64 tCCS;   /* Change Column Setup */
+    u64 tR;     /* Read */
+    u64 tPROG;  /* Program */
+    u64 tERS;   /* Erase */
+    u64 tWC;    /* Write Cycle */
+    u64 tRC;    /* Read Cycle */
+    u64 tADL;   /* Address Load */
+    u64 tWB;    /* Write Busy */
+    u64 tWHR;   /* Write Hold */
+    u64 tRHW;   /* Read Hold */
+    u64 tSSBSY; /* Suspend Setup Busy — cost of entering a suspended state */
+    u64 tRSBSY; /* Resume Setup Busy — cost of returning to array busy */
 };
 
 /* TLC Timing Model */
@@ -33,6 +35,8 @@ struct tlc_timing {
     u64 tPROG_LSB;
     u64 tPROG_CSB;
     u64 tPROG_MSB;
+    u64 tSSBSY;
+    u64 tRSBSY;
 };
 
 /* Timing Model */
@@ -50,5 +54,7 @@ void timing_model_cleanup(struct timing_model *model);
 u64 timing_get_read_latency(struct timing_model *model, u32 page_idx);
 u64 timing_get_prog_latency(struct timing_model *model, u32 page_idx);
 u64 timing_get_erase_latency(struct timing_model *model);
+u64 timing_get_suspend_overhead_ns(struct timing_model *model);
+u64 timing_get_resume_overhead_ns(struct timing_model *model);
 
 #endif /* __HFSSS_TIMING_H */
