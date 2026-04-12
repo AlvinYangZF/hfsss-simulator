@@ -15,6 +15,8 @@ static const struct timing_params default_slc_timing = {
     .tRHW = 60,
     .tSSBSY = 5000,
     .tRSBSY = 5000,
+    .tCBSY = 100000,
+    .tDCBSYR1 = 15000,
 };
 
 /* Default timing parameters for MLC (ns) */
@@ -31,6 +33,8 @@ static const struct timing_params default_mlc_timing = {
     .tRHW = 80,
     .tSSBSY = 10000,
     .tRSBSY = 10000,
+    .tCBSY = 300000,
+    .tDCBSYR1 = 30000,
 };
 
 /* Default timing parameters for TLC (ns) */
@@ -43,6 +47,8 @@ static const struct tlc_timing default_tlc_timing = {
     .tPROG_MSB = 1300000,
     .tSSBSY = 25000,
     .tRSBSY = 25000,
+    .tCBSY = 500000,
+    .tDCBSYR1 = 40000,
 };
 
 /* Default timing parameters for QLC (ns) */
@@ -59,6 +65,8 @@ static const struct timing_params default_qlc_timing = {
     .tRHW = 100,
     .tSSBSY = 50000,
     .tRSBSY = 50000,
+    .tCBSY = 1000000,
+    .tDCBSYR1 = 80000,
 };
 
 int timing_model_init(struct timing_model *model, enum nand_type type)
@@ -206,5 +214,45 @@ u64 timing_get_resume_overhead_ns(struct timing_model *model)
         return model->qlc.tRSBSY;
     default:
         return model->tlc.tRSBSY;
+    }
+}
+
+u64 timing_get_cache_busy_ns(struct timing_model *model, u32 page_idx)
+{
+    if (!model) {
+        return 0;
+    }
+    (void)page_idx;
+    switch (model->type) {
+    case NAND_TYPE_SLC:
+        return model->slc.tCBSY;
+    case NAND_TYPE_MLC:
+        return model->mlc.tCBSY;
+    case NAND_TYPE_TLC:
+        return model->tlc.tCBSY;
+    case NAND_TYPE_QLC:
+        return model->qlc.tCBSY;
+    default:
+        return model->tlc.tCBSY;
+    }
+}
+
+u64 timing_get_data_cache_busy_read_ns(struct timing_model *model, u32 page_idx)
+{
+    if (!model) {
+        return 0;
+    }
+    (void)page_idx;
+    switch (model->type) {
+    case NAND_TYPE_SLC:
+        return model->slc.tDCBSYR1;
+    case NAND_TYPE_MLC:
+        return model->mlc.tDCBSYR1;
+    case NAND_TYPE_TLC:
+        return model->tlc.tDCBSYR1;
+    case NAND_TYPE_QLC:
+        return model->qlc.tDCBSYR1;
+    default:
+        return model->tlc.tDCBSYR1;
     }
 }

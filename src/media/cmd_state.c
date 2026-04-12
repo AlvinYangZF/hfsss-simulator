@@ -31,6 +31,14 @@ void nand_cmd_state_begin(struct nand_die_cmd_state *s, enum nand_cmd_opcode op,
 
     now = get_time_ns();
 
+    /* Preserve cache sequencing fields across cache-continuation submits.
+     * A cache_read/cache_prog on an already-active sequence increments
+     * the count; any other op terminates the sequence. */
+    bool was_cache = s->cache_active;
+    bool is_cache_continuation =
+        was_cache && (op == NAND_OP_CACHE_READ || op == NAND_OP_CACHE_PROG || op == NAND_OP_CACHE_READ_END);
+    u32 prev_cache_seq = s->cache_seq_count;
+
     s->opcode = op;
     s->target = *target;
     s->start_ts_ns = now;
@@ -47,6 +55,17 @@ void nand_cmd_state_begin(struct nand_die_cmd_state *s, enum nand_cmd_opcode op,
     s->array_budget_ns = 0;
     memset(&s->suspended_target, 0, sizeof(s->suspended_target));
     atomic_store(&s->suspend_request, 0);
+
+    if (op == NAND_OP_CACHE_READ || op == NAND_OP_CACHE_PROG) {
+        s->cache_active = true;
+        s->cache_seq_count = is_cache_continuation ? prev_cache_seq + 1 : 1;
+    } else if (op == NAND_OP_CACHE_READ_END) {
+        s->cache_active = false;
+        s->cache_seq_count = is_cache_continuation ? prev_cache_seq + 1 : 1;
+    } else {
+        s->cache_active = false;
+        s->cache_seq_count = 0;
+    }
     /* Do NOT touch abort_epoch here — a new command must not clear an
      * abort signal that the previous worker has not yet observed. The
      * worker compares its saved epoch snapshot against the current

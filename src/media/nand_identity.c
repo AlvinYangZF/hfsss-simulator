@@ -218,7 +218,8 @@ static void build_parameter_page(struct nand_parameter_page *pp, const struct me
         (1u << NAND_OP_READ) | (1u << NAND_OP_PROG) | (1u << NAND_OP_ERASE) | (1u << NAND_OP_RESET) |
         (1u << NAND_OP_READ_STATUS) | (1u << NAND_OP_READ_STATUS_ENHANCED) | (1u << NAND_OP_READ_ID) |
         (1u << NAND_OP_READ_PARAM_PAGE) | (1u << NAND_OP_PROG_SUSPEND) | (1u << NAND_OP_PROG_RESUME) |
-        (1u << NAND_OP_ERASE_SUSPEND) | (1u << NAND_OP_ERASE_RESUME);
+        (1u << NAND_OP_ERASE_SUSPEND) | (1u << NAND_OP_ERASE_RESUME) | (1u << NAND_OP_CACHE_READ) |
+        (1u << NAND_OP_CACHE_READ_END) | (1u << NAND_OP_CACHE_PROG);
 
     if (timing) {
         pp->tR_ns = timing_get_read_latency(timing, 0);

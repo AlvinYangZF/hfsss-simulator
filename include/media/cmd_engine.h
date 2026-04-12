@@ -72,6 +72,13 @@ int nand_cmd_engine_submit_prog_resume(struct nand_device *dev, const struct nan
 int nand_cmd_engine_submit_erase_suspend(struct nand_device *dev, const struct nand_cmd_target *target);
 int nand_cmd_engine_submit_erase_resume(struct nand_device *dev, const struct nand_cmd_target *target);
 
+int nand_cmd_engine_submit_cache_read(struct nand_device *dev, const struct nand_cmd_target *target,
+                                      const struct nand_cmd_ops *ops, void *cb_ctx);
+int nand_cmd_engine_submit_cache_read_end(struct nand_device *dev, const struct nand_cmd_target *target,
+                                          const struct nand_cmd_ops *ops, void *cb_ctx);
+int nand_cmd_engine_submit_cache_program(struct nand_device *dev, const struct nand_cmd_target *target,
+                                         const struct nand_cmd_ops *ops, void *cb_ctx);
+
 /*
  * Stage-budget split. Kept in its own translation unit so the partition
  * can be refined later without touching the engine.

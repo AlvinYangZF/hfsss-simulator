@@ -70,6 +70,12 @@ int media_nand_multi_plane_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die
 int media_nand_multi_plane_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane_mask, u32 block,
                                    u32 page, const void **data_array, const void **spare_array);
 int media_nand_multi_plane_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane_mask, u32 block);
+int media_nand_cache_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page, void *data,
+                          void *spare);
+int media_nand_cache_read_end(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page,
+                              void *data, void *spare);
+int media_nand_cache_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page,
+                             const void *data, const void *spare);
 int media_nand_program_suspend(struct media_ctx *ctx, u32 ch, u32 chip, u32 die);
 int media_nand_program_resume(struct media_ctx *ctx, u32 ch, u32 chip, u32 die);
 int media_nand_erase_suspend(struct media_ctx *ctx, u32 ch, u32 chip, u32 die);

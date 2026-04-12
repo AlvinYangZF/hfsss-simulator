@@ -902,6 +902,127 @@ int media_nand_multi_plane_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 di
     return HFSSS_OK;
 }
 
+int media_nand_cache_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page, void *data,
+                          void *spare)
+{
+    if (!ctx || !ctx->initialized || !data) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (nand_validate_address(ctx->nand, ch, chip, die, plane, block, page) != HFSSS_OK) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct read_cb_ctx cbc = {
+        .ctx = ctx,
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane = plane,
+        .block = block,
+        .page = page,
+        .data = data,
+        .spare = spare,
+        .nand_page = NULL,
+        .out_status = HFSSS_OK,
+    };
+    struct nand_cmd_target target = {
+        .ch = ch, .chip = chip, .die = die, .plane_mask = 1u << plane, .block = block, .page = page};
+    struct nand_cmd_ops ops = {.on_setup_commit = read_on_setup_commit,
+                               .on_data_xfer_commit = read_on_data_xfer_commit};
+
+    u64 start_time = get_time_ns();
+    int rc = nand_cmd_engine_submit_cache_read(ctx->nand, &target, &ops, &cbc);
+    if (rc != HFSSS_OK) {
+        return cbc.out_status != HFSSS_OK ? cbc.out_status : rc;
+    }
+    mutex_lock(&ctx->lock, 0);
+    ctx->stats.read_count++;
+    ctx->stats.total_read_bytes += ctx->config.page_size;
+    ctx->stats.total_read_ns += get_time_ns() - start_time;
+    mutex_unlock(&ctx->lock);
+    return HFSSS_OK;
+}
+
+int media_nand_cache_read_end(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page,
+                              void *data, void *spare)
+{
+    if (!ctx || !ctx->initialized || !data) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (nand_validate_address(ctx->nand, ch, chip, die, plane, block, page) != HFSSS_OK) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct read_cb_ctx cbc = {
+        .ctx = ctx,
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane = plane,
+        .block = block,
+        .page = page,
+        .data = data,
+        .spare = spare,
+        .nand_page = NULL,
+        .out_status = HFSSS_OK,
+    };
+    struct nand_cmd_target target = {
+        .ch = ch, .chip = chip, .die = die, .plane_mask = 1u << plane, .block = block, .page = page};
+    struct nand_cmd_ops ops = {.on_setup_commit = read_on_setup_commit,
+                               .on_data_xfer_commit = read_on_data_xfer_commit};
+
+    u64 start_time = get_time_ns();
+    int rc = nand_cmd_engine_submit_cache_read_end(ctx->nand, &target, &ops, &cbc);
+    if (rc != HFSSS_OK) {
+        return cbc.out_status != HFSSS_OK ? cbc.out_status : rc;
+    }
+    mutex_lock(&ctx->lock, 0);
+    ctx->stats.read_count++;
+    ctx->stats.total_read_bytes += ctx->config.page_size;
+    ctx->stats.total_read_ns += get_time_ns() - start_time;
+    mutex_unlock(&ctx->lock);
+    return HFSSS_OK;
+}
+
+int media_nand_cache_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page,
+                             const void *data, const void *spare)
+{
+    if (!ctx || !ctx->initialized || !data) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (nand_validate_address(ctx->nand, ch, chip, die, plane, block, page) != HFSSS_OK) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct prog_cb_ctx cbc = {
+        .ctx = ctx,
+        .ch = ch,
+        .chip = chip,
+        .die = die,
+        .plane = plane,
+        .block = block,
+        .page = page,
+        .data = data,
+        .spare = spare,
+        .out_status = HFSSS_OK,
+    };
+    struct nand_cmd_target target = {
+        .ch = ch, .chip = chip, .die = die, .plane_mask = 1u << plane, .block = block, .page = page};
+    struct nand_cmd_ops ops = {.on_array_commit = prog_on_array_commit};
+
+    u64 start_time = get_time_ns();
+    int rc = nand_cmd_engine_submit_cache_program(ctx->nand, &target, &ops, &cbc);
+    if (rc != HFSSS_OK) {
+        return cbc.out_status != HFSSS_OK ? cbc.out_status : rc;
+    }
+    mutex_lock(&ctx->lock, 0);
+    ctx->stats.write_count++;
+    ctx->stats.total_write_bytes += ctx->config.page_size;
+    ctx->stats.total_write_ns += get_time_ns() - start_time;
+    mutex_unlock(&ctx->lock);
+    return HFSSS_OK;
+}
+
 static int media_build_die_target(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, struct nand_cmd_target *out)
 {
     if (!ctx || !ctx->initialized || !out) {
