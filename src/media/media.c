@@ -912,6 +912,10 @@ int media_nand_cache_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 
         return HFSSS_ERR_INVAL;
     }
 
+    if (bbt_is_bad(ctx->bbt, ch, chip, die, plane, block) == 1) {
+        return HFSSS_ERR_IO;
+    }
+
     struct read_cb_ctx cbc = {
         .ctx = ctx,
         .ch = ch,
@@ -953,6 +957,10 @@ int media_nand_cache_read_end(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, 
         return HFSSS_ERR_INVAL;
     }
 
+    if (bbt_is_bad(ctx->bbt, ch, chip, die, plane, block) == 1) {
+        return HFSSS_ERR_IO;
+    }
+
     struct read_cb_ctx cbc = {
         .ctx = ctx,
         .ch = ch,
@@ -991,6 +999,14 @@ int media_nand_cache_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u
         return HFSSS_ERR_INVAL;
     }
     if (nand_validate_address(ctx->nand, ch, chip, die, plane, block, page) != HFSSS_OK) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    int is_bad = bbt_is_bad(ctx->bbt, ch, chip, die, plane, block);
+    if (is_bad == 1) {
+        return HFSSS_ERR_IO;
+    }
+    if (is_bad == -1) {
         return HFSSS_ERR_INVAL;
     }
 

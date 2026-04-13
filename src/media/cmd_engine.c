@@ -359,10 +359,16 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
 
     u64 total_ns = engine_total_budget(dev->timing, op, target->page);
     enum op_type eat_op = op_to_eat_op(op);
+    u64 cache_overlap_ns = 0;
+    if (op == NAND_OP_CACHE_READ) {
+        cache_overlap_ns = timing_get_data_cache_busy_read_ns(dev->timing, target->page);
+    } else if (op == NAND_OP_CACHE_PROG) {
+        cache_overlap_ns = timing_get_cache_busy_ns(dev->timing, target->page);
+    }
     u64 setup_ns = 0;
     u64 array_ns = 0;
     u64 xfer_ns = 0;
-    nand_cmd_stage_budget(op, total_ns, &setup_ns, &array_ns, &xfer_ns);
+    nand_cmd_stage_budget(op, total_ns, cache_overlap_ns, &setup_ns, &array_ns, &xfer_ns);
     int stage_rc = HFSSS_OK;
 
     if (is_read_during_suspend) {
@@ -500,15 +506,27 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
 
     bool keep_active = (stage_rc == HFSSS_OK) && die->cmd_state.cache_active;
     if (keep_active && op == NAND_OP_CACHE_READ) {
-        /* Leave in DATA_XFER so next CACHE_READ / CACHE_READ_END is legal. */
+        /* Leave in DATA_XFER so next CACHE_READ / CACHE_READ_END is legal.
+         * The overlap window is time-bounded by tDCBSYR1 so status
+         * snapshots report a finite remaining-time instead of an
+         * indefinite latch. */
+        u64 dcbsy = timing_get_data_cache_busy_read_ns(dev->timing, target->page);
         die->cmd_state.phase = CMD_PHASE_DATA_XFER;
         die->cmd_state.state = DIE_READ_DATA_XFER;
         die->cmd_state.in_flight = true;
+        die->cmd_state.remaining_ns = dcbsy;
+        die->cmd_state.array_budget_ns = dcbsy;
+        die->cmd_state.array_started_ns = get_time_ns();
     } else if (keep_active && op == NAND_OP_CACHE_PROG) {
-        /* Leave in ARRAY_BUSY so next CACHE_PROG is legal. */
+        /* Leave in ARRAY_BUSY so next CACHE_PROG is legal.
+         * The overlap window is time-bounded by tCBSY. */
+        u64 cbsy = timing_get_cache_busy_ns(dev->timing, target->page);
         die->cmd_state.phase = CMD_PHASE_ARRAY_BUSY;
         die->cmd_state.state = DIE_PROG_ARRAY_BUSY;
         die->cmd_state.in_flight = true;
+        die->cmd_state.remaining_ns = cbsy;
+        die->cmd_state.array_budget_ns = cbsy;
+        die->cmd_state.array_started_ns = get_time_ns();
     } else {
         /* Normal completion or cache-end: drive to IDLE. */
         die->cmd_state.in_flight = false;

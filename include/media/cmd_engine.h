@@ -83,6 +83,7 @@ int nand_cmd_engine_submit_cache_program(struct nand_device *dev, const struct n
  * Stage-budget split. Kept in its own translation unit so the partition
  * can be refined later without touching the engine.
  */
-void nand_cmd_stage_budget(enum nand_cmd_opcode op, u64 total_ns, u64 *setup_ns, u64 *array_ns, u64 *xfer_ns);
+void nand_cmd_stage_budget(enum nand_cmd_opcode op, u64 total_ns, u64 cache_overlap_ns, u64 *setup_ns, u64 *array_ns,
+                           u64 *xfer_ns);
 
 #endif /* __HFSSS_NAND_CMD_ENGINE_H */

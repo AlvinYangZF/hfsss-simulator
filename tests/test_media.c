@@ -513,7 +513,7 @@ static int test_cmd_state_machine(void)
      * aggregate latency stays wrapper-compatible with the legacy path. */
     u64 latency = timing_get_read_latency(ctx.timing, 0);
     u64 setup_ns = 0, array_ns = 0, xfer_ns = 0;
-    nand_cmd_stage_budget(NAND_OP_READ, latency, &setup_ns, &array_ns, &xfer_ns);
+    nand_cmd_stage_budget(NAND_OP_READ, latency, 0, &setup_ns, &array_ns, &xfer_ns);
     TEST_ASSERT(setup_ns == 0, "SM-08: read setup budget is zero");
     TEST_ASSERT(array_ns == latency, "SM-08: read array budget equals full latency");
     TEST_ASSERT(xfer_ns == 0, "SM-08: read xfer budget is zero");
@@ -1491,13 +1491,31 @@ static int test_cmd_phase5_cache(void)
         TEST_ASSERT(ret == HFSSS_OK, "Phase5: pre-program page");
     }
 
-    /* SM-56: cache read 2-page sequence is faster than 2 plain reads */
+    /* SM-56: cache read 2-page sequence is faster than 2 plain reads.
+     * Both measurements must start from a drained EAT so neither pays
+     * for the other's residual. */
     u8 rd0[4096], rd1[4096];
+
+    /* Drain any residual EAT from the pre-programs. */
+    {
+        u64 drain = get_time_ns() + 60000;
+        while (get_time_ns() < drain) {
+        }
+    }
+
     u64 t0 = get_time_ns();
     ret = media_nand_read(&ctx, 0, 0, 0, 0, 0, 0, rd0, NULL);
     ret = media_nand_read(&ctx, 0, 0, 0, 0, 0, 1, rd1, NULL);
     u64 plain_2_ns = get_time_ns() - t0;
     TEST_ASSERT(ret == HFSSS_OK, "SM-56: plain reads OK");
+
+    /* Drain EAT from the plain reads so the cache sequence starts
+     * from an equivalent baseline. */
+    {
+        u64 drain = get_time_ns() + 60000;
+        while (get_time_ns() < drain) {
+        }
+    }
 
     t0 = get_time_ns();
     ret = media_nand_cache_read(&ctx, 0, 0, 0, 0, 0, 2, rd0, NULL);
@@ -1507,11 +1525,10 @@ static int test_cmd_phase5_cache(void)
     u64 cache_2_ns = get_time_ns() - t0;
     TEST_ASSERT(rd0[0] == 0xA2, "SM-56: cache read page 2 data correct");
     TEST_ASSERT(rd1[0] == 0xA3, "SM-56: cache read page 3 data correct");
-    /* Functional distinction: the cache sequence kept the die in
-     * DATA_XFER between pages (verified by SM-61 legality). Full
-     * timing overlap requires non-zero xfer_ns from stage repartition. */
-    (void)cache_2_ns;
-    (void)plain_2_ns;
+    /* Cache read uses tDCBSYR1 for the first page's array phase instead
+     * of full tR, so the total cache sequence cost is tDCBSYR1 + tR
+     * which is less than tR + tR for two plain reads. */
+    TEST_ASSERT(cache_2_ns < plain_2_ns, "SM-56: cache read faster than plain read");
 
     /* SM-57: cache program 2-page sequence is faster than 2 plain programs */
     ret = media_nand_erase(&ctx, 0, 0, 0, 0, 1);
