@@ -82,8 +82,11 @@ static enum op_type op_to_eat_op(enum nand_cmd_opcode op)
 {
     switch (op) {
     case NAND_OP_READ:
+    case NAND_OP_CACHE_READ:
+    case NAND_OP_CACHE_READ_END:
         return OP_READ;
     case NAND_OP_PROG:
+    case NAND_OP_CACHE_PROG:
         return OP_PROGRAM;
     case NAND_OP_ERASE:
         return OP_ERASE;
@@ -96,8 +99,11 @@ static u64 engine_total_budget(struct timing_model *timing, enum nand_cmd_opcode
 {
     switch (op) {
     case NAND_OP_READ:
+    case NAND_OP_CACHE_READ:
+    case NAND_OP_CACHE_READ_END:
         return timing_get_read_latency(timing, page);
     case NAND_OP_PROG:
+    case NAND_OP_CACHE_PROG:
         return timing_get_prog_latency(timing, page);
     case NAND_OP_ERASE:
         return timing_get_erase_latency(timing);
@@ -295,6 +301,18 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     mutex_lock(&channel->lock, 0);
     mutex_lock(&die->die_lock, 0);
 
+    /* Implicit cache sequence termination: if a non-cache command is
+     * submitted while a cache sequence is active, force the die back
+     * to IDLE so the legality check accepts the new command. */
+    if (die->cmd_state.cache_active && op != NAND_OP_CACHE_READ && op != NAND_OP_CACHE_READ_END &&
+        op != NAND_OP_CACHE_PROG) {
+        die->cmd_state.cache_active = false;
+        die->cmd_state.cache_seq_count = 0;
+        die->cmd_state.state = DIE_IDLE;
+        die->cmd_state.phase = CMD_PHASE_COMPLETE;
+        die->cmd_state.in_flight = false;
+    }
+
     if (!nand_cmd_is_legal_in_state(die->cmd_state.state, op)) {
         mutex_unlock(&die->die_lock);
         mutex_unlock(&channel->lock);
@@ -341,10 +359,16 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
 
     u64 total_ns = engine_total_budget(dev->timing, op, target->page);
     enum op_type eat_op = op_to_eat_op(op);
+    u64 cache_overlap_ns = 0;
+    if (op == NAND_OP_CACHE_READ) {
+        cache_overlap_ns = timing_get_data_cache_busy_read_ns(dev->timing, target->page);
+    } else if (op == NAND_OP_CACHE_PROG) {
+        cache_overlap_ns = timing_get_cache_busy_ns(dev->timing, target->page);
+    }
     u64 setup_ns = 0;
     u64 array_ns = 0;
     u64 xfer_ns = 0;
-    nand_cmd_stage_budget(op, total_ns, &setup_ns, &array_ns, &xfer_ns);
+    nand_cmd_stage_budget(op, total_ns, cache_overlap_ns, &setup_ns, &array_ns, &xfer_ns);
     int stage_rc = HFSSS_OK;
 
     if (is_read_during_suspend) {
@@ -381,11 +405,18 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         return stage_rc;
     }
 
+    bool is_cache_continuation = die->cmd_state.cache_active &&
+                                 (op == NAND_OP_CACHE_READ || op == NAND_OP_CACHE_PROG || op == NAND_OP_CACHE_READ_END);
     nand_cmd_state_begin(&die->cmd_state, op, target, total_ns);
     u32 epoch_at_submit = atomic_load(&die->cmd_state.abort_epoch);
     mutex_unlock(&die->die_lock);
 
-    engine_wait_until_available_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask);
+    /* Cache continuations skip the EAT wait — the overlap means the new
+     * page's stages run in parallel with the previous page's trailing
+     * stage. The EAT charges below reflect the overlapped budget. */
+    if (!is_cache_continuation) {
+        engine_wait_until_available_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask);
+    }
 
     enum engine_wait_result wait_rc = ENGINE_WAIT_DONE;
 
@@ -446,7 +477,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     /* Data transfer stage is only exercised by the read path today, but the
      * transition is wired so future opcodes can plug in without engine
      * changes. */
-    if (stage_rc == HFSSS_OK && op == NAND_OP_READ) {
+    if (stage_rc == HFSSS_OK && (op == NAND_OP_READ || op == NAND_OP_CACHE_READ || op == NAND_OP_CACHE_READ_END)) {
         mutex_lock(&die->die_lock, 0);
         enum nand_die_state next_xfer_state = nand_cmd_next_state_on_complete(die->cmd_state.state, op);
         nand_cmd_state_advance_phase(&die->cmd_state, CMD_PHASE_DATA_XFER, next_xfer_state);
@@ -466,24 +497,50 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         return HFSSS_ERR_BUSY;
     }
 
-    /* Drive the die back to IDLE regardless of commit status so a failed
-     * hook does not strand the die. PROG/ERASE completions update the
-     * ONFI sticky FAIL latch: a successful completion clears the latch,
-     * a failed completion sets it; any intervening READ or identity op
-     * must not touch it (spec "Suspend/Resume Semantics" status layer). */
+    /* Cache sequence continuation: leave the die in the appropriate
+     * mid-pipeline state so the next cache command can be accepted
+     * by the legality matrix. The die goes to IDLE only when the
+     * sequence terminates (CACHE_READ_END, or a non-cache op). */
     mutex_lock(&die->die_lock, 0);
     die->cmd_state.result_status = stage_rc;
-    die->cmd_state.in_flight = false;
-    die->cmd_state.phase = CMD_PHASE_COMPLETE;
-    die->cmd_state.state = DIE_IDLE;
-    die->cmd_state.remaining_ns = 0;
-    die->cmd_state.array_budget_ns = 0;
-    die->cmd_state.array_started_ns = 0;
-    atomic_store(&die->cmd_state.suspend_request, 0);
-    /* abort_epoch is not cleared here — it is a monotonic counter.
-     * The next command will snapshot whatever value it has. */
-    if (op == NAND_OP_PROG || op == NAND_OP_ERASE) {
-        die->cmd_state.latched_fail = (stage_rc != HFSSS_OK);
+
+    bool keep_active = (stage_rc == HFSSS_OK) && die->cmd_state.cache_active;
+    if (keep_active && op == NAND_OP_CACHE_READ) {
+        /* Leave in DATA_XFER so next CACHE_READ / CACHE_READ_END is legal.
+         * The overlap window is time-bounded by tDCBSYR1 so status
+         * snapshots report a finite remaining-time instead of an
+         * indefinite latch. */
+        u64 dcbsy = timing_get_data_cache_busy_read_ns(dev->timing, target->page);
+        die->cmd_state.phase = CMD_PHASE_DATA_XFER;
+        die->cmd_state.state = DIE_READ_DATA_XFER;
+        die->cmd_state.in_flight = true;
+        die->cmd_state.remaining_ns = dcbsy;
+        die->cmd_state.array_budget_ns = dcbsy;
+        die->cmd_state.array_started_ns = get_time_ns();
+    } else if (keep_active && op == NAND_OP_CACHE_PROG) {
+        /* Leave in ARRAY_BUSY so next CACHE_PROG is legal.
+         * The overlap window is time-bounded by tCBSY. */
+        u64 cbsy = timing_get_cache_busy_ns(dev->timing, target->page);
+        die->cmd_state.phase = CMD_PHASE_ARRAY_BUSY;
+        die->cmd_state.state = DIE_PROG_ARRAY_BUSY;
+        die->cmd_state.in_flight = true;
+        die->cmd_state.remaining_ns = cbsy;
+        die->cmd_state.array_budget_ns = cbsy;
+        die->cmd_state.array_started_ns = get_time_ns();
+    } else {
+        /* Normal completion or cache-end: drive to IDLE. */
+        die->cmd_state.in_flight = false;
+        die->cmd_state.phase = CMD_PHASE_COMPLETE;
+        die->cmd_state.state = DIE_IDLE;
+        die->cmd_state.remaining_ns = 0;
+        die->cmd_state.array_budget_ns = 0;
+        die->cmd_state.array_started_ns = 0;
+        die->cmd_state.cache_active = false;
+        die->cmd_state.cache_seq_count = 0;
+        atomic_store(&die->cmd_state.suspend_request, 0);
+        if (op == NAND_OP_PROG || op == NAND_OP_ERASE || op == NAND_OP_CACHE_PROG) {
+            die->cmd_state.latched_fail = (stage_rc != HFSSS_OK);
+        }
     }
     mutex_unlock(&die->die_lock);
     mutex_unlock(&channel->lock);
@@ -684,6 +741,24 @@ int nand_cmd_engine_submit_erase_suspend(struct nand_device *dev, const struct n
 int nand_cmd_engine_submit_erase_resume(struct nand_device *dev, const struct nand_cmd_target *target)
 {
     return engine_submit_resume(dev, NAND_OP_ERASE_RESUME, target);
+}
+
+int nand_cmd_engine_submit_cache_read(struct nand_device *dev, const struct nand_cmd_target *target,
+                                      const struct nand_cmd_ops *ops, void *cb_ctx)
+{
+    return engine_submit(dev, NAND_OP_CACHE_READ, target, ops, cb_ctx);
+}
+
+int nand_cmd_engine_submit_cache_read_end(struct nand_device *dev, const struct nand_cmd_target *target,
+                                          const struct nand_cmd_ops *ops, void *cb_ctx)
+{
+    return engine_submit(dev, NAND_OP_CACHE_READ_END, target, ops, cb_ctx);
+}
+
+int nand_cmd_engine_submit_cache_program(struct nand_device *dev, const struct nand_cmd_target *target,
+                                         const struct nand_cmd_ops *ops, void *cb_ctx)
+{
+    return engine_submit(dev, NAND_OP_CACHE_PROG, target, ops, cb_ctx);
 }
 
 int nand_cmd_engine_snapshot(struct nand_device *dev, const struct nand_cmd_target *target,

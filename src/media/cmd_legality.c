@@ -27,6 +27,8 @@ static const bool k_legal[DIE_STATE_COUNT][NAND_OP_COUNT] = {
             [NAND_OP_READ_STATUS_ENHANCED] = true,
             [NAND_OP_READ_ID] = true,
             [NAND_OP_READ_PARAM_PAGE] = true,
+            [NAND_OP_CACHE_READ] = true,
+            [NAND_OP_CACHE_PROG] = true,
         },
     [DIE_READ_SETUP] =
         {
@@ -45,6 +47,8 @@ static const bool k_legal[DIE_STATE_COUNT][NAND_OP_COUNT] = {
             [NAND_OP_RESET] = true,
             [NAND_OP_READ_STATUS] = true,
             [NAND_OP_READ_STATUS_ENHANCED] = true,
+            [NAND_OP_CACHE_READ] = true,
+            [NAND_OP_CACHE_READ_END] = true,
         },
     [DIE_PROG_SETUP] =
         {
@@ -58,6 +62,7 @@ static const bool k_legal[DIE_STATE_COUNT][NAND_OP_COUNT] = {
             [NAND_OP_READ_STATUS] = true,
             [NAND_OP_READ_STATUS_ENHANCED] = true,
             [NAND_OP_PROG_SUSPEND] = true,
+            [NAND_OP_CACHE_PROG] = true,
         },
     [DIE_ERASE_SETUP] =
         {
@@ -136,6 +141,13 @@ enum nand_die_state nand_cmd_next_state_on_accept(enum nand_die_state state, enu
         return DIE_PROG_ARRAY_BUSY;
     case NAND_OP_ERASE_RESUME:
         return DIE_ERASE_ARRAY_BUSY;
+    case NAND_OP_CACHE_READ:
+        return DIE_READ_SETUP;
+    case NAND_OP_CACHE_READ_END:
+        /* Cache-read-end runs from DATA_XFER; the engine drives IDLE. */
+        return state;
+    case NAND_OP_CACHE_PROG:
+        return DIE_PROG_SETUP;
     default:
         return state;
     }

@@ -47,6 +47,9 @@ enum nand_cmd_opcode {
     NAND_OP_PROG_RESUME,
     NAND_OP_ERASE_SUSPEND,
     NAND_OP_ERASE_RESUME,
+    NAND_OP_CACHE_READ,
+    NAND_OP_CACHE_READ_END,
+    NAND_OP_CACHE_PROG,
     NAND_OP_COUNT
 };
 
@@ -110,6 +113,13 @@ struct nand_die_cmd_state {
      * before the old worker observes it.
      */
     _Atomic u32 abort_epoch;
+    /*
+     * Cache command sequencing. cache_active is true while inside a cache
+     * read or cache program pipeline. cache_seq_count tracks how many
+     * pages have been submitted in the current sequence.
+     */
+    bool cache_active;
+    u32 cache_seq_count;
 };
 
 void nand_cmd_state_init(struct nand_die_cmd_state *s);
