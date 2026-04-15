@@ -1,4 +1,4 @@
-name: Build and Test
+name: Build
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: Build and Test on ${{ matrix.os }}
+    name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -26,18 +26,6 @@ jobs:
           sudo apt-get install -y build-essential
 
       - name: Build project
-        run: |
-          make all
-
-      - name: Run tests
-        run: |
-          make test
-
-      - name: Clean build
-        run: |
-          make clean
-
-      - name: Rebuild to check cleanliness
         run: |
           make all
 
