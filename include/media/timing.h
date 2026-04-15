@@ -3,6 +3,8 @@
 
 #include "common/common.h"
 
+struct nand_profile;
+
 /* NAND Type */
 enum nand_type {
     NAND_TYPE_SLC = 0,
@@ -54,6 +56,7 @@ struct timing_model {
 
 /* Function Prototypes */
 int timing_model_init(struct timing_model *model, enum nand_type type);
+int timing_model_init_from_profile(struct timing_model *model, const struct nand_profile *profile);
 void timing_model_cleanup(struct timing_model *model);
 u64 timing_get_read_latency(struct timing_model *model, u32 page_idx);
 u64 timing_get_prog_latency(struct timing_model *model, u32 page_idx);

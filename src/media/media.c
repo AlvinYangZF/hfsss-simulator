@@ -57,6 +57,17 @@ int media_init(struct media_ctx *ctx, struct media_config *config)
         return ret;
     }
 
+    /* Resolve the active profile. Explicit profile_id wins; otherwise fall
+     * back to the default for nand_type so existing zero-initialized callers
+     * keep working unchanged. */
+    if (config->profile_explicit) {
+        ctx->profile = nand_profile_get(config->profile_id);
+    }
+    if (!ctx->profile) {
+        ctx->profile = nand_profile_get_default_for_type(config->nand_type);
+    }
+    ctx->nand->profile = ctx->profile;
+
     /* Allocate and initialize timing model */
     ctx->timing = (struct timing_model *)malloc(sizeof(struct timing_model));
     if (!ctx->timing) {
@@ -64,11 +75,15 @@ int media_init(struct media_ctx *ctx, struct media_config *config)
         return HFSSS_ERR_NOMEM;
     }
 
-    ret = timing_model_init(ctx->timing, config->nand_type);
+    ret = timing_model_init_from_profile(ctx->timing, ctx->profile);
     if (ret != HFSSS_OK) {
         media_cleanup(ctx);
         return ret;
     }
+    /* Preserve the caller-requested nand_type so timing_get_*_latency lane
+     * selection still works for SLC/MLC fallbacks where the profile is a
+     * TLC default. */
+    ctx->timing->type = config->nand_type;
 
     /* Associate timing model with NAND device */
     ctx->nand->timing = ctx->timing;

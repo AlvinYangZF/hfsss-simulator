@@ -131,11 +131,25 @@ struct nand_status_enhanced {
     u8 classic_status;
 };
 
+struct nand_profile;
+
 /*
  * Build the device-level identity and parameter page from the active config.
- * Pure function; performs no locking, no allocation, no I/O.
+ * Pure function; performs no locking, no allocation, no I/O. When dev->profile
+ * is non-NULL the identity bytes (manufacturer, model, supported_cmd_bitmap,
+ * bits_per_cell, ECC contract) come from the profile; geometry fields always
+ * come from cfg. Existing zero-initialized callers without a profile fall
+ * back to the legacy nand_type-derived defaults.
  */
 void nand_identity_build_from_config(struct nand_device *dev, const struct media_config *cfg);
+
+/*
+ * Profile-aware variant exposed for callers that hold an explicit profile
+ * pointer. The shim above is preserved for back-compat and routes through
+ * dev->profile when set.
+ */
+void nand_identity_build_from_profile(struct nand_device *dev, const struct nand_profile *profile,
+                                      const struct media_config *cfg);
 
 /*
  * Decode helpers over a previously taken snapshot. Safe to call without locks.

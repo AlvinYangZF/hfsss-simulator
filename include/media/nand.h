@@ -97,12 +97,15 @@ struct nand_channel {
     struct mutex lock;
 };
 
+struct nand_profile;
+
 /* NAND Device */
 struct nand_device {
     struct nand_channel channels[MAX_CHANNELS];
     u32 channel_count;
     struct timing_model *timing;
     struct eat_ctx *eat;
+    const struct nand_profile *profile;
     struct nand_id nand_id;
     struct nand_parameter_page param_page;
 };

@@ -1,4 +1,5 @@
 #include "media/cmd_legality.h"
+#include "media/nand_profile.h"
 
 /*
  * Legality matrix — rows are current die state, columns are incoming opcode.
@@ -110,6 +111,15 @@ bool nand_cmd_is_legal_in_state(enum nand_die_state state, enum nand_cmd_opcode 
         return false;
     }
     return k_legal[state][op];
+}
+
+bool nand_cmd_is_legal_for_profile_state(const struct nand_profile *profile, enum nand_die_state state,
+                                         enum nand_cmd_opcode op)
+{
+    if (profile && !nand_profile_supports_op(profile, op)) {
+        return false;
+    }
+    return nand_cmd_is_legal_in_state(state, op);
 }
 
 enum nand_die_state nand_cmd_next_state_on_accept(enum nand_die_state state, enum nand_cmd_opcode op)
