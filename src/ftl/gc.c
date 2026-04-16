@@ -489,12 +489,26 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
         dst_ppn.bits.block   = ctx->dst_block->block_id;
         dst_ppn.bits.page    = ctx->dst_page;
 
-        union ppn old_ppn;
-        taa_update(taa, lba, dst_ppn, &old_ppn);
+        /*
+         * Compare-and-swap L2P from src_ppn to dst_ppn. If a host writer
+         * overwrote the LBA between our taa_lookup above and this point,
+         * src_ppn is now stale and our dst copy is stale too. Leave the
+         * host's newer write alone, consume the dst page slot (NAND was
+         * already programmed), and skip the valid_page_count increment.
+         * The wasted dst page is implicitly invalid (no L2P reference)
+         * and will be reclaimed on the next GC pass over dst_block.
+         */
+        bool reloc_installed = false;
+        taa_update_if_equal(taa, lba, src_ppn, dst_ppn, &reloc_installed);
+
+        ctx->dst_page++;
+
+        if (!reloc_installed) {
+            continue;
+        }
 
         atomic_fetch_add_explicit(&ctx->dst_block->valid_page_count, 1,
                                   memory_order_relaxed);
-        ctx->dst_page++;
         moved++;
     }
 

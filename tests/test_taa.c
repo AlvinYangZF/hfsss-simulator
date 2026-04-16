@@ -98,6 +98,55 @@ static void test_update(void)
     taa_cleanup(&ctx);
 }
 
+static void test_update_if_equal(void)
+{
+    printf("\n=== TAA update_if_equal (GC CAS) ===\n");
+
+    struct taa_ctx ctx;
+    taa_init(&ctx, 1024, 2048, 4);
+
+    union ppn src, dst, other, cur;
+    src.raw = 0x100;
+    dst.raw = 0x200;
+    other.raw = 0x300;
+
+    taa_insert(&ctx, 50, src);
+
+    /* Happy path: L2P still equals src → CAS swaps it to dst. */
+    bool updated = false;
+    int rc = taa_update_if_equal(&ctx, 50, src, dst, &updated);
+    TEST_ASSERT(rc == HFSSS_OK, "CAS happy path rc OK");
+    TEST_ASSERT(updated == true, "CAS happy path reports updated");
+    taa_lookup(&ctx, 50, &cur);
+    TEST_ASSERT(cur.raw == dst.raw, "CAS happy path installs dst_ppn");
+
+    /* Conflict path: simulate a concurrent host write that moved L2P to
+     * `other` between the GC read and CAS. The CAS must leave L2P alone. */
+    taa_update(&ctx, 50, other, NULL);
+    updated = true;
+    rc = taa_update_if_equal(&ctx, 50, dst, /* new */ src, &updated);
+    TEST_ASSERT(rc == HFSSS_OK, "CAS conflict path rc OK");
+    TEST_ASSERT(updated == false, "CAS conflict path reports no swap");
+    taa_lookup(&ctx, 50, &cur);
+    TEST_ASSERT(cur.raw == other.raw, "CAS conflict path preserves host write");
+
+    /* NULL updated_out must be accepted. */
+    rc = taa_update_if_equal(&ctx, 50, other, dst, NULL);
+    TEST_ASSERT(rc == HFSSS_OK, "CAS NULL out ptr accepted");
+    taa_lookup(&ctx, 50, &cur);
+    TEST_ASSERT(cur.raw == dst.raw, "CAS NULL out ptr still swaps");
+
+    /* Empty slot: CAS must not install on an unmapped LBA. */
+    updated = true;
+    rc = taa_update_if_equal(&ctx, 999, src, dst, &updated);
+    TEST_ASSERT(rc == HFSSS_OK, "CAS on empty slot rc OK");
+    TEST_ASSERT(updated == false, "CAS on empty slot does not insert");
+    rc = taa_lookup(&ctx, 999, &cur);
+    TEST_ASSERT(rc != HFSSS_OK, "empty slot remains empty");
+
+    taa_cleanup(&ctx);
+}
+
 static void test_cross_shard(void)
 {
     printf("\n=== TAA Cross-Shard ===\n");
@@ -211,6 +260,7 @@ int main(void)
     test_init_cleanup();
     test_lookup_insert_remove();
     test_update();
+    test_update_if_equal();
     test_cross_shard();
     test_concurrent();
 
