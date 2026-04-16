@@ -1,4 +1,5 @@
 #include "hal/hal.h"
+#include "common/trace.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -82,6 +83,18 @@ int hal_nand_read_sync(struct hal_ctx *ctx, u32 ch, u32 chip, u32 die,
 
     ret = hal_nand_read(ctx->nand, &cmd);
 
+#ifdef HFSSS_DEBUG_TRACE
+    {
+        uint32_t crc = (ret == 0 && data != NULL)
+                       ? trace_crc32c(data, ctx->nand->page_size)
+                       : 0;
+        /* lba not in scope here; analyzer joins on (op, ppn). Pass 0 for lba. */
+        uint64_t ppn_hint = ((uint64_t)cmd.ch << 32) | (uint64_t)cmd.page;
+        TRACE_EMIT(TRACE_POINT_T5_POST_HAL, (uint32_t)TRACE_OP_READ,
+                   0, ppn_hint, crc, (uint32_t)ret);
+    }
+#endif
+
     /* Update stats */
     mutex_lock(&ctx->lock, 0);
     if (ret == HFSSS_OK) {
@@ -119,6 +132,17 @@ int hal_nand_program_sync(struct hal_ctx *ctx, u32 ch, u32 chip, u32 die,
     cmd.spare = (void *)spare;
 
     ret = hal_nand_program(ctx->nand, &cmd);
+
+#ifdef HFSSS_DEBUG_TRACE
+    {
+        uint32_t crc = (ret == 0 && data != NULL)
+                       ? trace_crc32c(data, ctx->nand->page_size)
+                       : 0;
+        uint64_t ppn_hint = ((uint64_t)cmd.ch << 32) | (uint64_t)cmd.page;
+        TRACE_EMIT(TRACE_POINT_T5_POST_HAL, (uint32_t)TRACE_OP_WRITE,
+                   0, ppn_hint, crc, (uint32_t)ret);
+    }
+#endif
 
     /* Update stats */
     mutex_lock(&ctx->lock, 0);

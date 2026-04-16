@@ -36,6 +36,7 @@
 #include "pcie/nvme_uspace.h"
 #include "ftl/ftl_worker.h"
 #include "vhost/nbd_async.h"
+#include "common/trace.h"
 
 /* -------------------------------------------------------------------------
  * Portable 64-bit byte-swap helpers
@@ -298,6 +299,16 @@ static int mt_io(enum io_opcode op, uint64_t lba, uint32_t count, uint8_t *data)
     req.count = count;
     req.data = data;
     req.nbd_handle = 0;
+
+#ifdef HFSSS_DEBUG_TRACE
+    {
+        uint32_t crc = (op == IO_OP_WRITE && data != NULL)
+                       ? trace_crc32c(data, (size_t)count * 4096)
+                       : 0;
+        TRACE_EMIT(TRACE_POINT_T1_NBD_RECV, (uint32_t)op, lba,
+                   (uint64_t)count, crc, 0);
+    }
+#endif
 
     while (!ftl_mt_submit(g_mt, &req)) {
         sched_yield();

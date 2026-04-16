@@ -1,4 +1,6 @@
 #include "ftl/ftl.h"
+#include "ftl/io_queue.h"
+#include "common/trace.h"
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -684,11 +686,20 @@ int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         return ret;
     }
 
+#ifdef HFSSS_DEBUG_TRACE
+    TRACE_EMIT(TRACE_POINT_T3_PPN_DONE, (uint32_t)IO_OP_READ, lba,
+               (uint64_t)ppn.raw, 0, 0);
+#endif
+
     /* Decode PPN */
     ftl_decode_ppn(ppn, &ch, &chip, &die, &plane, &block, &page);
 
     /* Try reading with retry logic */
     for (retry_count = 0; retry_count < max_retries; retry_count++) {
+#ifdef HFSSS_DEBUG_TRACE
+        TRACE_EMIT(TRACE_POINT_T4_PRE_HAL, (uint32_t)IO_OP_READ, lba,
+                   (uint64_t)ppn.raw, 0, 0);
+#endif
         ret = hal_nand_read_sync(ctx->hal, ch, chip, die, plane,
                                   block, page, data, NULL);
 
@@ -754,8 +765,20 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     ppn = ftl_encode_ppn(phys_ch, phys_chip, phys_die, phys_plane,
                           cwb->block->block_id, cwb->current_page);
 
+#ifdef HFSSS_DEBUG_TRACE
+    TRACE_EMIT(TRACE_POINT_T3_PPN_DONE, (uint32_t)IO_OP_WRITE, lba,
+               (uint64_t)ppn.raw, 0, 0);
+#endif
+
     /* Write to NAND — no verify in MT mode (DRAM-backed, always succeeds) */
     for (write_retry = 0; write_retry < max_write_retries; write_retry++) {
+#ifdef HFSSS_DEBUG_TRACE
+        {
+            uint32_t crc = (data != NULL) ? trace_crc32c(data, 4096) : 0;
+            TRACE_EMIT(TRACE_POINT_T4_PRE_HAL, (uint32_t)IO_OP_WRITE, lba,
+                       (uint64_t)ppn.raw, crc, 0);
+        }
+#endif
         ret = hal_nand_program_sync(ctx->hal, phys_ch, phys_chip,
                                      phys_die, phys_plane,
                                      cwb->block->block_id,
