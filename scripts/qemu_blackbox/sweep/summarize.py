@@ -64,22 +64,17 @@ def summarize_run(stem: Path) -> dict:
     }
 
 
-def build_matrix(artifact_dir: Path, matrix_yml: Path) -> str:
-    """Build a markdown summary table from a matrix.yml and artifact directory.
+def build_matrix(artifact_dir: Path, matrix_json: Path) -> str:
+    """Build a markdown summary table from a matrix.json and artifact directory."""
+    with matrix_json.open() as fh:
+        matrix = json.load(fh)
 
-    yaml is imported inside this function so unit tests that do not exercise
-    build_matrix do not require PyYAML to be installed.
-    """
-    import yaml  # noqa: PLC0415
-
-    with matrix_yml.open() as fh:
-        matrix = yaml.safe_load(fh)
-
+    top_repeats = int(matrix.get("repeats", 3))
     lines = []
     for axis_entry in matrix.get("axes", []):
         axis_name = axis_entry["name"]
         points = axis_entry.get("points", [])
-        repeats = axis_entry.get("repeats", 3)
+        repeats = int(axis_entry.get("repeats", top_repeats))
         lines.append(f"## {axis_name}")
         lines.append("")
         lines.append("| point | rep0 | rep1 | rep2 | status |")
@@ -103,7 +98,7 @@ def main() -> None:
     parser.add_argument("--artifact-dir", required=True, type=Path,
                         help="Directory containing <stem>.stderr and <stem>.json files.")
     parser.add_argument("--matrix", required=True, type=Path,
-                        help="Path to matrix.yml describing the sweep axes.")
+                        help="Path to matrix.json describing the sweep axes.")
     parser.add_argument("--out", required=True, type=Path,
                         help="Output markdown file path.")
     args = parser.parse_args()

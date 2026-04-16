@@ -16,7 +16,7 @@
 
 **New files:**
 
-- `scripts/qemu_blackbox/sweep/matrix.yml` — sweep point definition
+- `scripts/qemu_blackbox/sweep/matrix.json` — sweep point definition
 - `scripts/qemu_blackbox/sweep/summarize.py` — fio JSON + stderr → matrix.md aggregator
 - `scripts/qemu_blackbox/sweep/fio_sweep.sh` — Stage W driver (QEMU reuse loop)
 - `scripts/qemu_blackbox/sweep/test_summarize.py` — unit test for summarize
@@ -99,58 +99,55 @@ git commit -m "chore: scaffold directories for 014/015 bisection tooling"
 ### Task 2: Stage W sweep matrix definition
 
 **Files:**
-- Create: `scripts/qemu_blackbox/sweep/matrix.yml`
+- Create: `scripts/qemu_blackbox/sweep/matrix.json`
 
 - [ ] **Step 1: Write the matrix file**
 
-Create `scripts/qemu_blackbox/sweep/matrix.yml` with:
+Create `scripts/qemu_blackbox/sweep/matrix.json` with:
 
-```yaml
-# Stage W single-axis sweep definition for 014/015 bisection.
-# See docs/superpowers/specs/2026-04-16-fio-014-015-segmented-bisection-design.md
-baseline:
-  rw: randrw
-  rwmixread: 70
-  bs: 4k
-  direct: 1
-  ioengine: libaio
-  iodepth: 64
-  numjobs: 1
-  size: 1G
-  io_size: 2G
-  verify: crc32c
-  verify_fatal: 0
-  verify_async: 4
-  do_verify: 1
-  randrepeat: 0
-  name: sweep
-
-axes:
-  - name: iodepth
-    points: [1, 4, 16, 64]
-  - name: rwmix
-    fio_param: rwmixread
-    points: [0, 70, 100]
-  - name: numjobs
-    points: [1, 2, 4]
-  - name: verify_async
-    points: [0, 2, 4]
-  - name: bs
-    points: [4k, 16k]
-
-repeats: 3
-format_between_axis_switch: true
+```json
+{
+  "_comment": "Stage W single-axis sweep definition for 014/015 bisection. See docs/superpowers/specs/2026-04-16-fio-014-015-segmented-bisection-design.md",
+  "baseline": {
+    "rw": "randrw",
+    "rwmixread": 70,
+    "bs": "4k",
+    "direct": 1,
+    "ioengine": "libaio",
+    "iodepth": 64,
+    "numjobs": 1,
+    "size": "1G",
+    "io_size": "2G",
+    "verify": "crc32c",
+    "verify_fatal": 0,
+    "verify_async": 4,
+    "do_verify": 1,
+    "randrepeat": 0,
+    "name": "sweep"
+  },
+  "axes": [
+    {"name": "iodepth", "points": [1, 4, 16, 64]},
+    {"name": "rwmix", "fio_param": "rwmixread", "points": [0, 70, 100]},
+    {"name": "numjobs", "points": [1, 2, 4]},
+    {"name": "verify_async", "points": [0, 2, 4]},
+    {"name": "bs", "points": ["4k", "16k"]}
+  ],
+  "repeats": 3,
+  "format_between_axis_switch": true
+}
 ```
 
-- [ ] **Step 2: Validate YAML parses**
+**Note:** The plan originally used YAML for readability, but PyYAML is not available on this host's system Python (PEP 668 on macOS). JSON removes that dependency and remains readable.
 
-Run: `python3 -c "import yaml; yaml.safe_load(open('scripts/qemu_blackbox/sweep/matrix.yml'))"`
-Expected: no output, exit 0. (If PyYAML not installed: `pip3 install pyyaml` first — note this dependency.)
+- [ ] **Step 2: Validate JSON parses**
+
+Run: `python3 -c "import json; json.load(open('scripts/qemu_blackbox/sweep/matrix.json'))"`
+Expected: no output, exit 0. (No third-party dependency needed — JSON is stdlib.)
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add scripts/qemu_blackbox/sweep/matrix.yml
+git add scripts/qemu_blackbox/sweep/matrix.json
 git commit -m "feat: define Stage W fio sweep matrix"
 ```
 
@@ -246,7 +243,7 @@ Create `scripts/qemu_blackbox/sweep/summarize.py`:
 """Aggregate fio sweep run output into a markdown matrix.
 
 Usage:
-    summarize.py --artifact-dir <path> --matrix <matrix.yml> --out <matrix.md>
+    summarize.py --artifact-dir <path> --matrix <matrix.json> --out <matrix.md>
 
 Consumes per-run <stem>.stderr and <stem>.json files produced by fio_sweep.sh
 and emits a markdown table of axis x point x status.
@@ -308,9 +305,8 @@ def summarize_run(stem: Path) -> Dict:
     }
 
 
-def build_matrix(artifact_dir: Path, matrix_yml: Path) -> str:
-    import yaml
-    cfg = yaml.safe_load(matrix_yml.read_text())
+def build_matrix(artifact_dir: Path, matrix_json: Path) -> str:
+    cfg = json.loads(matrix_json.read_text())
     repeats = int(cfg.get("repeats", 3))
     out_lines = ["# Stage W Sweep Matrix", ""]
     for axis in cfg["axes"]:
@@ -382,7 +378,7 @@ Create `scripts/qemu_blackbox/sweep/fio_sweep.sh`:
 # axis switches.
 #
 # Usage:
-#   fio_sweep.sh --matrix <matrix.yml> --artifact-dir <dir> [--dry-run]
+#   fio_sweep.sh --matrix <matrix.json> --artifact-dir <dir> [--dry-run]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -438,9 +434,9 @@ format_ns() {
 }
 
 python3 - "$MATRIX" "$ARTIFACT_DIR" "$DRY_RUN" <<'PY'
-import sys, yaml, subprocess, os
+import sys, json, subprocess, os
 matrix_path, artifact_dir, dry_run = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
-cfg = yaml.safe_load(open(matrix_path))
+cfg = json.load(open(matrix_path))
 base = cfg["baseline"]
 repeats = int(cfg.get("repeats", 3))
 first_axis = True
@@ -478,7 +474,7 @@ Run: `chmod +x scripts/qemu_blackbox/sweep/fio_sweep.sh`
 Run:
 ```bash
 mkdir -p /tmp/sweep_dry && ./scripts/qemu_blackbox/sweep/fio_sweep.sh \
-    --matrix scripts/qemu_blackbox/sweep/matrix.yml \
+    --matrix scripts/qemu_blackbox/sweep/matrix.json \
     --artifact-dir /tmp/sweep_dry --dry-run 2>&1 | head -20
 ```
 Expected: output contains `DRY: fio ... --iodepth=1 ...`, `DRY: fio ... --iodepth=4 ...`, etc.
@@ -1204,7 +1200,7 @@ Create `scripts/qemu_blackbox/phase_a/fio_over_nbd.sh`:
 # Requires: fio with ioengine=nbd (built with --enable-libnbd).
 #
 # Usage:
-#   fio_over_nbd.sh --mfc <mfc.yml> --artifact-dir <dir> --port <port>
+#   fio_over_nbd.sh --mfc <mfc.json> --artifact-dir <dir> --port <port>
 set -euo pipefail
 
 MFC=""
@@ -1220,14 +1216,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -n "$MFC" ] || { echo "--mfc required (path to MFC yaml from Stage W)" >&2; exit 2; }
+[ -n "$MFC" ] || { echo "--mfc required (path to MFC json from Stage W)" >&2; exit 2; }
 [ -n "$ARTIFACT_DIR" ] || { echo "--artifact-dir required" >&2; exit 2; }
 mkdir -p "$ARTIFACT_DIR"
 
-# Build fio args from MFC yaml.
+# Build fio args from MFC json.
 FIO_ARGS=$(python3 - "$MFC" <<'PY'
-import sys, yaml
-cfg = yaml.safe_load(open(sys.argv[1]))
+import sys, json
+cfg = json.load(open(sys.argv[1]))
 out = []
 for k, v in cfg.items():
     out.append(f"--{k}={v}")
@@ -1535,7 +1531,7 @@ TS=$(date +%Y%m%d_%H%M%S)
 OUT="artifacts/sweep-${TS}"
 mkdir -p "$OUT"
 ./scripts/qemu_blackbox/sweep/fio_sweep.sh \
-    --matrix scripts/qemu_blackbox/sweep/matrix.yml \
+    --matrix scripts/qemu_blackbox/sweep/matrix.json \
     --artifact-dir "$OUT" 2>&1 | tee "$OUT/driver.log"
 ```
 Expected: ~2 hours. Tail shows `[sweep] done`. `$OUT` contains ~45 triplets of `.stdout`/`.stderr`/`.json` files.
@@ -1546,7 +1542,7 @@ Run:
 ```bash
 python3 scripts/qemu_blackbox/sweep/summarize.py \
     --artifact-dir "$OUT" \
-    --matrix scripts/qemu_blackbox/sweep/matrix.yml \
+    --matrix scripts/qemu_blackbox/sweep/matrix.json \
     --out "$OUT/matrix.md"
 cat "$OUT/matrix.md"
 ```
@@ -1580,21 +1576,22 @@ Write `$OUT/decision.md` with:
 Seg-4 (UT regression) then Seg-1 with the above MFC.
 ```
 
-Also commit an `mfc.yml` to `$OUT/mfc.yml` containing just the MFC parameters in a form the Seg-1 harness can consume:
-```yaml
-rw: randrw
-rwmixread: <from MFC>
-bs: <from MFC>
-iodepth: <from MFC>
-...
-io_size: 2G
-verify: crc32c
-verify_fatal: 0
-do_verify: 1
-direct: 1
-ioengine: libaio
-randrepeat: 0
-name: mfc_repro
+Also commit an `mfc.json` to `$OUT/mfc.json` containing just the MFC parameters in a form the Seg-1 harness can consume:
+```json
+{
+  "rw": "randrw",
+  "rwmixread": "<from MFC>",
+  "bs": "<from MFC>",
+  "iodepth": "<from MFC>",
+  "io_size": "2G",
+  "verify": "crc32c",
+  "verify_fatal": 0,
+  "do_verify": 1,
+  "direct": 1,
+  "ioengine": "libaio",
+  "randrepeat": 0,
+  "name": "mfc_repro"
+}
 ```
 
 - [ ] **Step 5: Commit the artifact**
@@ -1605,8 +1602,8 @@ name: mfc_repro
 mkdir -p docs/superpowers/artifacts
 cp "$OUT/matrix.md" "docs/superpowers/artifacts/stage-w-matrix.md"
 cp "$OUT/decision.md" "docs/superpowers/artifacts/stage-w-decision.md"
-cp "$OUT/mfc.yml" "docs/superpowers/artifacts/mfc.yml"
-git add docs/superpowers/artifacts/stage-w-matrix.md docs/superpowers/artifacts/stage-w-decision.md docs/superpowers/artifacts/mfc.yml
+cp "$OUT/mfc.json" "docs/superpowers/artifacts/mfc.json"
+git add docs/superpowers/artifacts/stage-w-matrix.md docs/superpowers/artifacts/stage-w-decision.md docs/superpowers/artifacts/mfc.json
 git commit -m "docs: Stage W sweep matrix and MFC decision"
 ```
 
@@ -1659,7 +1656,7 @@ Run:
 OUT="artifacts/phase-a-$(date +%Y%m%d)"
 mkdir -p "$OUT"
 ./scripts/qemu_blackbox/phase_a/fio_over_nbd.sh \
-    --mfc docs/superpowers/artifacts/mfc.yml \
+    --mfc docs/superpowers/artifacts/mfc.json \
     --artifact-dir "$OUT" --port 10820 2>&1 | tee "$OUT/seg1-driver.log"
 ```
 Expected: 3 × ~2-min runs complete. Final line: `[seg-1] total verify errors: <N>`.
@@ -1670,7 +1667,7 @@ Write `$OUT/seg1-results.md`:
 ```markdown
 # Seg-1: fio-over-NBD (bypass QEMU)
 - Date: <date>
-- MFC: see docs/superpowers/artifacts/mfc.yml
+- MFC: see docs/superpowers/artifacts/mfc.json
 - Rep1 errors: <N>
 - Rep2 errors: <N>
 - Rep3 errors: <N>
@@ -1860,7 +1857,7 @@ EOF
 
 | Spec section | Plan task(s) |
 |---|---|
-| Stage W matrix.yml | Task 2 |
+| Stage W matrix.json | Task 2 |
 | Stage W summarize.py | Task 3 |
 | Stage W fio_sweep.sh | Task 4 |
 | Stage W execution | Task 10 |

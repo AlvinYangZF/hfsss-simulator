@@ -46,3 +46,4 @@ build-cov/
 # Investigation artifacts (runtime only)
 artifacts/*
 !artifacts/.gitkeep
+scripts/qemu_blackbox/sweep/__pycache__/
