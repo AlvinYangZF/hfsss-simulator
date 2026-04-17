@@ -4,8 +4,10 @@
 #include "media/cmd_state.h"
 #include "media/media.h"
 #include "media/nand.h"
+#include "media/nand_profile.h"
 #include "media/timing.h"
 
+#include <stddef.h>
 #include <string.h>
 
 /*
@@ -108,15 +110,21 @@ static u8 encode_field_log2(u32 value, u8 base_log2, u8 max_code)
  * Pack the 8-byte ID per ONFI 4.2 Table 37. The simulator supports enterprise
  * TLC/QLC geometries whose page/block sizes commonly exceed the 2-bit encoded
  * values defined by ONFI 4.2. Where that happens we clamp to the maximum legal
- * code and mirror the true value in the parameter page.
+ * code and mirror the true value in the parameter page. When a profile is
+ * provided, manufacturer_id and device_id come from the profile so two
+ * profiles sharing the same nand_type still expose distinct identities.
  */
-static void build_nand_id(struct nand_id *id, const struct media_config *cfg)
+static void build_nand_id(struct nand_id *id, const struct media_config *cfg, const struct nand_profile *profile)
 {
     memset(id, 0, sizeof(*id));
-    id->bytes[0] = NAND_ID_MFR_SIMULATOR;
+    if (profile) {
+        id->bytes[0] = profile->identity.manufacturer_id;
+    } else {
+        id->bytes[0] = NAND_ID_MFR_SIMULATOR;
+    }
 
     u8 cell_type = cell_type_from_nand_type(cfg->nand_type);
-    u8 device_code = (u8)(0x10 | (cell_type & 0x03));
+    u8 device_code = profile ? profile->identity.device_id : (u8)(0x10 | (cell_type & 0x03));
     id->bytes[1] = device_code;
 
     u32 dies_per_ce = cfg->chips_per_channel * cfg->dies_per_chip;
@@ -150,7 +158,8 @@ static void build_nand_id(struct nand_id *id, const struct media_config *cfg)
 }
 
 static void build_parameter_page(struct nand_parameter_page *pp, const struct media_config *cfg,
-                                 const struct nand_id *id, struct timing_model *timing)
+                                 const struct nand_id *id, struct timing_model *timing,
+                                 const struct nand_profile *profile)
 {
     memset(pp, 0, sizeof(*pp));
 
@@ -159,26 +168,31 @@ static void build_parameter_page(struct nand_parameter_page *pp, const struct me
 
     pp->manufacturer_id = id->bytes[0];
     pp->device_id = id->bytes[1];
-    memcpy(pp->manufacturer_name, "HFSSS-SIM   ", NAND_PARAMETER_PAGE_MFR_NAME_LEN);
 
-    const char *model = "GENERIC-NAND-0001   ";
-    switch (cfg->nand_type) {
-    case NAND_TYPE_SLC:
-        model = "GENERIC-SLC-0001    ";
-        break;
-    case NAND_TYPE_MLC:
-        model = "GENERIC-MLC-0001    ";
-        break;
-    case NAND_TYPE_TLC:
-        model = "GENERIC-TLC-0001    ";
-        break;
-    case NAND_TYPE_QLC:
-        model = "GENERIC-QLC-0001    ";
-        break;
-    default:
-        break;
+    if (profile) {
+        memcpy(pp->manufacturer_name, profile->identity.manufacturer_name, NAND_PARAMETER_PAGE_MFR_NAME_LEN);
+        memcpy(pp->device_model, profile->identity.device_model, NAND_PARAMETER_PAGE_MODEL_LEN);
+    } else {
+        memcpy(pp->manufacturer_name, "HFSSS-SIM   ", NAND_PARAMETER_PAGE_MFR_NAME_LEN);
+        const char *model = "GENERIC-NAND-0001   ";
+        switch (cfg->nand_type) {
+        case NAND_TYPE_SLC:
+            model = "GENERIC-SLC-0001    ";
+            break;
+        case NAND_TYPE_MLC:
+            model = "GENERIC-MLC-0001    ";
+            break;
+        case NAND_TYPE_TLC:
+            model = "GENERIC-TLC-0001    ";
+            break;
+        case NAND_TYPE_QLC:
+            model = "GENERIC-QLC-0001    ";
+            break;
+        default:
+            break;
+        }
+        memcpy(pp->device_model, model, NAND_PARAMETER_PAGE_MODEL_LEN);
     }
-    memcpy(pp->device_model, model, NAND_PARAMETER_PAGE_MODEL_LEN);
 
     pp->bytes_per_page = cfg->page_size;
     pp->spare_bytes_per_page = (u16)cfg->spare_size;
@@ -186,7 +200,8 @@ static void build_parameter_page(struct nand_parameter_page *pp, const struct me
     pp->blocks_per_lun = cfg->blocks_per_plane * cfg->planes_per_die;
     pp->luns_per_ce = (u8)(cfg->dies_per_chip);
     pp->planes_per_die = (u8)cfg->planes_per_die;
-    pp->bits_per_cell = bits_per_cell_from_nand_type(cfg->nand_type);
+    pp->bits_per_cell =
+        profile ? profile->capability.bits_per_cell : bits_per_cell_from_nand_type(cfg->nand_type);
 
     /* Row address space spans pages × blocks × LUNs so the advertised cycle
      * count can address every page in the CE. Use u64 to avoid overflow on
@@ -211,15 +226,20 @@ static void build_parameter_page(struct nand_parameter_page *pp, const struct me
         pp->addr_cycles_col = 1;
     }
 
-    pp->ecc_bits_required = ecc_bits_from_nand_type(cfg->nand_type);
-    pp->ecc_codeword_size = 1024;
-
-    pp->supported_cmd_bitmap =
-        (1u << NAND_OP_READ) | (1u << NAND_OP_PROG) | (1u << NAND_OP_ERASE) | (1u << NAND_OP_RESET) |
-        (1u << NAND_OP_READ_STATUS) | (1u << NAND_OP_READ_STATUS_ENHANCED) | (1u << NAND_OP_READ_ID) |
-        (1u << NAND_OP_READ_PARAM_PAGE) | (1u << NAND_OP_PROG_SUSPEND) | (1u << NAND_OP_PROG_RESUME) |
-        (1u << NAND_OP_ERASE_SUSPEND) | (1u << NAND_OP_ERASE_RESUME) | (1u << NAND_OP_CACHE_READ) |
-        (1u << NAND_OP_CACHE_READ_END) | (1u << NAND_OP_CACHE_PROG);
+    if (profile) {
+        pp->ecc_bits_required = profile->capability.ecc_bits_required;
+        pp->ecc_codeword_size = profile->capability.ecc_codeword_size;
+        pp->supported_cmd_bitmap = profile->capability.supported_ops_bitmap;
+    } else {
+        pp->ecc_bits_required = ecc_bits_from_nand_type(cfg->nand_type);
+        pp->ecc_codeword_size = 1024;
+        pp->supported_cmd_bitmap =
+            (1u << NAND_OP_READ) | (1u << NAND_OP_PROG) | (1u << NAND_OP_ERASE) | (1u << NAND_OP_RESET) |
+            (1u << NAND_OP_READ_STATUS) | (1u << NAND_OP_READ_STATUS_ENHANCED) | (1u << NAND_OP_READ_ID) |
+            (1u << NAND_OP_READ_PARAM_PAGE) | (1u << NAND_OP_PROG_SUSPEND) | (1u << NAND_OP_PROG_RESUME) |
+            (1u << NAND_OP_ERASE_SUSPEND) | (1u << NAND_OP_ERASE_RESUME) | (1u << NAND_OP_CACHE_READ) |
+            (1u << NAND_OP_CACHE_READ_END) | (1u << NAND_OP_CACHE_PROG);
+    }
 
     if (timing) {
         pp->tR_ns = timing_get_read_latency(timing, 0);
@@ -230,13 +250,22 @@ static void build_parameter_page(struct nand_parameter_page *pp, const struct me
     pp->crc = crc16_ccitt(pp, offsetof(struct nand_parameter_page, crc));
 }
 
+void nand_identity_build_from_profile(struct nand_device *dev, const struct nand_profile *profile,
+                                      const struct media_config *cfg)
+{
+    if (!dev || !cfg) {
+        return;
+    }
+    build_nand_id(&dev->nand_id, cfg, profile);
+    build_parameter_page(&dev->param_page, cfg, &dev->nand_id, dev->timing, profile);
+}
+
 void nand_identity_build_from_config(struct nand_device *dev, const struct media_config *cfg)
 {
     if (!dev || !cfg) {
         return;
     }
-    build_nand_id(&dev->nand_id, cfg);
-    build_parameter_page(&dev->param_page, cfg, &dev->nand_id, dev->timing);
+    nand_identity_build_from_profile(dev, dev->profile, cfg);
 }
 
 void nand_status_byte_from_cmd_state(const struct nand_die_cmd_state *s, u8 *out)

@@ -8,6 +8,7 @@
 #include "media/cmd_legality.h"
 #include "media/cmd_state.h"
 #include "media/media.h"
+#include "media/nand_profile.h"
 
 #define TEST_PASS 0
 #define TEST_FAIL 1
@@ -1596,6 +1597,188 @@ static int test_cmd_phase5_cache(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+static int test_nand_profile_phase6(void)
+{
+    printf("\n=== Phase6 nand_profile table ===\n");
+
+    const struct nand_profile *onfi_tlc = nand_profile_get(NAND_PROFILE_GENERIC_ONFI_TLC);
+    const struct nand_profile *onfi_qlc = nand_profile_get(NAND_PROFILE_GENERIC_ONFI_QLC);
+    const struct nand_profile *tgl_tlc = nand_profile_get(NAND_PROFILE_GENERIC_TOGGLE_TLC);
+    const struct nand_profile *tgl_qlc = nand_profile_get(NAND_PROFILE_GENERIC_TOGGLE_QLC);
+
+    /* PR-01: lookup returns non-NULL for every defined id, NULL for invalid */
+    TEST_ASSERT(onfi_tlc != NULL, "PR-01: ONFI TLC profile present");
+    TEST_ASSERT(onfi_qlc != NULL, "PR-01: ONFI QLC profile present");
+    TEST_ASSERT(tgl_tlc != NULL, "PR-01: Toggle TLC profile present");
+    TEST_ASSERT(tgl_qlc != NULL, "PR-01: Toggle QLC profile present");
+    TEST_ASSERT(nand_profile_get((enum nand_profile_id)NAND_PROFILE_COUNT) == NULL,
+                "PR-01: out-of-range id returns NULL");
+
+    /* PR-02: identity dimensions */
+    TEST_ASSERT(onfi_tlc->interface_family == NAND_IF_ONFI, "PR-02: ONFI TLC interface_family ONFI");
+    TEST_ASSERT(tgl_tlc->interface_family == NAND_IF_TOGGLE_EQ, "PR-02: Toggle TLC interface_family TOGGLE_EQ");
+    TEST_ASSERT(onfi_tlc->nand_class == NAND_CLASS_ENTERPRISE_TLC, "PR-02: ONFI TLC class enterprise_tlc");
+    TEST_ASSERT(onfi_qlc->nand_class == NAND_CLASS_ENTERPRISE_QLC, "PR-02: ONFI QLC class enterprise_qlc");
+    TEST_ASSERT(onfi_tlc->capability.bits_per_cell == 3, "PR-02: ONFI TLC bits_per_cell 3");
+    TEST_ASSERT(onfi_qlc->capability.bits_per_cell == 4, "PR-02: ONFI QLC bits_per_cell 4");
+
+    /* PR-02b: identity strings differ between ONFI and Toggle even when class matches */
+    TEST_ASSERT(onfi_tlc->identity.device_id != tgl_tlc->identity.device_id,
+                "PR-02: ONFI vs Toggle TLC device_id differ");
+    TEST_ASSERT(strncmp(onfi_tlc->identity.manufacturer_name, tgl_tlc->identity.manufacturer_name,
+                        NAND_PARAMETER_PAGE_MFR_NAME_LEN)
+                    != 0,
+                "PR-02: ONFI vs Toggle TLC manufacturer_name differ");
+
+    /* PR-03: default_for_type maps nand_type to expected default profile */
+    TEST_ASSERT(nand_profile_get_default_for_type(NAND_TYPE_TLC) == onfi_tlc, "PR-03: TLC default = ONFI TLC");
+    TEST_ASSERT(nand_profile_get_default_for_type(NAND_TYPE_QLC) == onfi_qlc, "PR-03: QLC default = ONFI QLC");
+    TEST_ASSERT(nand_profile_get_default_for_type(NAND_TYPE_SLC) == onfi_tlc, "PR-03: SLC fallback to ONFI TLC");
+    TEST_ASSERT(nand_profile_get_default_for_type(NAND_TYPE_MLC) == onfi_tlc, "PR-03: MLC fallback to ONFI TLC");
+
+    /* PR-04: supports_op covers all current opcodes for default profiles
+     * and rejects out-of-range/null inputs. */
+    for (int op = 0; op < NAND_OP_COUNT; op++) {
+        TEST_ASSERT(nand_profile_supports_op(onfi_tlc, (enum nand_cmd_opcode)op),
+                    "PR-04: ONFI TLC supports every defined op");
+    }
+    TEST_ASSERT(nand_profile_supports_op(NULL, NAND_OP_READ) == false, "PR-04: NULL profile rejected");
+    TEST_ASSERT(nand_profile_supports_op(onfi_tlc, (enum nand_cmd_opcode)NAND_OP_COUNT) == false,
+                "PR-04: out-of-range op rejected");
+
+    /* PR-05: profile-aware legality gate masks unsupported ops. Build a
+     * synthetic profile that drops CACHE_READ from the bitmap and verify
+     * the gate rejects it even from DIE_IDLE where the state matrix would
+     * normally accept. NULL profile falls through to the pure state check. */
+    struct nand_profile masked = *onfi_tlc;
+    masked.capability.supported_ops_bitmap &= ~NAND_PROFILE_OP_BIT(NAND_OP_CACHE_READ);
+    TEST_ASSERT(nand_cmd_is_legal_in_state(DIE_IDLE, NAND_OP_CACHE_READ) == true,
+                "PR-05: state matrix still allows CACHE_READ in IDLE");
+    TEST_ASSERT(nand_cmd_is_legal_for_profile_state(&masked, DIE_IDLE, NAND_OP_CACHE_READ) == false,
+                "PR-05: masked profile blocks CACHE_READ");
+    TEST_ASSERT(nand_cmd_is_legal_for_profile_state(onfi_tlc, DIE_IDLE, NAND_OP_CACHE_READ) == true,
+                "PR-05: default profile allows CACHE_READ");
+    TEST_ASSERT(nand_cmd_is_legal_for_profile_state(NULL, DIE_IDLE, NAND_OP_CACHE_READ) == true,
+                "PR-05: NULL profile delegates to state matrix");
+    TEST_ASSERT(nand_cmd_is_legal_for_profile_state(&masked, DIE_PROG_ARRAY_BUSY, NAND_OP_READ_STATUS) == true,
+                "PR-05: state-legal supported op still legal under masked profile");
+
+    /* PR-06: media_init resolves profile from config and exposes it on
+     * media_ctx and dev. Default (zero-init) maps via nand_type; explicit
+     * profile_id wins. */
+    struct media_config cfg_default = {
+        .channel_count = 1,
+        .chips_per_channel = 1,
+        .dies_per_chip = 1,
+        .planes_per_die = 1,
+        .blocks_per_plane = 4,
+        .pages_per_block = 16,
+        .page_size = 4096,
+        .spare_size = 256,
+        .nand_type = NAND_TYPE_TLC,
+    };
+    struct media_ctx ctx_default;
+    int ret = media_init(&ctx_default, &cfg_default);
+    TEST_ASSERT(ret == HFSSS_OK, "PR-06: media_init default succeeds");
+    TEST_ASSERT(ctx_default.profile == onfi_tlc, "PR-06: default profile is generic ONFI TLC");
+    TEST_ASSERT(ctx_default.nand->profile == ctx_default.profile, "PR-06: dev profile mirrors ctx profile");
+    media_cleanup(&ctx_default);
+
+    struct media_config cfg_explicit = cfg_default;
+    cfg_explicit.profile_explicit = true;
+    cfg_explicit.profile_id = NAND_PROFILE_GENERIC_ONFI_QLC;
+    struct media_ctx ctx_explicit;
+    ret = media_init(&ctx_explicit, &cfg_explicit);
+    TEST_ASSERT(ret == HFSSS_OK, "PR-06: media_init explicit profile succeeds");
+    TEST_ASSERT(ctx_explicit.profile == onfi_qlc, "PR-06: explicit profile_id wins over nand_type");
+    TEST_ASSERT(ctx_explicit.nand->profile == onfi_qlc, "PR-06: dev profile follows explicit selection");
+
+    /* PR-07: read_id and parameter page reflect the active profile. The
+     * Toggle TLC profile shares geometry and nand_type with ONFI TLC, so
+     * any per-byte difference must come from the profile-driven serializer. */
+    struct nand_id id_qlc;
+    struct nand_parameter_page pp_qlc;
+    TEST_ASSERT(media_nand_read_id(&ctx_explicit, 0, 0, 0, &id_qlc) == HFSSS_OK, "PR-07: read_id ONFI QLC OK");
+    TEST_ASSERT(id_qlc.bytes[0] == onfi_qlc->identity.manufacturer_id, "PR-07: read_id mfr from profile");
+    TEST_ASSERT(id_qlc.bytes[1] == onfi_qlc->identity.device_id, "PR-07: read_id device_id from profile");
+    TEST_ASSERT(media_nand_read_parameter_page(&ctx_explicit, 0, 0, 0, &pp_qlc) == HFSSS_OK,
+                "PR-07: read_parameter_page ONFI QLC OK");
+    TEST_ASSERT(memcmp(pp_qlc.manufacturer_name, onfi_qlc->identity.manufacturer_name,
+                       NAND_PARAMETER_PAGE_MFR_NAME_LEN)
+                    == 0,
+                "PR-07: parameter page mfr_name from profile");
+    TEST_ASSERT(memcmp(pp_qlc.device_model, onfi_qlc->identity.device_model, NAND_PARAMETER_PAGE_MODEL_LEN) == 0,
+                "PR-07: parameter page device_model from profile");
+    TEST_ASSERT(pp_qlc.bits_per_cell == onfi_qlc->capability.bits_per_cell,
+                "PR-07: bits_per_cell from profile capability");
+    TEST_ASSERT(pp_qlc.ecc_bits_required == onfi_qlc->capability.ecc_bits_required,
+                "PR-07: ecc_bits_required from profile capability");
+    TEST_ASSERT(pp_qlc.supported_cmd_bitmap == onfi_qlc->capability.supported_ops_bitmap,
+                "PR-07: supported_cmd_bitmap from profile capability");
+    media_cleanup(&ctx_explicit);
+
+    /* Toggle TLC vs ONFI TLC over identical geometry — profile is the only
+     * differentiator, so identity bytes must differ. */
+    struct media_config cfg_toggle = cfg_default;
+    cfg_toggle.profile_explicit = true;
+    cfg_toggle.profile_id = NAND_PROFILE_GENERIC_TOGGLE_TLC;
+    struct media_ctx ctx_toggle;
+    TEST_ASSERT(media_init(&ctx_toggle, &cfg_toggle) == HFSSS_OK, "PR-07: media_init Toggle TLC OK");
+    struct nand_id id_tgl;
+    struct nand_parameter_page pp_tgl;
+    TEST_ASSERT(media_nand_read_id(&ctx_toggle, 0, 0, 0, &id_tgl) == HFSSS_OK, "PR-07: read_id Toggle TLC OK");
+    TEST_ASSERT(media_nand_read_parameter_page(&ctx_toggle, 0, 0, 0, &pp_tgl) == HFSSS_OK,
+                "PR-07: read_parameter_page Toggle TLC OK");
+    TEST_ASSERT(id_tgl.bytes[1] == tgl_tlc->identity.device_id, "PR-07: Toggle TLC device_id from profile");
+    TEST_ASSERT(memcmp(pp_tgl.manufacturer_name, tgl_tlc->identity.manufacturer_name,
+                       NAND_PARAMETER_PAGE_MFR_NAME_LEN)
+                    == 0,
+                "PR-07: Toggle TLC mfr_name from profile");
+    TEST_ASSERT(memcmp(pp_tgl.device_model, tgl_tlc->identity.device_model, NAND_PARAMETER_PAGE_MODEL_LEN) == 0,
+                "PR-07: Toggle TLC device_model from profile");
+    media_cleanup(&ctx_toggle);
+
+    /* PR-08: reset policy from profile.
+     *
+     * Default profile (abort_inflight_on_reset=true) accepts reset even
+     * mid-op. A custom no-abort profile rejects reset while the die is in a
+     * busy state and only succeeds once the die returns to IDLE. The custom
+     * profile is injected post-init by overwriting ctx->profile and
+     * ctx->nand->profile — this is allowed at test scope because the field is
+     * a const pointer to caller-owned profile storage. */
+    struct media_ctx ctx_policy;
+    TEST_ASSERT(media_init(&ctx_policy, &cfg_default) == HFSSS_OK, "PR-08: media_init for policy test OK");
+
+    static struct nand_profile no_abort_profile;
+    no_abort_profile = *onfi_tlc;
+    no_abort_profile.reset_policy.abort_inflight_on_reset = false;
+    ctx_policy.profile = &no_abort_profile;
+    ctx_policy.nand->profile = &no_abort_profile;
+
+    /* Force the die into a busy state under die_lock so the policy check
+     * triggers without racing a real worker. */
+    struct nand_die *die0 = &ctx_policy.nand->channels[0].chips[0].dies[0];
+    die0->cmd_state.state = DIE_PROG_ARRAY_BUSY;
+    int reset_busy_rc = media_nand_reset(&ctx_policy, 0, 0, 0);
+    TEST_ASSERT(reset_busy_rc != HFSSS_OK, "PR-08: no-abort profile rejects reset while busy");
+
+    /* Restore IDLE and reset should now succeed. */
+    die0->cmd_state.state = DIE_IDLE;
+    int reset_idle_rc = media_nand_reset(&ctx_policy, 0, 0, 0);
+    TEST_ASSERT(reset_idle_rc == HFSSS_OK, "PR-08: no-abort profile allows reset from IDLE");
+
+    /* Switch back to abort-allowing profile and confirm reset still works
+     * when the die is busy. */
+    ctx_policy.profile = onfi_tlc;
+    ctx_policy.nand->profile = onfi_tlc;
+    die0->cmd_state.state = DIE_PROG_ARRAY_BUSY;
+    int reset_force_rc = media_nand_reset(&ctx_policy, 0, 0, 0);
+    TEST_ASSERT(reset_force_rc == HFSSS_OK, "PR-08: abort profile resets even while busy");
+    media_cleanup(&ctx_policy);
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -1620,6 +1803,7 @@ int main(void)
     test_cmd_phase4_multi_plane();
     test_pr75_review_fixes();
     test_cmd_phase5_cache();
+    test_nand_profile_phase6();
 
     printf("\n========================================\n");
     printf("Test Summary\n");

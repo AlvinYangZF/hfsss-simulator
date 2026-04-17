@@ -5,6 +5,7 @@
 #include "common/mutex.h"
 #include "media/nand.h"
 #include "media/nand_identity.h"
+#include "media/nand_profile.h"
 #include "media/timing.h"
 #include "media/eat.h"
 #include "media/reliability.h"
@@ -25,6 +26,17 @@ struct media_config {
     enum nand_type nand_type;
     bool enable_multi_plane;
     bool enable_die_interleaving;
+
+    /*
+     * Optional Phase 6 profile selection. When profile_explicit is false
+     * (zero-init default) the profile is derived from nand_type via
+     * nand_profile_get_default_for_type; existing callers therefore observe
+     * zero behavior change. profile_explicit=true with a valid profile_id
+     * routes timing, identity, capability and reset policy through that
+     * profile end-to-end.
+     */
+    enum nand_profile_id profile_id;
+    bool profile_explicit;
 };
 
 /* Media Statistics */
@@ -47,6 +59,7 @@ struct media_ctx {
     struct eat_ctx *eat;
     struct reliability_model *reliability;
     struct bbt *bbt;
+    const struct nand_profile *profile;
     struct media_stats stats;
     struct mutex lock;
     bool initialized;

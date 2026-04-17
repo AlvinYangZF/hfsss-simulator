@@ -8,6 +8,7 @@
 struct nand_device;
 struct eat_ctx;
 struct timing_model;
+struct nand_profile;
 
 /*
  * Per-phase commit callbacks. Any field may be NULL; a NULL slot is treated
@@ -20,7 +21,8 @@ struct nand_cmd_ops {
     int (*on_data_xfer_commit)(void *ctx);
 };
 
-int nand_cmd_engine_init(struct nand_device *dev, struct eat_ctx *eat, struct timing_model *timing);
+int nand_cmd_engine_init(struct nand_device *dev, struct eat_ctx *eat, struct timing_model *timing,
+                         const struct nand_profile *profile);
 void nand_cmd_engine_cleanup(struct nand_device *dev);
 
 int nand_cmd_engine_submit_read(struct nand_device *dev, const struct nand_cmd_target *target,

@@ -8,6 +8,7 @@
 #include "media/cmd_state.h"
 #include "media/eat.h"
 #include "media/nand.h"
+#include "media/nand_profile.h"
 #include "media/timing.h"
 
 static struct nand_die *engine_get_die(struct nand_device *dev, u32 ch, u32 chip, u32 die)
@@ -313,7 +314,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         die->cmd_state.in_flight = false;
     }
 
-    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, op)) {
+    if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
         mutex_unlock(&die->die_lock);
         mutex_unlock(&channel->lock);
         return HFSSS_ERR_BUSY;
@@ -547,7 +548,8 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     return stage_rc;
 }
 
-int nand_cmd_engine_init(struct nand_device *dev, struct eat_ctx *eat, struct timing_model *timing)
+int nand_cmd_engine_init(struct nand_device *dev, struct eat_ctx *eat, struct timing_model *timing,
+                         const struct nand_profile *profile)
 {
     if (!dev) {
         return HFSSS_ERR_INVAL;
@@ -557,6 +559,9 @@ int nand_cmd_engine_init(struct nand_device *dev, struct eat_ctx *eat, struct ti
     }
     if (timing) {
         dev->timing = timing;
+    }
+    if (profile) {
+        dev->profile = profile;
     }
     return HFSSS_OK;
 }
@@ -606,9 +611,20 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
      */
     mutex_lock(&die->die_lock, 0);
 
-    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, NAND_OP_RESET)) {
+    if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, NAND_OP_RESET)) {
         mutex_unlock(&die->die_lock);
         return HFSSS_ERR_BUSY;
+    }
+
+    /* Profile reset policy: when abort_inflight_on_reset is false the engine
+     * refuses to interrupt an in-flight or suspended command — the caller
+     * must wait for natural completion (or use a profile that allows abort).
+     * Default profiles all set this to true, preserving legacy behavior. */
+    if (dev->profile && !dev->profile->reset_policy.abort_inflight_on_reset) {
+        if (die->cmd_state.state != DIE_IDLE && die->cmd_state.state != DIE_RESETTING) {
+            mutex_unlock(&die->die_lock);
+            return HFSSS_ERR_BUSY;
+        }
     }
 
     /* Increment the abort epoch so any running worker (past or present)
@@ -652,7 +668,7 @@ static int engine_submit_suspend(struct nand_device *dev, enum nand_cmd_opcode o
     }
 
     mutex_lock(&die->die_lock, 0);
-    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, op)) {
+    if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
         mutex_unlock(&die->die_lock);
         return HFSSS_ERR_BUSY;
     }
@@ -701,7 +717,7 @@ static int engine_submit_resume(struct nand_device *dev, enum nand_cmd_opcode op
     }
 
     mutex_lock(&die->die_lock, 0);
-    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, op)) {
+    if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
         mutex_unlock(&die->die_lock);
         return HFSSS_ERR_BUSY;
     }
@@ -796,7 +812,7 @@ static int engine_submit_status_byte(struct nand_device *dev, const struct nand_
 
     struct nand_die_cmd_state snap;
     mutex_lock(&die->die_lock, 0);
-    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, NAND_OP_READ_STATUS)) {
+    if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, NAND_OP_READ_STATUS)) {
         mutex_unlock(&die->die_lock);
         return HFSSS_ERR_BUSY;
     }
@@ -820,7 +836,7 @@ static int engine_submit_status_enhanced(struct nand_device *dev, const struct n
 
     struct nand_die_cmd_state snap;
     mutex_lock(&die->die_lock, 0);
-    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, NAND_OP_READ_STATUS_ENHANCED)) {
+    if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, NAND_OP_READ_STATUS_ENHANCED)) {
         mutex_unlock(&die->die_lock);
         return HFSSS_ERR_BUSY;
     }
@@ -866,7 +882,7 @@ static int engine_submit_identity(struct nand_device *dev, enum nand_cmd_opcode 
     mutex_lock(&channel->lock, 0);
     mutex_lock(&die->die_lock, 0);
 
-    if (!nand_cmd_is_legal_in_state(die->cmd_state.state, op)) {
+    if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
         mutex_unlock(&die->die_lock);
         mutex_unlock(&channel->lock);
         return HFSSS_ERR_BUSY;
