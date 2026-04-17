@@ -206,6 +206,55 @@ int taa_update(struct taa_ctx *ctx, u64 lba, union ppn new_ppn,
     return HFSSS_OK;
 }
 
+int taa_update_if_equal(struct taa_ctx *ctx, u64 lba, union ppn expected_old,
+                        union ppn new_ppn, bool *updated_out)
+{
+    if (updated_out) {
+        *updated_out = false;
+    }
+    if (!ctx || !ctx->initialized || lba >= ctx->total_lbas) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    u32 sid = taa_shard_id(ctx, lba);
+    struct taa_shard *s = &ctx->shards[sid];
+    u64 local_lba = lba - s->base_lba;
+
+    mutex_lock(&s->lock, 0);
+
+    /*
+     * Reject the swap if the slot is empty, holds a different mapping, or
+     * the expected mapping is zero (uninitialized). A zero expected_old
+     * means the caller is trying to conditionally install a brand-new
+     * mapping — use taa_insert for that path, not this one.
+     */
+    if (!s->l2p[local_lba].valid || s->l2p[local_lba].ppn.raw != expected_old.raw) {
+        mutex_unlock(&s->lock);
+        return HFSSS_OK;
+    }
+
+    /* Remove P2L entry that matched expected_old. */
+    u64 old_p2l_idx = p2l_idx(expected_old, s->p2l_count);
+    s->p2l[old_p2l_idx].valid = false;
+    s->valid_count--;
+
+    /* Install the new mapping. */
+    s->l2p[local_lba].ppn = new_ppn;
+    s->l2p[local_lba].valid = true;
+
+    u64 new_idx = p2l_idx(new_ppn, s->p2l_count);
+    s->p2l[new_idx].lba = lba;
+    s->p2l[new_idx].valid = true;
+    s->valid_count++;
+
+    mutex_unlock(&s->lock);
+
+    if (updated_out) {
+        *updated_out = true;
+    }
+    return HFSSS_OK;
+}
+
 int taa_reverse_lookup(struct taa_ctx *ctx, union ppn ppn, u64 *lba_out)
 {
     if (!ctx || !ctx->initialized || !lba_out) {

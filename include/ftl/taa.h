@@ -43,6 +43,22 @@ int  taa_remove(struct taa_ctx *ctx, u64 lba);
 int  taa_update(struct taa_ctx *ctx, u64 lba, union ppn new_ppn,
                 union ppn *old_ppn);
 
+/*
+ * Conditional update: only swap L2P[lba] from expected_old to new_ppn when
+ * the current mapping equals expected_old.raw. The comparison and swap
+ * happen under a single shard-lock hold so no concurrent writer can slip
+ * in between the read and the write.
+ *
+ * Use this from GC relocation paths to avoid overwriting a host write that
+ * landed after GC read the victim source PPN but before GC finished copying
+ * the data to the destination block.
+ *
+ * Returns HFSSS_OK on both outcomes; *updated_out tells the caller whether
+ * the swap actually happened. *updated_out is optional.
+ */
+int  taa_update_if_equal(struct taa_ctx *ctx, u64 lba, union ppn expected_old,
+                         union ppn new_ppn, bool *updated_out);
+
 /* P2L reverse lookup */
 int  taa_reverse_lookup(struct taa_ctx *ctx, union ppn ppn, u64 *lba_out);
 
