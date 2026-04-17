@@ -95,7 +95,7 @@ for axis in cfg["axes"]:
             print(f"RUN\t{axis_name}\t{point}\t{rep}\t{fio_args}")
 PY
 
-while IFS=$'\t' read -r type axis point rep fio_args; do
+while IFS=$'\t' read -r -u 3 type axis point rep fio_args; do
     case "$type" in
         FORMAT)
             format_ns
@@ -104,6 +104,6 @@ while IFS=$'\t' read -r type axis point rep fio_args; do
             run_one "$axis" "$point" "$rep" "$fio_args"
             ;;
     esac
-done < "$_PLAN_FILE"
+done 3< "$_PLAN_FILE"
 
 echo "[sweep] done. Artifacts in $ARTIFACT_DIR"
