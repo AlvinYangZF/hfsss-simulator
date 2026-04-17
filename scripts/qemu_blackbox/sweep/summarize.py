@@ -77,11 +77,12 @@ def build_matrix(artifact_dir: Path, matrix_json: Path) -> str:
         repeats = int(axis_entry.get("repeats", top_repeats))
         lines.append(f"## {axis_name}")
         lines.append("")
-        lines.append("| point | rep0 | rep1 | rep2 | status |")
-        lines.append("|-------|------|------|------|--------|")
+        rep_headers = " | ".join(f"rep{i+1}" for i in range(repeats))
+        lines.append("| point | " + rep_headers + " | status |")
+        lines.append("|-------|" + "------|" * repeats + "--------|")
         for point in points:
             counts = []
-            for rep in range(repeats):
+            for rep in range(1, repeats + 1):
                 stem_name = f"{axis_name}_{point}_rep{rep}"
                 result = summarize_run(artifact_dir / stem_name)
                 counts.append(result["err_stderr"])
