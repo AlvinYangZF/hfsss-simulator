@@ -73,9 +73,10 @@ format_ns() {
 _PLAN_FILE="$(mktemp /tmp/hfsss_sweep_plan.XXXXXX)"
 trap 'rm -f "$_PLAN_FILE"' EXIT
 
-python3 - "$MATRIX" >"$_PLAN_FILE" <<'PY'
+python3 - "$MATRIX" "$HFSSS_GUEST_NVME_DEV" >"$_PLAN_FILE" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
+nvme_dev = sys.argv[2]
 base = cfg["baseline"]
 repeats = int(cfg.get("repeats", 3))
 first_axis = True
@@ -90,7 +91,7 @@ for axis in cfg["axes"]:
         merged[fio_param] = point
         fio_args = " ".join(
             f"--{k}={v}" for k, v in merged.items() if v is not None)
-        fio_args += f" --filename=$HFSSS_GUEST_NVME_DEV"
+        fio_args += f" --filename={nvme_dev}"
         for rep in range(1, repeats + 1):
             print(f"RUN\t{axis_name}\t{point}\t{rep}\t{fio_args}")
 PY
