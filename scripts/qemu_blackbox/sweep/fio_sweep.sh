@@ -32,6 +32,7 @@ mkdir -p "$ARTIFACT_DIR"
 # shellcheck source=../lib/env.sh
 if [ "$DRY_RUN" = "0" ]; then
     . "$REPO_ROOT/scripts/qemu_blackbox/lib/env.sh"
+    hfsss_blackbox_init_defaults
 fi
 
 run_one() {
