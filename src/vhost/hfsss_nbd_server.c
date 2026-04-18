@@ -865,6 +865,31 @@ int main(int argc, char *argv[])
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
+#ifdef HFSSS_DEBUG_TRACE
+    /*
+     * Wire the per-thread trace ring to the server lifecycle.
+     *
+     * Enabled when HFSSS_TRACE_DUMP is set in the environment; its value is
+     * the path of the binary dump written on orderly shutdown. When unset
+     * the ring is still allocated per emitting thread but no dump is
+     * produced (trace_shutdown does nothing useful without a path).
+     *
+     * This is the runtime seam that lets `analyze_trace.py` consume a
+     * real trace.bin produced by an end-to-end run, rather than only by
+     * the unit test.
+     */
+    {
+        const char *dump = getenv("HFSSS_TRACE_DUMP");
+        if (dump && *dump) {
+            trace_init(dump);
+            fprintf(stderr, "[trace] binary dump enabled -> %s\n", dump);
+        } else {
+            fprintf(stderr, "[trace] HFSSS_TRACE_DUMP unset; "
+                            "trace points will run but no dump produced\n");
+        }
+    }
+#endif
+
     fprintf(stderr, "Listening on 0.0.0.0:%u — export size %llu MB\n", port, (unsigned long long)size_mb);
     fprintf(stderr, "Waiting for NBD client...\n");
 
@@ -922,6 +947,18 @@ int main(int argc, char *argv[])
 
     nvme_uspace_dev_stop(&dev);
     nvme_uspace_dev_cleanup(&dev);
+
+#ifdef HFSSS_DEBUG_TRACE
+    /*
+     * Flush the per-thread trace rings. trace_shutdown walks every
+     * registered ring in tsc order and emits a single binary file at the
+     * path passed to trace_init. Called after device shutdown so any
+     * pending in-flight IOs have been drained and their final trace
+     * records are already in the rings.
+     */
+    trace_shutdown();
+    fprintf(stderr, "[trace] ring dumped and released\n");
+#endif
 
     fprintf(stderr, "[NBD] Server exited cleanly\n");
     return 0;
