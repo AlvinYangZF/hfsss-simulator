@@ -322,11 +322,12 @@ hfsss_blackbox_start_env() {
     cp "$HFSSS_GUEST_DIR/ovmf_vars-saved.fd" "$ovmf_run"
 
     nbd_flag="$(hfsss_blackbox_nbd_mode_flag)"
-    hfsss_log "starting hfsss-nbd-server ($HFSSS_NBD_MODE mode)"
+    local nbd_bin="${HFSSS_NBD_BIN:-$HFSSS_PROJECT_DIR/build/bin/hfsss-nbd-server}"
+    hfsss_log "starting hfsss-nbd-server ($HFSSS_NBD_MODE mode, bin=$nbd_bin)"
     if [ -n "$nbd_flag" ]; then
-        "$HFSSS_PROJECT_DIR/build/bin/hfsss-nbd-server" "$nbd_flag" -p "$HFSSS_NBD_PORT" -s "$HFSSS_NBD_SIZE_MB" >"$HFSSS_NBD_LOG" 2>&1 &
+        "$nbd_bin" "$nbd_flag" -p "$HFSSS_NBD_PORT" -s "$HFSSS_NBD_SIZE_MB" >"$HFSSS_NBD_LOG" 2>&1 &
     else
-        "$HFSSS_PROJECT_DIR/build/bin/hfsss-nbd-server" -p "$HFSSS_NBD_PORT" -s "$HFSSS_NBD_SIZE_MB" >"$HFSSS_NBD_LOG" 2>&1 &
+        "$nbd_bin" -p "$HFSSS_NBD_PORT" -s "$HFSSS_NBD_SIZE_MB" >"$HFSSS_NBD_LOG" 2>&1 &
     fi
     HFSSS_NBD_PID=$!
     hfsss_blackbox_write_manifest
