@@ -96,6 +96,16 @@ class TestClassifyPoint(unittest.TestCase):
         bad = dict(clean, json_error_code=84)
         self.assertEqual(classify_point([clean, bad, bad]), "SUSPECT")
 
+    def test_dict_missing_exit_artifact_is_fail(self):
+        clean = self._clean_result()
+        broken = dict(clean, artifacts_missing=["exit"])
+        self.assertEqual(classify_point([clean, broken, broken]), "SUSPECT")
+
+    def test_dict_fio_exit_none_is_fail(self):
+        clean = self._clean_result()
+        broken = dict(clean, fio_exit=None)
+        self.assertEqual(classify_point([broken, broken, broken]), "FAIL")
+
 
 class TestSummarizeRun(unittest.TestCase):
     def test_reads_stderr_and_json(self):
@@ -128,6 +138,21 @@ class TestSummarizeRun(unittest.TestCase):
         self.assertFalse(result["json_valid"])
         self.assertIn("stderr", result["artifacts_missing"])
         self.assertIn("json", result["artifacts_missing"])
+        self.assertIn("exit", result["artifacts_missing"])
+        self.assertIsNone(result["fio_exit"])
+
+    def test_missing_only_exit_file_is_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stem = Path(tmpdir) / "run"
+            (stem.parent / "run.stderr").write_text("")
+            (stem.parent / "run.json").write_text(
+                json.dumps({"jobs": [{"error": 0, "total_err": 0}]}))
+            # Deliberately omit run.exit
+            result = summarize_run(stem)
+        self.assertEqual(result["err_stderr"], 0)
+        self.assertTrue(result["json_valid"])
+        self.assertIsNone(result["fio_exit"])
+        self.assertEqual(result["artifacts_missing"], ["exit"])
 
     def test_bad_json_reports_invalid_json(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -31,14 +31,26 @@ def count_io_u_errors(stderr_text: str) -> int:
 
 
 def _is_run_failing(result: dict) -> bool:
-    """A run fails if any error signal is non-zero or any artifact is missing."""
+    """A run fails if any error signal is non-zero or any artifact is missing.
+
+    Missing `.exit` is itself a failure: the driver is contracted to write
+    this file for every run, so its absence means we cannot distinguish
+    "clean zero-exit" from "driver skipped / crashed mid-run". Silent PASS
+    on missing artifacts is explicitly disallowed.
+    """
+    missing = result.get("artifacts_missing", [])
+    if missing:
+        return True
     if result.get("err_stderr", 0) != 0:
         return True
     if result.get("io_u_errors", 0) != 0:
         return True
     if not result.get("json_valid", False):
         return True
-    if result.get("fio_exit", 0) not in (0, None):
+    fio_exit = result.get("fio_exit", None)
+    # None means the .exit file was not captured at all — a missing-
+    # artifact failure. A captured non-zero fio exit is likewise a failure.
+    if fio_exit is None or fio_exit != 0:
         return True
     if result.get("json_error_code", 0) != 0:
         return True
@@ -118,6 +130,10 @@ def summarize_run(stem: Path) -> dict:
             fio_exit = int(exit_path.read_text().strip() or "0")
         except ValueError:
             fio_exit = None
+            # Present but unreadable — record as an explicit missing-ish signal.
+            artifacts_missing.append("exit")
+    else:
+        artifacts_missing.append("exit")
 
     return {
         "stem": str(stem),
@@ -136,15 +152,19 @@ def _format_cell(result: dict) -> str:
     v = result["err_stderr"]
     iou = result["io_u_errors"]
     markers = []
+    missing = result.get("artifacts_missing", [])
+    for m in missing:
+        markers.append(f"!{m}")
     if not result["json_valid"]:
-        markers.append("!json")
-    if result["fio_exit"] not in (0, None):
-        markers.append(f"exit={result['fio_exit']}")
+        markers.append("!json") if "json" not in missing else None
+    exit_code = result.get("fio_exit", None)
+    if exit_code is not None and exit_code != 0:
+        markers.append(f"exit={exit_code}")
     if result["err_json"]:
         markers.append(f"je={result['err_json']}")
     core = f"{v}v/{iou}i"
     if markers:
-        return core + " " + " ".join(markers)
+        return core + " " + " ".join(m for m in markers if m is not None)
     return core
 
 
