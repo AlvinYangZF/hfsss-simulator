@@ -6,9 +6,14 @@
 
 ## Summary
 
-The investigation into the reported ~5 verify-errors-per-1M-IO rate on fio cases 014/015 concluded that **the bug is not reproducible on current `master`**. This closeout reflects the post-review state: ten review findings on the first-run tooling were fixed, a real FTL concurrency bug (CWB block-pointer race) exposed by the corrected harness was fixed, and Stage W + 3× 014 were re-run end-to-end on the fixed tooling.
+The investigation into the reported ~5 verify-errors-per-1M-IO rate on fio cases 014/015 concluded that **the bug is not reproducible on current `master`**. This closeout reflects the post-review state.
 
-No user-facing 014/015 fix was produced because there is no current failing signal to trace — but the review-driven work did harden the tooling and uncover a latent FTL race that is now patched.
+**This PR is mixed scope**: it is not purely "retained tooling". During review-response work the new truly-multi-threaded `ftl_mfc_repro` harness immediately exposed a real concurrency bug in the production FTL write path (NULL-deref race on `cwb->block`). Fixing that required two runtime behavior changes:
+
+- `src/ftl/ftl.c` (+`include/ftl/block.h`): added `pthread_mutex_t lock` to `struct cwb` and serialized `ftl_write_page_mt`.
+- `src/vhost/hfsss_nbd_server.c`: widened NBD request sizing arithmetic to 64-bit so a large `count * lba_size` cannot silently truncate under u32 wrap.
+
+Everything else remains compile-time-gated (`HFSSS_DEBUG_TRACE`), test-path, or under `scripts/` / `tools/`. The runtime fixes are small, targeted, and each has a clear correctness rationale.
 
 ## Post-review changes
 
