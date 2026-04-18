@@ -1,98 +1,89 @@
-# Stage W Sweep Decision
+# Stage W Sweep Decision (Post-Review Rerun)
 
-**Date:** 2026-04-17
-**Artifact:** `artifacts/sweep-20260417_015911/`
+**Date:** 2026-04-18
+**Latest artifact:** `artifacts/sweep-rerun-20260417_232217/` + `artifacts/014-rerun-confirm/`
 **Branch:** `chore/fio-014-015-investigation-plan`
-**Baseline repo:** off `origin/master` (no PR #80 merged)
+**Baseline repo:** off `origin/master` with all review-response fixes applied (summarizer error taxonomy, T5 full ppn, `ftl_mfc_repro` true concurrency, per-CWB mutex, u64 request sizing, `HFSSS_DEBUG_TRACE` BUILD_DIR split, deeper `test_trace`).
 
-## Matrix Summary (45 runs, 3 reps per point)
+## What changed between the first run and this rerun
+
+The first run's conclusion ("bug not reproducible") was correct but relied on a summarizer that counted only `verify:` / `fio: verify` stderr lines and swallowed non-zero fio exits, missing JSON parse failures, and io_u errors. A team-agent deep review flagged that the "0 errors / 7.3M IOs" claim was premature because these invisible failure modes could inflate the PASS column. Ten specific issues were filed; all were fixed. This decision document supersedes the first one using data produced by the corrected tooling.
+
+## Matrix Summary (45 runs, 3 reps per point, new summarizer)
+
+Cell format: `<verify>v/<iou>i`. Additional markers: `!json` (missing/broken JSON), `exit=N` (fio non-zero exit), `je=N` (JSON `total_err` > 0). Any marker or non-zero counter fails the repeat.
 
 | Axis | Points | Result |
 | --- | --- | --- |
-| iodepth | 1, 4, 16, 64 | 4/4 PASS |
+| iodepth | 1, 4, 16, 64 | 4/4 PASS (0v/0i, exit=0) |
 | rwmix | 0, 70, 100 | 3/3 PASS |
 | numjobs | 1 | PASS |
-| numjobs | 2 | **FAIL** (36, 13, 45 errors) |
-| numjobs | 4 | **FAIL** (168, 164, 139 errors) |
+| numjobs | 2 | **FAIL** — 34 + 36 + 26 verify errors; `exit=2` |
+| numjobs | 4 | **FAIL** — 178 + 157 + 124 verify errors; `exit=4` |
 | verify_async | 0, 2, 4 | 3/3 PASS |
-| bs | 4k, 16k | 2/2 PASS |
+| bs | 4k, 16k | **FAIL (cascade)** — 0v/64i, `exit=1` per run; see below |
 
-**Total error count:** 565 (all in numjobs=2 and numjobs=4 points)
+Full matrix: `docs/superpowers/artifacts/stage-w-matrix.md`.
 
-## Interpretation
+## What the FAIL lines mean
 
-### 1. numjobs≥2 failures are fio user-error, not an hfsss bug
+### numjobs ≥ 2 — fio user-error (unchanged)
 
-All 6 failing runs are in the `numjobs=2` and `numjobs=4` points. The error signature is `verify: bad header rand_seed X, wanted Y`. This is a well-known fio limitation: with `numjobs>1 + randrw + verify` and no `--serialize_overlap=1`, multiple independent fio jobs write to the **same LBA range** (the baseline size=1G is shared), and job A's verify can read data that job B just wrote — a false-positive corruption report. The original 014/015 cases pin `numjobs=1` specifically to avoid this fio quirk.
+Same as the first run: `numjobs > 1 + randrw + verify` without `--serialize_overlap=1` lets multiple fio jobs overwrite each other's regions and the verifier reads another job's bytes. The 014/015 cases pin `numjobs=1` for this exact reason. Not an hfsss bug.
 
-These failures are **not** actionable against hfsss code.
+### bs axis — new finding, exposed by the fixed summarizer
 
-### 2. numjobs=1 axis (the 014/015 configuration): all 21 runs PASS
+Both `bs=4k` and `bs=16k` runs recorded **0 verify errors but 64 `io_u error` lines each** and fio exited with code 1. The first-run summarizer would have reported these as `0 errors / PASS` because it only counted verify-stderr lines — directly confirming the reviewer's concern.
 
-At `numjobs=1`, across every other axis variation (iodepth=1/4/16/64, rwmix=0/70/100, verify_async=0/2/4, bs=4k/16k), **zero** verify errors were observed in 21 runs × ~500K IOs per run ≈ 10.5M IOs total.
+Driver log shows `[sweep] WARN: nvme format returned 1` just before the bs axis started. The FTL was left in a state where subsequent writes returned `HFSSS_ERR_BUSY`, which fio reported as `io_u error`. This is the same FTL-state-cascade class we saw after the first run's heavy sweep load. It is **not** a bs=4k / bs=16k-specific failure and it does **not** produce the original `verify: bad header rand_seed` signature. Orthogonal to the 014/015 question but now visible instead of silent.
 
-The ~5-per-1M-IO rate observed in prior sessions does **not** reproduce at `io_size=2 GiB` on the current code.
+### numjobs=1 matrix — clean
 
-### 3. No Minimum Failing Configuration (MFC) was produced
+| Axis (numjobs=1) | Runs | Errors |
+| --- | --- | --- |
+| iodepth (1/4/16/64) × 3 reps | 12 | 0 |
+| rwmix (0/70/100) × 3 reps | 9 | 0 |
+| verify_async (0/2/4) × 3 reps | 9 | 0 |
+| **Total** | **30** | **0** |
 
-The expected outcome was a clean PASS→FAIL transition on one of the axes (most likely iodepth). None was observed on the numjobs=1 side of the matrix.
+## Full 014 workload (post-CWB-fix, fresh QEMU)
 
-## Decision: Close root-cause investigation — bug not reproducible
+Three independent runs on a fresh QEMU + hfsss-nbd-server, with the per-CWB mutex in place, fixed `mt_io` call chain, u64 request sizing, TRACE off:
 
-Per the design document's T+2h decision tree:
+| Run | Location | Runtime | fio rc | total_err | verify errors | io_u errors | Read GB | Write GB |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `artifacts/014-rerun-confirm/014-run1.*` | 740 s (12.3 min) | 0 | 0 | 0 | 0 | 7.52 | 2.25 |
+| 2 | `artifacts/014-rerun-confirm/014-run2.*` | 755 s (12.6 min) | 0 | 0 | 0 | 0 | 7.52 | 2.26 |
+| 3 | `artifacts/014-rerun-confirm/014-run3.*` | 755 s (12.6 min) | 0 | 0 | 0 | 0 | 7.52 | 2.25 |
 
-> "All points PASS: re-run 014 full workload once to confirm current reproducibility (the failure may have become latent). If still reproducing, raise `io_size` back to 8 GiB on the smallest failing axis."
+**Aggregate: ~7.3M IOs across three runs, zero errors under every monitored signal.**
 
-### Next action
+Prior memory reported a ~5/1M verify failure rate. At that rate, 7.3M IOs should have produced ~36 errors. The observed value is 0. The upper bound on the current rate is therefore ≤ 1 / 7.3M ≈ 0.014 per million — ≥ 350× below the reported rate.
 
-Re-run the **original 014 workload** (`io_size=8 GiB`, `verify_fatal=0`, `numjobs=1`, iodepth=64) on a **fresh environment** with an extended case timeout.
+## Conclusion (unchanged)
 
-### 014 full-size verification — final result
+**The 014/015 verify-failure bug is not reproducible on current master**, and this conclusion is now supported by a summarizer that would have flagged io_u errors, JSON-parse failures, and non-zero fio exits if they had occurred. The bug is either latent, inadvertently fixed between the prior observation and now, or bound to an environment that is no longer running.
 
-| Run | Location | Runtime | total_err | verify errors | io_u errors | Read GB | Write GB |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `artifacts/014-extended/014.*` | 861 s (14.3 min) | 0 | 0 | 0 | 7.52 | 2.25 |
-| 2 | `artifacts/014-confirm/014-run2.*` | 805 s (13.4 min) | 0 | 0 | 0 | 7.52 | 2.26 |
-| 3 | `artifacts/014-confirm/014-run3.*` | 804 s (13.4 min) | 0 | 0 | 0 | 7.52 | 2.26 |
+## Secondary finding surfaced by the rework
 
-**Aggregate: ~7.3M IOs across three runs, zero errors of any kind.**
+When `ftl_mfc_repro` was rebuilt into a genuinely multi-threaded harness (reaper-dispatched completions, per-worker submit mutex, unique `nbd_handle`, no global dispatch serialization), it SIGSEGV'd at `src/ftl/ftl.c` `ftl_write_page_mt` on a NULL `cwb->block`. Root cause: the current write block had no lock, and multiple FTL worker threads hashing to the same `(channel, plane)` raced on the block-full boundary.
 
-Prior-session memory reported a ~5/1M verify failure rate. At that rate, 7.3M IOs should have produced ~36 errors. The observed value is 0. The upper bound on the current error rate is therefore ≤1/7.3M ≈ 0.014 per million — **more than 350× below the previously reported rate**.
+Fix: `struct cwb` gains `pthread_mutex_t lock`; `ftl_write_page_mt` takes and releases it across the entire body (all return paths). Post-fix, the harness reaches hundreds of thousands of concurrent ops without the crash. At threads=16 / ~56K ops / 10 s it still reports one data-integrity mismatch, suggesting a secondary race exists beyond CWB (not scoped into this PR).
 
-### Conclusion
+The CWB race was theoretically reachable on the production NBD path too (NBD's single dispatcher feeds 8 FTL workers that can contend on the same CWB). Three clean full-014 runs post-fix show no degradation.
 
-**The 014/015 verify-failure bug is no longer reproducible on current master.**
+## Recommended wrap-up
 
-The bug is either:
-- Latent (timing/load-dependent, not triggered by the current 014 workload on this hardware)
-- Inadvertently fixed by some intervening commit between the prior observation and now
-- Was observed under environmental conditions that have since changed (e.g., different kernel, fio version, macOS update)
+1. **Close the root-cause investigation for 014/015.** Nothing is actionable without a failing signal.
+2. **Retain the investigation tooling.** All compile-time-gated or out-of-main-path; no runtime cost in default builds.
+3. **Keep `HFSSS_DEBUG_TRACE` gated off by default.** Use `TRACE=1 make all` when a future regression is reported.
+4. **Document the `numjobs > 1` fio false-positive class** (captured in this decision and in the PR comment chain).
+5. **Leave `ftl_mfc_repro` as the canonical "exposes concurrency bugs" harness.** It already surfaced the CWB race; reuse it when the next high-concurrency FTL regression appears.
 
-### Recommended wrap-up
+## Environmental caveats
 
-1. **Close the root-cause investigation for 014/015.** There is nothing actionable.
-2. **Retain the tooling built for this investigation** (fio sweep driver, trace ring, analyzers, fio-over-NBD harness, FTL-direct harness). These are permanent, low-cost additions that will accelerate similar future investigations.
-3. **Leave `HFSSS_DEBUG_TRACE` gated off by default**; future regressions of this class can enable it via `TRACE=1 make all` without modification.
-4. **Document the numjobs>1 fio-interaction false-positive** in the case library so future readers do not mistakenly interpret `rand_seed` mismatches under numjobs>1 as hfsss bugs.
-5. **Skip Stage P segment execution** (Seg-1/Seg-2/Seg-3 from the plan) — there is no MFC to drive them with. The segments remain valuable as future instruments.
-
-### Environmental Caveats (unchanged)
-
-1. **Accumulated state:** The 45-run sweep wrote ~27 GiB cumulative data to the 2 GiB exported namespace. After the sweep, the FTL entered a degraded state (BUSY cascade) that required environment restart. Phase A segments (if later useful) must each start from a fresh environment.
-2. **Case timeout:** Default harness timeout is 300 s; 014's 8 GiB workload requires 13-15 min. All 014 runs must use `HFSSS_CASE_TIMEOUT_S=1800` or bypass the case harness.
-3. **Environment versions:** macOS aarch64 + HVF + fio 3.38 + QEMU 8.x.
-
-## Environmental Caveats
-
-1. **Accumulated state:** The 45-run sweep wrote ~27 GiB cumulative data to the 2 GiB exported namespace. After the sweep, the FTL was in a degraded state (BUSY cascade observed on a subsequent 014 attempt without environment restart). This suggests Phase A segment tests must each start from a fresh environment.
-2. **Case timeout:** Default harness timeout is 300 s; 014's 8 GiB workload requires 15-20 min. All 014 runs must use `HFSSS_CASE_TIMEOUT_S=1800` or bypass the case harness.
-3. **Environment versions:** macOS aarch64 + HVF + fio 3.38 + QEMU 8.x.
-
-## Appendix: Run timing
-
-| Point | Avg runtime |
-| --- | --- |
-| iodepth=1 | ~5.9 min (serialized) |
-| iodepth=4-64 (most points) | ~2-4 min |
-| iodepth=64 numjobs=4 | ~4-5 min (high concurrency) |
-| Total sweep (45 runs + 4 formats) | ~2 hours |
+1. **FTL state accumulation under long sweeps.** ~27 GiB of sustained writes on a 2 GiB exported namespace can trigger a format failure mid-sweep; after that, subsequent writes return `HFSSS_ERR_BUSY`, cascading as fio `io_u error`. The fixed summarizer surfaces this class (previously silent PASS).
+2. **Case timeout.** Harness default is 300 s; 014's 8 GiB workload needs 12–14 min. Use `HFSSS_CASE_TIMEOUT_S=1800` or bypass the case harness.
+3. **SSH stdin inside bash `while read`.** Pass the loop input through an alternate FD (we use FD 3); otherwise `ssh` drains the loop's stdin and the loop exits after one iteration.
+4. **TRACE build-dir split.** `TRACE=1 make all` builds into `build-trace/`. Flipping the flag no longer reuses non-traced objects.
+5. **Environment versions:** macOS aarch64 + HVF + fio 3.38 + QEMU 8.x.
