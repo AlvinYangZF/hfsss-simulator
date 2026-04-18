@@ -294,6 +294,10 @@ int ftl_init(struct ftl_ctx *ctx, struct ftl_config *config, struct hal_ctx *hal
         mutex_cleanup(&ctx->lock);
         return HFSSS_ERR_NOMEM;
     }
+    /* Per-CWB mutex guards the write path against concurrent callers. */
+    for (u32 i = 0; i < cwb_count; i++) {
+        pthread_mutex_init(&ctx->cwbs[i].lock, NULL);
+    }
 
     /* Calculate L2P/P2L sizes */
     l2p_size = config->total_lbas;
@@ -430,6 +434,9 @@ void ftl_cleanup(struct ftl_ctx *ctx)
     sb_cleanup(&ctx->sb);
     block_mgr_cleanup(&ctx->block_mgr);
     mapping_cleanup(&ctx->mapping);
+    for (u32 i = 0; i < ctx->cwb_count; i++) {
+        pthread_mutex_destroy(&ctx->cwbs[i].lock);
+    }
     free(ctx->cwbs);
 
     ctx->initialized = false;
@@ -745,6 +752,14 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         return HFSSS_ERR_INVAL;
     }
 
+    /*
+     * Lock this CWB for the whole body. Multiple FTL worker threads may
+     * execute ftl_write_page_mt concurrently with LBAs that hash to the
+     * same (channel, plane). Without this lock the block-pointer / current
+     * page fields race and produce a NULL-deref on cwb->block.
+     */
+    pthread_mutex_lock(&cwb->lock);
+
     /* Ensure CWB has a block; if out of space, run GC once and retry. */
     ret = ftl_allocate_cwb(ctx, ch, plane);
     if (ret == HFSSS_ERR_NOSPC) {
@@ -752,6 +767,7 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         ret = ftl_allocate_cwb(ctx, ch, plane);
     }
     if (ret != HFSSS_OK) {
+        pthread_mutex_unlock(&cwb->lock);
         return ret;
     }
 
@@ -800,6 +816,7 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
             cwb->block = NULL;
             cwb->current_page = 0;
         }
+        pthread_mutex_unlock(&cwb->lock);
         return ret;
     }
 
@@ -847,6 +864,7 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         }
     }
 
+    pthread_mutex_unlock(&cwb->lock);
     return HFSSS_OK;
 }
 
