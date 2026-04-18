@@ -823,6 +823,10 @@ int main(int argc, char *argv[])
     g_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (g_listen_fd < 0) {
         perror("socket");
+        if (g_mt) {
+            ftl_mt_cleanup(g_mt);
+            g_mt = NULL;
+        }
         nvme_uspace_dev_stop(&dev);
         nvme_uspace_dev_cleanup(&dev);
         return 1;
@@ -842,6 +846,10 @@ int main(int argc, char *argv[])
     if (bind(g_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         perror("bind");
         close(g_listen_fd);
+        if (g_mt) {
+            ftl_mt_cleanup(g_mt);
+            g_mt = NULL;
+        }
         nvme_uspace_dev_stop(&dev);
         nvme_uspace_dev_cleanup(&dev);
         return 1;
@@ -850,6 +858,10 @@ int main(int argc, char *argv[])
     if (listen(g_listen_fd, 1) != 0) {
         perror("listen");
         close(g_listen_fd);
+        if (g_mt) {
+            ftl_mt_cleanup(g_mt);
+            g_mt = NULL;
+        }
         nvme_uspace_dev_stop(&dev);
         nvme_uspace_dev_cleanup(&dev);
         return 1;
@@ -941,9 +953,24 @@ int main(int argc, char *argv[])
 
     /* ------------------------------------------------------------------ */
     /* Cleanup                                                             */
+    /*                                                                     */
+    /* Order matters:                                                      */
+    /*   1. Close listen_fd so no new clients are accepted.                */
+    /*   2. Stop/join the MT FTL workers (GC + WL + per-worker threads).   */
+    /*      These reference dev.sssim.hal and emit TRACE_EMIT records, so  */
+    /*      they must be joined before (3) HAL teardown and (4) trace     */
+    /*      ring free. Otherwise a still-running worker would UAF on       */
+    /*      either the HAL context or the trace ring.                      */
+    /*   3. Tear down the NVMe device (HAL, media, PCIe shim).             */
+    /*   4. Dump + release the trace rings.                                */
     /* ------------------------------------------------------------------ */
     if (g_listen_fd >= 0)
         close(g_listen_fd);
+
+    if (g_mt) {
+        ftl_mt_cleanup(g_mt);
+        g_mt = NULL;
+    }
 
     nvme_uspace_dev_stop(&dev);
     nvme_uspace_dev_cleanup(&dev);
@@ -952,9 +979,10 @@ int main(int argc, char *argv[])
     /*
      * Flush the per-thread trace rings. trace_shutdown walks every
      * registered ring in tsc order and emits a single binary file at the
-     * path passed to trace_init. Called after device shutdown so any
-     * pending in-flight IOs have been drained and their final trace
-     * records are already in the rings.
+     * path passed to trace_init. Called after the MT workers have been
+     * joined (so no more records are being emitted) and after device
+     * shutdown (so any pending in-flight IOs have been drained and their
+     * final trace records are already in the rings).
      */
     trace_shutdown();
     fprintf(stderr, "[trace] ring dumped and released\n");
