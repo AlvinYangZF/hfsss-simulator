@@ -46,10 +46,16 @@ ifeq ($(TSAN),1)
     BUILD_DIR := $(BUILD_DIR)-tsan
 endif
 
-# Trace instrumentation build variant
+# Trace instrumentation build variant.
+# Use a separate BUILD_DIR so flipping TRACE does not silently reuse
+# stale object files compiled with the opposite value — otherwise
+# `make TRACE=1 all` can appear to succeed while pulling TRACE=0 objects
+# from a prior build and produce a binary with no trace points actually
+# compiled in.
 TRACE ?= 0
 ifeq ($(TRACE),1)
     CFLAGS += -DHFSSS_DEBUG_TRACE=1
+    BUILD_DIR := $(BUILD_DIR)-trace
 endif
 
 # Directories
