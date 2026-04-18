@@ -42,3 +42,8 @@ build-cov/
 *.gcno
 *.gcda
 .coverage-baseline.json.bak
+
+# Investigation artifacts (runtime only)
+artifacts/*
+!artifacts/.gitkeep
+scripts/qemu_blackbox/sweep/__pycache__/

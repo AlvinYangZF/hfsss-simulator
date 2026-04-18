@@ -46,6 +46,18 @@ ifeq ($(TSAN),1)
     BUILD_DIR := $(BUILD_DIR)-tsan
 endif
 
+# Trace instrumentation build variant.
+# Use a separate BUILD_DIR so flipping TRACE does not silently reuse
+# stale object files compiled with the opposite value — otherwise
+# `make TRACE=1 all` can appear to succeed while pulling TRACE=0 objects
+# from a prior build and produce a binary with no trace points actually
+# compiled in.
+TRACE ?= 0
+ifeq ($(TRACE),1)
+    CFLAGS += -DHFSSS_DEBUG_TRACE=1
+    BUILD_DIR := $(BUILD_DIR)-trace
+endif
+
 # Directories
 SRC_DIR = src
 COMMON_SRC = $(SRC_DIR)/common
@@ -139,6 +151,7 @@ STRESS_STABILITY = $(BIN_DIR)/stress_stability
 TEST_LARGE_CAP = $(BIN_DIR)/test_large_capacity
 TEST_IO_QUEUE = $(BIN_DIR)/test_io_queue
 TEST_TAA = $(BIN_DIR)/test_taa
+TEST_TRACE = $(BIN_DIR)/test_trace
 TEST_MT_FTL = $(BIN_DIR)/test_mt_ftl
 TEST_GC_MT = $(BIN_DIR)/test_gc_mt
 TEST_INFLIGHT = $(BIN_DIR)/test_inflight_pool
@@ -206,7 +219,7 @@ COVERAGE_BINS = $(COVERAGE_UT_BINS) $(COVERAGE_E2E_BINS)
 	coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage-frontend coverage-frontend-update coverage coverage-selftest \
 	qemu-blackbox qemu-blackbox-list qemu-blackbox-ci qemu-blackbox-soak pre-checkin
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_SHMEM_IF) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT) $(TEST_MSGQ) $(TEST_NVME_ADMIN) $(TEST_NVME_IO)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_SHMEM_IF) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_TRACE) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT) $(TEST_MSGQ) $(TEST_NVME_ADMIN) $(TEST_NVME_IO) $(FTL_MFC_REPRO)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -437,6 +450,10 @@ $(TEST_TAA): $(TEST_DIR)/test_taa.c $(LIBHFSSS_FTL) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-common -lm $(LDFLAGS)
 
+$(TEST_TRACE): $(TEST_DIR)/test_trace.c $(LIBHFSSS_COMMON)
+	@mkdir -p $(BIN_DIR)
+	@$(CC) $(CFLAGS) $(TEST_DIR)/test_trace.c -o $@ -L$(LIB_DIR) -lhfsss-common $(LDFLAGS)
+
 $(TEST_MT_FTL): $(TEST_DIR)/test_mt_ftl.c $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
@@ -528,6 +545,13 @@ $(HFSSS_IMG_EXPORT): $(VHOST_SRC)/hfsss_img_export.c $(LIBHFSSS_PCIE) $(LIBHFSSS
 $(HFSSS_NBD): $(VHOST_SRC)/hfsss_nbd_server.c $(VHOST_SRC)/nbd_async.c $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $(VHOST_SRC)/hfsss_nbd_server.c $(VHOST_SRC)/nbd_async.c -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
+
+# ftl_mfc_repro — multi-threaded FTL load generator with CRC32C integrity check
+FTL_MFC_REPRO = $(BIN_DIR)/ftl_mfc_repro
+$(FTL_MFC_REPRO): tools/ftl_mfc_repro.c $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@mkdir -p $(BIN_DIR)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) tools/ftl_mfc_repro.c -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common $(LDFLAGS)
 
 # vhost protocol unit tests (WIP — depends on uncommitted vhost_user_blk source)
 # $(TEST_VHOST): $(TEST_DIR)/test_vhost_proto.c $(VHOST_OBJS) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
@@ -630,6 +654,8 @@ test: all
 	@$(TEST_THERMAL_TEL)
 	@echo ""
 	@$(TEST_PROC)
+	@echo ""
+	@$(TEST_TRACE)
 	@echo ""
 	@echo ""
 

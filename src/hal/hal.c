@@ -1,6 +1,25 @@
 #include "hal/hal.h"
+#include "common/trace.h"
+#ifdef HFSSS_DEBUG_TRACE
+#include "ftl/mapping.h"  /* union ppn layout; debug-only cross-layer pull */
+#endif
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef HFSSS_DEBUG_TRACE
+static inline uint64_t hal_trace_encode_ppn(const struct hal_nand_cmd *c)
+{
+    union ppn p;
+    p.raw = 0;
+    p.bits.channel = c->ch;
+    p.bits.chip = c->chip;
+    p.bits.die = c->die;
+    p.bits.plane = c->plane;
+    p.bits.block = c->block;
+    p.bits.page = c->page;
+    return p.raw;
+}
+#endif
 
 int hal_init_full(struct hal_ctx *ctx, struct hal_nand_dev *nand_dev,
                   struct hal_nor_dev *nor_dev, struct hal_pci_ctx *pci_ctx,
@@ -82,6 +101,20 @@ int hal_nand_read_sync(struct hal_ctx *ctx, u32 ch, u32 chip, u32 die,
 
     ret = hal_nand_read(ctx->nand, &cmd);
 
+#ifdef HFSSS_DEBUG_TRACE
+    {
+        uint32_t crc = (ret == 0 && data != NULL)
+                       ? trace_crc32c(data, ctx->nand->page_size)
+                       : 0;
+        /* lba not in scope here; analyzer joins on (op, ppn). Pass 0 for lba.
+         * Encode the full (ch, chip, die, plane, block, page) into the same
+         * layout as union ppn so T4.ppn == T5.ppn for matching ops. */
+        uint64_t ppn_raw = hal_trace_encode_ppn(&cmd);
+        TRACE_EMIT(TRACE_POINT_T5_POST_HAL, (uint32_t)TRACE_OP_READ,
+                   0, ppn_raw, crc, (uint32_t)ret);
+    }
+#endif
+
     /* Update stats */
     mutex_lock(&ctx->lock, 0);
     if (ret == HFSSS_OK) {
@@ -119,6 +152,17 @@ int hal_nand_program_sync(struct hal_ctx *ctx, u32 ch, u32 chip, u32 die,
     cmd.spare = (void *)spare;
 
     ret = hal_nand_program(ctx->nand, &cmd);
+
+#ifdef HFSSS_DEBUG_TRACE
+    {
+        uint32_t crc = (ret == 0 && data != NULL)
+                       ? trace_crc32c(data, ctx->nand->page_size)
+                       : 0;
+        uint64_t ppn_raw = hal_trace_encode_ppn(&cmd);
+        TRACE_EMIT(TRACE_POINT_T5_POST_HAL, (uint32_t)TRACE_OP_WRITE,
+                   0, ppn_raw, crc, (uint32_t)ret);
+    }
+#endif
 
     /* Update stats */
     mutex_lock(&ctx->lock, 0);

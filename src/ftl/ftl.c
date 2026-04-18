@@ -1,4 +1,6 @@
 #include "ftl/ftl.h"
+#include "ftl/io_queue.h"
+#include "common/trace.h"
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -292,6 +294,10 @@ int ftl_init(struct ftl_ctx *ctx, struct ftl_config *config, struct hal_ctx *hal
         mutex_cleanup(&ctx->lock);
         return HFSSS_ERR_NOMEM;
     }
+    /* Per-CWB mutex guards the write path against concurrent callers. */
+    for (u32 i = 0; i < cwb_count; i++) {
+        pthread_mutex_init(&ctx->cwbs[i].lock, NULL);
+    }
 
     /* Calculate L2P/P2L sizes */
     l2p_size = config->total_lbas;
@@ -428,6 +434,9 @@ void ftl_cleanup(struct ftl_ctx *ctx)
     sb_cleanup(&ctx->sb);
     block_mgr_cleanup(&ctx->block_mgr);
     mapping_cleanup(&ctx->mapping);
+    for (u32 i = 0; i < ctx->cwb_count; i++) {
+        pthread_mutex_destroy(&ctx->cwbs[i].lock);
+    }
     free(ctx->cwbs);
 
     ctx->initialized = false;
@@ -684,11 +693,20 @@ int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         return ret;
     }
 
+#ifdef HFSSS_DEBUG_TRACE
+    TRACE_EMIT(TRACE_POINT_T3_PPN_DONE, (uint32_t)IO_OP_READ, lba,
+               (uint64_t)ppn.raw, 0, 0);
+#endif
+
     /* Decode PPN */
     ftl_decode_ppn(ppn, &ch, &chip, &die, &plane, &block, &page);
 
     /* Try reading with retry logic */
     for (retry_count = 0; retry_count < max_retries; retry_count++) {
+#ifdef HFSSS_DEBUG_TRACE
+        TRACE_EMIT(TRACE_POINT_T4_PRE_HAL, (uint32_t)IO_OP_READ, lba,
+                   (uint64_t)ppn.raw, 0, 0);
+#endif
         ret = hal_nand_read_sync(ctx->hal, ch, chip, die, plane,
                                   block, page, data, NULL);
 
@@ -734,6 +752,14 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         return HFSSS_ERR_INVAL;
     }
 
+    /*
+     * Lock this CWB for the whole body. Multiple FTL worker threads may
+     * execute ftl_write_page_mt concurrently with LBAs that hash to the
+     * same (channel, plane). Without this lock the block-pointer / current
+     * page fields race and produce a NULL-deref on cwb->block.
+     */
+    pthread_mutex_lock(&cwb->lock);
+
     /* Ensure CWB has a block; if out of space, run GC once and retry. */
     ret = ftl_allocate_cwb(ctx, ch, plane);
     if (ret == HFSSS_ERR_NOSPC) {
@@ -741,6 +767,7 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         ret = ftl_allocate_cwb(ctx, ch, plane);
     }
     if (ret != HFSSS_OK) {
+        pthread_mutex_unlock(&cwb->lock);
         return ret;
     }
 
@@ -754,8 +781,23 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     ppn = ftl_encode_ppn(phys_ch, phys_chip, phys_die, phys_plane,
                           cwb->block->block_id, cwb->current_page);
 
+#ifdef HFSSS_DEBUG_TRACE
+    TRACE_EMIT(TRACE_POINT_T3_PPN_DONE, (uint32_t)IO_OP_WRITE, lba,
+               (uint64_t)ppn.raw, 0, 0);
+#endif
+
     /* Write to NAND — no verify in MT mode (DRAM-backed, always succeeds) */
     for (write_retry = 0; write_retry < max_write_retries; write_retry++) {
+#ifdef HFSSS_DEBUG_TRACE
+        {
+            size_t ps = (size_t)ctx->config.page_size;
+            uint32_t crc = (data != NULL && ps > 0)
+                           ? trace_crc32c(data, ps)
+                           : 0;
+            TRACE_EMIT(TRACE_POINT_T4_PRE_HAL, (uint32_t)IO_OP_WRITE, lba,
+                       (uint64_t)ppn.raw, crc, 0);
+        }
+#endif
         ret = hal_nand_program_sync(ctx->hal, phys_ch, phys_chip,
                                      phys_die, phys_plane,
                                      cwb->block->block_id,
@@ -777,6 +819,7 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
             cwb->block = NULL;
             cwb->current_page = 0;
         }
+        pthread_mutex_unlock(&cwb->lock);
         return ret;
     }
 
@@ -824,6 +867,7 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         }
     }
 
+    pthread_mutex_unlock(&cwb->lock);
     return HFSSS_OK;
 }
 

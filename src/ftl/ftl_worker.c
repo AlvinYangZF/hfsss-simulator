@@ -1,4 +1,5 @@
 #include "ftl/ftl_worker.h"
+#include "common/trace.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -33,6 +34,11 @@ static void *ftl_worker_main(void *arg)
             w->running = false;
             break;
         }
+
+#ifdef HFSSS_DEBUG_TRACE
+        TRACE_EMIT(TRACE_POINT_T2_WORKER_DEQ, (uint32_t)req.opcode, req.lba,
+                   (uint64_t)req.count, 0, (uint32_t)w->worker_id);
+#endif
 
         int rc = HFSSS_OK;
 

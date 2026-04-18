@@ -1,6 +1,7 @@
 #ifndef __HFSSS_BLOCK_H
 #define __HFSSS_BLOCK_H
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include "common/common.h"
 #include "common/mutex.h"
@@ -62,11 +63,20 @@ struct block_mgr {
     struct mutex lock;
 };
 
-/* Current Write Block */
+/* Current Write Block.
+ *
+ * The `lock` serializes all mutations of this cwb plus cwb->block-state
+ * transitions against concurrent multi-thread FTL workers that may hash to
+ * the same (channel, plane) via ftl_get_cwb(). Without this lock, two
+ * worker threads writing to the same CWB can race at the block-full
+ * boundary: one clears cwb->block after close, the other is still
+ * mid-write and dereferences the now-NULL pointer (ftl.c ftl_write_page_mt
+ * atomic_fetch_add on cwb->block->valid_page_count). */
 struct cwb {
     struct block_desc *block;
     u32 current_page;
     u64 last_write_ts;
+    pthread_mutex_t lock;
 };
 
 /* Function Prototypes */
