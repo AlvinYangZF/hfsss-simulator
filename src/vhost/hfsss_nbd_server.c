@@ -290,7 +290,8 @@ static int nbd_handshake(int client_fd, uint64_t export_size)
  * Multi-threaded I/O helpers — submit to worker and wait for completion
  * ---------------------------------------------------------------------- */
 
-static int mt_io(enum io_opcode op, uint64_t lba, uint32_t count, uint8_t *data)
+static int mt_io(enum io_opcode op, uint64_t lba, uint32_t count, uint8_t *data,
+                 uint32_t lba_size)
 {
     struct io_request req;
     memset(&req, 0, sizeof(req));
@@ -302,12 +303,15 @@ static int mt_io(enum io_opcode op, uint64_t lba, uint32_t count, uint8_t *data)
 
 #ifdef HFSSS_DEBUG_TRACE
     {
+        size_t crc_len = (size_t)count * (size_t)lba_size;
         uint32_t crc = (op == IO_OP_WRITE && data != NULL)
-                       ? trace_crc32c(data, (size_t)count * 4096)
+                       ? trace_crc32c(data, crc_len)
                        : 0;
         TRACE_EMIT(TRACE_POINT_T1_NBD_RECV, (uint32_t)op, lba,
                    (uint64_t)count, crc, 0);
     }
+#else
+    (void)lba_size;
 #endif
 
     while (!ftl_mt_submit(g_mt, &req)) {
@@ -379,15 +383,37 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev, uint32_t lba_s
         uint32_t byte_off = (uint32_t)(offset % lba_size); /* offset within first page */
         uint64_t end_byte = offset + length;
         uint64_t end_lba = (end_byte + lba_size - 1) / lba_size;
-        uint32_t count = (uint32_t)(end_lba - lba);
-        uint32_t full_bytes = count * lba_size;
+        uint64_t count64 = end_lba - lba;
+        /* `count` is passed to the FTL as u32; reject requests that would
+         * overflow that — NBD allows up to 4 GiB per request, the simulator
+         * capacity is much smaller than that so a single overflowing request
+         * is a client bug or misconfig worth failing fast. */
+        if (count64 > (uint64_t)UINT32_MAX) {
+            fprintf(stderr, "[NBD] request too large: count=%llu\n",
+                    (unsigned long long)count64);
+            send_reply(client_fd, handle, NBD_EIO);
+            goto done;
+        }
+        uint32_t count = (uint32_t)count64;
+        /* Buffer size must use 64-bit math: count * lba_size can exceed
+         * UINT32_MAX for large multi-LBA requests (e.g. count≈1M at 4K
+         * wraps a u32 -> 0), which previously caused a truncated/zero-sized
+         * malloc and downstream garbage reads/writes. */
+        uint64_t full_bytes64 = (uint64_t)count * (uint64_t)lba_size;
+        if (full_bytes64 > (uint64_t)SIZE_MAX) {
+            fprintf(stderr, "[NBD] full_bytes overflow: %llu\n",
+                    (unsigned long long)full_bytes64);
+            send_reply(client_fd, handle, NBD_EIO);
+            goto done;
+        }
+        size_t full_bytes = (size_t)full_bytes64;
 
         /* Ensure iobuf is large enough for full-page I/O */
         if (full_bytes > iobuf_cap) {
             free(iobuf);
             iobuf = (uint8_t *)malloc(full_bytes);
             if (!iobuf) {
-                fprintf(stderr, "[NBD] malloc(%u) failed\n", full_bytes);
+                fprintf(stderr, "[NBD] malloc(%zu) failed\n", full_bytes);
                 send_reply(client_fd, handle, NBD_EIO);
                 goto done;
             }
@@ -402,7 +428,7 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev, uint32_t lba_s
         case NBD_CMD_READ: {
             int rc;
             if (g_multithread) {
-                rc = mt_io(IO_OP_READ, lba, count, iobuf);
+                rc = mt_io(IO_OP_READ, lba, count, iobuf, lba_size);
             } else {
                 struct nvme_sq_entry sqe;
                 struct nvme_cq_entry cqe;
@@ -449,7 +475,7 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev, uint32_t lba_s
                 /* Read existing full pages */
                 int rc;
                 if (g_multithread) {
-                    rc = mt_io(IO_OP_READ, lba, count, iobuf);
+                    rc = mt_io(IO_OP_READ, lba, count, iobuf, lba_size);
                 } else {
                     struct nvme_sq_entry sqe;
                     struct nvme_cq_entry cqe;
@@ -469,7 +495,7 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev, uint32_t lba_s
 
             int rc;
             if (g_multithread) {
-                rc = mt_io(IO_OP_WRITE, lba, count, iobuf);
+                rc = mt_io(IO_OP_WRITE, lba, count, iobuf, lba_size);
             } else {
                 struct nvme_sq_entry sqe;
                 struct nvme_cq_entry cqe;
@@ -534,7 +560,7 @@ static void nbd_serve(int client_fd, struct nvme_uspace_dev *dev, uint32_t lba_s
              * The async path already does this via nbd_async.c. */
             int rc;
             if (g_multithread) {
-                rc = mt_io(IO_OP_TRIM, lba, count, NULL);
+                rc = mt_io(IO_OP_TRIM, lba, count, NULL, lba_size);
             } else {
                 struct nvme_dsm_range range;
                 memset(&range, 0, sizeof(range));

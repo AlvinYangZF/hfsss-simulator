@@ -790,7 +790,10 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     for (write_retry = 0; write_retry < max_write_retries; write_retry++) {
 #ifdef HFSSS_DEBUG_TRACE
         {
-            uint32_t crc = (data != NULL) ? trace_crc32c(data, 4096) : 0;
+            size_t ps = (size_t)ctx->config.page_size;
+            uint32_t crc = (data != NULL && ps > 0)
+                           ? trace_crc32c(data, ps)
+                           : 0;
             TRACE_EMIT(TRACE_POINT_T4_PRE_HAL, (uint32_t)IO_OP_WRITE, lba,
                        (uint64_t)ppn.raw, crc, 0);
         }
