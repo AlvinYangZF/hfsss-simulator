@@ -459,17 +459,46 @@ static void test_secure_boot_reject_bad_magic(void) {
     boot_ctx_cleanup(&ctx);
 }
 
-static void test_secure_boot_skipped_when_no_attach(void) {
+static void test_secure_boot_default_verifies_slot(void) {
     separator();
-    printf("Test: POST skips secure boot when no image attached (REQ-164)\n");
+    printf("Test: default POST derives fw signature from active slot (REQ-164)\n");
     separator();
 
     struct boot_ctx ctx;
     boot_ctx_init(&ctx);
+    /* Do NOT pre-attach a firmware image. The default boot path must
+     * derive a signature from the active NOR slot and still run
+     * secure_boot_verify() — verification must pass against the freshly
+     * provisioned slot. */
     int ret = boot_run(&ctx);
     TEST_ASSERT(ret == HFSSS_OK,
-                "boot_run still OK when no image attached (back-compat)");
-    TEST_ASSERT(ctx.initialized, "boot reaches READY without attestation");
+                "default boot passes secure-boot verify on fresh slot");
+    TEST_ASSERT(ctx.initialized, "boot reaches READY after default verify");
+    TEST_ASSERT(ctx.fw_image != NULL,
+                "fw_image auto-populated from active slot");
+    TEST_ASSERT(ctx.fw_sig != NULL && ctx.fw_sig->magic == FW_SIG_MAGIC,
+                "fw_sig auto-stamped with FW_SIG_MAGIC");
+
+    boot_ctx_cleanup(&ctx);
+}
+
+static void test_secure_boot_tampered_slot_fails(void) {
+    separator();
+    printf("Test: POST aborts when active slot is tampered (REQ-164)\n");
+    separator();
+
+    struct boot_ctx ctx;
+    boot_ctx_init(&ctx);
+    /* Flip a field in the active slot without refreshing its crc32.
+     * The derived signature now disagrees with the image bytes, so
+     * POST must abort the boot sequence. */
+    ctx.slots[0].version = 999;
+
+    int ret = boot_run(&ctx);
+    TEST_ASSERT(ret == HFSSS_ERR_AUTH,
+                "tampered active slot aborts POST with HFSSS_ERR_AUTH");
+    TEST_ASSERT(!ctx.initialized,
+                "boot does NOT reach READY after slot tamper");
 
     boot_ctx_cleanup(&ctx);
 }
@@ -499,7 +528,8 @@ int main(void) {
     test_secure_boot_accept_valid_image();
     test_secure_boot_reject_tampered_image();
     test_secure_boot_reject_bad_magic();
-    test_secure_boot_skipped_when_no_attach();
+    test_secure_boot_default_verifies_slot();
+    test_secure_boot_tampered_slot_fails();
 
     separator();
     printf("Test Summary\n");

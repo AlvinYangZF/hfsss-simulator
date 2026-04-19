@@ -167,6 +167,15 @@ bool boot_slot_valid(const struct nor_firmware_slot *slot) {
             slot->version != NOR_SLOT_VERSION_INVALID);
 }
 
+/* Compute the canonical image CRC for a NOR slot. The "image" is the
+ * 64-byte slot record with its own crc32 signature field zeroed, so the
+ * field that carries the signature is never part of what it signs. */
+static uint32_t slot_compute_image_crc(const struct nor_firmware_slot *s) {
+    struct nor_firmware_slot tmp = *s;
+    tmp.crc32 = 0;
+    return hfsss_crc32(&tmp, sizeof(tmp));
+}
+
 int boot_select_firmware_slot(struct boot_ctx *ctx) {
     bool a_valid = boot_slot_valid(&ctx->slots[0]);
     bool b_valid = boot_slot_valid(&ctx->slots[1]);
@@ -187,6 +196,24 @@ int boot_select_firmware_slot(struct boot_ctx *ctx) {
              ctx->active_slot == 0 ? 'A' : 'B',
              ctx->slots[ctx->active_slot].version);
     boot_log(ctx, 0, msg);
+
+    /* When no caller pre-attached an explicit firmware image, derive
+     * one from the active NOR slot so POST always runs secure boot
+     * verification (REQ-164). Tampering with any slot field after
+     * provisioning breaks the stored crc32 and aborts POST. */
+    if (!ctx->fw_image) {
+        const struct nor_firmware_slot *active = &ctx->slots[ctx->active_slot];
+        ctx->_derived_fw_image = *active;
+        ctx->_derived_fw_image.crc32 = 0;
+        ctx->_derived_fw_sig.magic       = FW_SIG_MAGIC;
+        ctx->_derived_fw_sig.fw_version  = active->version;
+        ctx->_derived_fw_sig.image_crc32 = active->crc32;
+        ctx->_derived_fw_sig.reserved    = 0;
+        ctx->fw_image      = (const uint8_t *)&ctx->_derived_fw_image;
+        ctx->fw_image_size = (uint32_t)sizeof(ctx->_derived_fw_image);
+        ctx->fw_sig        = &ctx->_derived_fw_sig;
+    }
+
     return HFSSS_OK;
 }
 
@@ -331,13 +358,23 @@ int boot_ctx_init(struct boot_ctx *ctx) {
     ctx->current_phase = BOOT_PHASE_0_HW_INIT;
     ctx->active_slot   = 0xFF;
 
-    /* Populate default slot descriptors (sim: both valid, A preferred) */
-    ctx->slots[0].magic   = NOR_SLOT_MAGIC;
-    ctx->slots[0].version = 1;
-    ctx->slots[0].active  = 1;
-    ctx->slots[1].magic   = NOR_SLOT_MAGIC;
-    ctx->slots[1].version = 0;
-    ctx->slots[1].active  = 0;
+    /* Populate default slot descriptors (sim: both valid, A preferred).
+     * Stamp each slot's crc32 signature over the rest of the slot record
+     * so the default boot path's secure-boot check (REQ-164) has a valid
+     * reference to verify against. */
+    ctx->slots[0].magic            = NOR_SLOT_MAGIC;
+    ctx->slots[0].version          = 1;
+    ctx->slots[0].active           = 1;
+    ctx->slots[0].image_size       = (uint32_t)sizeof(ctx->slots[0]);
+    ctx->slots[0].build_timestamp  = 0;
+    ctx->slots[0].crc32            = slot_compute_image_crc(&ctx->slots[0]);
+
+    ctx->slots[1].magic            = NOR_SLOT_MAGIC;
+    ctx->slots[1].version          = 0;
+    ctx->slots[1].active           = 0;
+    ctx->slots[1].image_size       = (uint32_t)sizeof(ctx->slots[1]);
+    ctx->slots[1].build_timestamp  = 0;
+    ctx->slots[1].crc32            = slot_compute_image_crc(&ctx->slots[1]);
 
     /* Default SysInfo: treat as first boot until caller loads from NOR */
     memset(&ctx->sysinfo, 0xFF, sizeof(ctx->sysinfo));

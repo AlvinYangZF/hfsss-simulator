@@ -129,13 +129,22 @@ struct boot_ctx {
     struct boot_log_entry log[BOOT_LOG_ENTRY_MAX];
     uint32_t             log_count;
     pthread_mutex_t      lock;
-    /* Secure boot attestation inputs (REQ-164). Optional: when NULL the
-     * POST phase skips image verification and only validates the slot
-     * header. When set, POST invokes secure_boot_verify() and aborts on
+    /* Secure boot attestation inputs (REQ-164). When NULL at the moment
+     * boot_select_firmware_slot() runs, the selector derives a signature
+     * from the active NOR slot (slot bytes with crc32 field zeroed,
+     * stamped with FW_SIG_MAGIC) and points these fields at the shadow
+     * copy below. A caller who attaches an explicit image via
+     * boot_attach_fw_image() overrides the derived default. Either way,
+     * phase1_post() always runs secure_boot_verify() and aborts on
      * mismatch. */
     const uint8_t              *fw_image;
     uint32_t                    fw_image_size;
     const struct fw_signature  *fw_sig;
+    /* Shadow copies used when deriving the signature from the active
+     * slot. Only valid after boot_select_firmware_slot() has populated
+     * them; fw_image / fw_sig point into these buffers. */
+    struct nor_firmware_slot   _derived_fw_image;
+    struct fw_signature        _derived_fw_sig;
 };
 
 /* ------------------------------------------------------------------
