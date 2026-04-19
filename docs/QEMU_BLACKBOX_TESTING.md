@@ -184,3 +184,56 @@ You can select cases either by relative path under `cases/` or by basename if it
 ```
 
 These are intentionally black-box only. They validate the guest-facing NVMe surface and leave simulator internals untouched.
+
+## Debugging with the TRACE Build
+
+The per-thread trace ring (`include/common/trace.h`, `src/common/trace.c`) is compile-time-gated behind `-DHFSSS_DEBUG_TRACE=1`. The default build omits every trace site so release paths stay at zero runtime cost. When a regression needs to be classified per-hop (T1..T5 on the NBD / FTL / HAL I/O path), run the blackbox against a separately compiled TRACE binary.
+
+### 1. Build
+
+```bash
+TRACE=1 make all
+```
+
+This variant lives in its own `build-trace/` tree so the default `build/` objects are never silently reused with the flag flipped.
+
+### 2. Point the harness at the TRACE binary
+
+```bash
+HFSSS_NBD_BIN=build-trace/bin/hfsss-nbd-server \
+  ./scripts/run_qemu_blackbox_tests.sh --case <name>
+```
+
+`HFSSS_NBD_BIN` overrides the default `build/bin/hfsss-nbd-server` path used by `scripts/qemu_blackbox/lib/env.sh`.
+
+### 3. Enable the binary dump
+
+Trace sites still fire without a dump path — they populate each thread's ring, but nothing is written on shutdown. To capture a `trace.bin` for `scripts/qemu_blackbox/phase_a/analyze_trace.py`, set `HFSSS_TRACE_DUMP` in the server's environment:
+
+```bash
+HFSSS_TRACE_DUMP=/tmp/hfsss-trace.bin \
+HFSSS_NBD_BIN=build-trace/bin/hfsss-nbd-server \
+  ./scripts/run_qemu_blackbox_tests.sh --case nvme/001_nvme_cli_smoke.sh
+```
+
+The server prints `[trace] binary dump enabled -> <path>` at startup when the variable is set; it prints `[trace] HFSSS_TRACE_DUMP unset; trace points will run but no dump produced` otherwise.
+
+### 4. Classify the first corrupt hop
+
+```bash
+python3 scripts/qemu_blackbox/phase_a/analyze_trace.py /tmp/hfsss-trace.bin
+```
+
+### Per-case timeout caveat
+
+TRACE instrumentation makes the I/O path noticeably slower. The harness applies a per-case deadline via `HFSSS_CASE_TIMEOUT_S` (default **300 seconds**, enforced by `scripts/qemu_blackbox/lib/common.sh`). `fio` verify workloads that fit inside 300 s under the default build can exceed it under TRACE and will be killed with:
+
+```
+[hfsss-blackbox] ERROR: case timed out after 300s
+```
+
+Mitigations, in order of preference:
+
+1. Pick a lighter case (e.g. `nvme/001_nvme_cli_smoke.sh`) for the initial hop-classification pass.
+2. Raise the per-case cap when running a heavier verify under TRACE, e.g. `HFSSS_CASE_TIMEOUT_S=900 ...`.
+3. Shrink the workload (smaller `--size`, lower `iodepth`) rather than lengthen the cap — trace ring capacity is finite, and a huge run can wrap before the interesting hop.
