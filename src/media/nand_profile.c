@@ -299,3 +299,34 @@ bool nand_profile_supports_op(const struct nand_profile *profile, enum nand_cmd_
     }
     return (profile->capability.supported_ops_bitmap & NAND_PROFILE_OP_BIT(op)) != 0;
 }
+
+/*
+ * Short CLI aliases. The enum is the source of truth; the table here maps
+ * user-facing names to ids without letting callers depend on enum integer
+ * order. Keep aliases ASCII-only and hyphen-separated to match the
+ * hfsss-nbd-server -P convention.
+ */
+struct nand_profile_alias {
+    const char *name;
+    enum nand_profile_id id;
+};
+
+static const struct nand_profile_alias k_profile_aliases[] = {
+    {"onfi-tlc", NAND_PROFILE_GENERIC_ONFI_TLC},
+    {"onfi-qlc", NAND_PROFILE_GENERIC_ONFI_QLC},
+    {"toggle-tlc", NAND_PROFILE_GENERIC_TOGGLE_TLC},
+    {"toggle-qlc", NAND_PROFILE_GENERIC_TOGGLE_QLC},
+};
+
+enum nand_profile_id nand_profile_id_from_name(const char *name)
+{
+    if (!name || !name[0]) {
+        return NAND_PROFILE_COUNT;
+    }
+    for (size_t i = 0; i < sizeof(k_profile_aliases) / sizeof(k_profile_aliases[0]); ++i) {
+        if (strcmp(name, k_profile_aliases[i].name) == 0) {
+            return k_profile_aliases[i].id;
+        }
+    }
+    return NAND_PROFILE_COUNT;
+}

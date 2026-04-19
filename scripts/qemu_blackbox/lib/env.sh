@@ -324,11 +324,10 @@ hfsss_blackbox_start_env() {
     nbd_flag="$(hfsss_blackbox_nbd_mode_flag)"
     local nbd_bin="${HFSSS_NBD_BIN:-$HFSSS_PROJECT_DIR/build/bin/hfsss-nbd-server}"
     hfsss_log "starting hfsss-nbd-server ($HFSSS_NBD_MODE mode, bin=$nbd_bin)"
-    if [ -n "$nbd_flag" ]; then
-        "$nbd_bin" "$nbd_flag" -p "$HFSSS_NBD_PORT" -s "$HFSSS_NBD_SIZE_MB" >"$HFSSS_NBD_LOG" 2>&1 &
-    else
-        "$nbd_bin" -p "$HFSSS_NBD_PORT" -s "$HFSSS_NBD_SIZE_MB" >"$HFSSS_NBD_LOG" 2>&1 &
-    fi
+    declare -a nbd_argv=(-p "$HFSSS_NBD_PORT" -s "$HFSSS_NBD_SIZE_MB")
+    [ -n "$nbd_flag" ] && nbd_argv=("$nbd_flag" "${nbd_argv[@]}")
+    [ -n "${HFSSS_NBD_PROFILE:-}" ] && nbd_argv+=(-P "$HFSSS_NBD_PROFILE")
+    "$nbd_bin" "${nbd_argv[@]}" >"$HFSSS_NBD_LOG" 2>&1 &
     HFSSS_NBD_PID=$!
     hfsss_blackbox_write_manifest
 

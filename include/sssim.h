@@ -7,6 +7,7 @@
 #include "hal/hal.h"
 #include "hal/hal_nor.h"
 #include "ftl/ftl.h"
+#include "media/nand_profile.h"
 
 #define SSSIM_PATH_LEN 512
 
@@ -35,6 +36,17 @@ struct sssim_config {
 
     /* Media Configuration */
     enum nand_type nand_type;
+
+    /*
+     * Profile selection mirrors media_config. profile_explicit=false (the
+     * zero-init default) preserves back-compat: the profile is derived from
+     * nand_type via nand_profile_get_default_for_type. Setting
+     * profile_explicit=true with a valid profile_id routes the full timing,
+     * identity, capability, and reset-policy surface through that profile,
+     * overriding the nand_type-derived default.
+     */
+    enum nand_profile_id profile_id;
+    bool profile_explicit;
 
     /* Persistence: empty string = no persistence */
     char nand_image_path[SSSIM_PATH_LEN];

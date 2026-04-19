@@ -69,6 +69,8 @@ int sssim_init(struct sssim_ctx *ctx, struct sssim_config *config)
     media_cfg.page_size = config->page_size;
     media_cfg.spare_size = config->spare_size;
     media_cfg.nand_type = config->nand_type;
+    media_cfg.profile_id = config->profile_id;
+    media_cfg.profile_explicit = config->profile_explicit;
 
     ret = media_init(&ctx->media, &media_cfg);
     if (ret != HFSSS_OK) {
