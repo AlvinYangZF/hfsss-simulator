@@ -96,6 +96,9 @@ struct boot_log_entry {
     char     msg[BOOT_LOG_MSG_LEN];
 };
 
+/* Forward declaration to keep boot.h independent of controller/security.h. */
+struct fw_signature;
+
 struct boot_ctx {
     enum boot_phase      current_phase;
     enum boot_type       boot_type;
@@ -109,6 +112,13 @@ struct boot_ctx {
     struct boot_log_entry log[BOOT_LOG_ENTRY_MAX];
     uint32_t             log_count;
     pthread_mutex_t      lock;
+    /* Secure boot attestation inputs (REQ-164). Optional: when NULL the
+     * POST phase skips image verification and only validates the slot
+     * header. When set, POST invokes secure_boot_verify() and aborts on
+     * mismatch. */
+    const uint8_t              *fw_image;
+    uint32_t                    fw_image_size;
+    const struct fw_signature  *fw_sig;
 };
 
 /* ------------------------------------------------------------------
@@ -136,6 +146,13 @@ enum boot_type boot_get_type(const struct boot_ctx *ctx);
 int  boot_select_firmware_slot(struct boot_ctx *ctx);
 int  boot_swap_firmware_slot(struct boot_ctx *ctx);
 bool boot_slot_valid(const struct nor_firmware_slot *slot);
+
+/* Secure boot attestation input (REQ-164).
+ * Attach a firmware image + signature pair so POST runs
+ * secure_boot_verify() and aborts the boot sequence on mismatch. */
+void boot_attach_fw_image(struct boot_ctx *ctx,
+                          const uint8_t *image, uint32_t size,
+                          const struct fw_signature *sig);
 
 /* SysInfo helpers */
 void boot_sysinfo_init(struct sysinfo_partition *si);

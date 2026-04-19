@@ -1,6 +1,7 @@
 #include "common/boot.h"
 #include "common/log.h"
 #include "common/common.h"
+#include "controller/security.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -172,6 +173,17 @@ int boot_select_firmware_slot(struct boot_ctx *ctx) {
     return HFSSS_OK;
 }
 
+void boot_attach_fw_image(struct boot_ctx *ctx,
+                          const uint8_t *image, uint32_t size,
+                          const struct fw_signature *sig) {
+    if (!ctx) {
+        return;
+    }
+    ctx->fw_image = image;
+    ctx->fw_image_size = size;
+    ctx->fw_sig = sig;
+}
+
 int boot_swap_firmware_slot(struct boot_ctx *ctx) {
     if (!ctx) return HFSSS_ERR_INVAL;
     uint8_t new_slot = (ctx->active_slot == 0) ? 1 : 0;
@@ -219,6 +231,20 @@ static int phase1_post(struct boot_ctx *ctx) {
     if (ret != HFSSS_OK) {
         boot_log(ctx, 1, "POST: no valid slot, continuing with defaults");
     }
+
+    /* Secure boot chain verification (REQ-164). Only runs when a firmware
+     * image + signature have been attached via boot_attach_fw_image(); a
+     * tampered image aborts POST so the boot sequence fails closed. */
+    if (ctx->fw_image && ctx->fw_sig) {
+        if (!secure_boot_verify(ctx->fw_image, ctx->fw_image_size,
+                                ctx->fw_sig)) {
+            boot_log(ctx, 2, "POST: secure boot verification FAILED — "
+                             "aborting boot");
+            return HFSSS_ERR_AUTH;
+        }
+        boot_log(ctx, 0, "POST: secure boot verification passed");
+    }
+
     struct timespec delay = { 0, 20 * 1000000L };
     nanosleep(&delay, NULL);
     return HFSSS_OK;

@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include "common/boot.h"
 #include "common/common.h"
+#include "controller/security.h"
 
 static int total = 0, passed = 0, failed = 0;
 
@@ -377,6 +378,104 @@ static void test_null_safety(void) {
 }
 
 /* ------------------------------------------------------------------
+ * Secure boot chain verification (REQ-164)
+ * ------------------------------------------------------------------ */
+static void test_secure_boot_accept_valid_image(void) {
+    separator();
+    printf("Test: POST accepts valid firmware image (REQ-164)\n");
+    separator();
+
+    struct boot_ctx ctx;
+    boot_ctx_init(&ctx);
+
+    uint8_t image[128];
+    for (size_t i = 0; i < sizeof(image); i++) {
+        image[i] = (uint8_t)(i * 3 + 7);
+    }
+    struct fw_signature sig = {0};
+    sig.magic = FW_SIG_MAGIC;
+    sig.fw_version = 1;
+    sig.image_crc32 = hfsss_crc32(image, sizeof(image));
+
+    boot_attach_fw_image(&ctx, image, sizeof(image), &sig);
+
+    int ret = boot_run(&ctx);
+    TEST_ASSERT(ret == HFSSS_OK, "boot_run completes with valid image");
+    TEST_ASSERT(ctx.initialized, "boot reaches READY with valid image");
+
+    boot_ctx_cleanup(&ctx);
+}
+
+static void test_secure_boot_reject_tampered_image(void) {
+    separator();
+    printf("Test: POST aborts on tampered firmware image (REQ-164)\n");
+    separator();
+
+    struct boot_ctx ctx;
+    boot_ctx_init(&ctx);
+
+    uint8_t image[128];
+    for (size_t i = 0; i < sizeof(image); i++) {
+        image[i] = (uint8_t)(i * 3 + 7);
+    }
+    struct fw_signature sig = {0};
+    sig.magic = FW_SIG_MAGIC;
+    sig.fw_version = 1;
+    sig.image_crc32 = hfsss_crc32(image, sizeof(image));
+
+    /* Corrupt one byte after the signature is captured */
+    image[42] ^= 0xFF;
+
+    boot_attach_fw_image(&ctx, image, sizeof(image), &sig);
+
+    int ret = boot_run(&ctx);
+    TEST_ASSERT(ret == HFSSS_ERR_AUTH,
+                "boot_run returns ERR_AUTH on tampered image");
+    TEST_ASSERT(!ctx.initialized,
+                "boot does NOT reach READY after tampered image");
+
+    boot_ctx_cleanup(&ctx);
+}
+
+static void test_secure_boot_reject_bad_magic(void) {
+    separator();
+    printf("Test: POST aborts on wrong signature magic (REQ-164)\n");
+    separator();
+
+    struct boot_ctx ctx;
+    boot_ctx_init(&ctx);
+
+    uint8_t image[64];
+    memset(image, 0xAA, sizeof(image));
+    struct fw_signature sig = {0};
+    sig.magic = 0xDEADBEEFU;  /* NOT FW_SIG_MAGIC */
+    sig.image_crc32 = hfsss_crc32(image, sizeof(image));
+
+    boot_attach_fw_image(&ctx, image, sizeof(image), &sig);
+
+    int ret = boot_run(&ctx);
+    TEST_ASSERT(ret == HFSSS_ERR_AUTH,
+                "boot_run returns ERR_AUTH on wrong signature magic");
+
+    boot_ctx_cleanup(&ctx);
+}
+
+static void test_secure_boot_skipped_when_no_attach(void) {
+    separator();
+    printf("Test: POST skips secure boot when no image attached (REQ-164)\n");
+    separator();
+
+    struct boot_ctx ctx;
+    boot_ctx_init(&ctx);
+    int ret = boot_run(&ctx);
+    TEST_ASSERT(ret == HFSSS_OK,
+                "boot_run still OK when no image attached (back-compat)");
+    TEST_ASSERT(ctx.initialized, "boot reaches READY without attestation");
+
+    boot_ctx_cleanup(&ctx);
+}
+
+/* ------------------------------------------------------------------
  * main
  * ------------------------------------------------------------------ */
 int main(void) {
@@ -398,6 +497,10 @@ int main(void) {
     test_wal_recovery();
     test_sysinfo_helpers();
     test_null_safety();
+    test_secure_boot_accept_valid_image();
+    test_secure_boot_reject_tampered_image();
+    test_secure_boot_reject_bad_magic();
+    test_secure_boot_skipped_when_no_attach();
 
     separator();
     printf("Test Summary\n");

@@ -407,9 +407,9 @@ $(TEST_NVME_USPACE): $(TEST_DIR)/test_nvme_uspace.c $(LIBHFSSS_PCIE) $(LIBHFSSS_
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
 
-$(TEST_BOOT): $(TEST_DIR)/test_boot.c $(LIBHFSSS_COMMON)
+$(TEST_BOOT): $(TEST_DIR)/test_boot.c $(LIBHFSSS_COMMON) $(LIBHFSSS_CTRL)
 	@echo "  CC      $@"
-	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common $(LDFLAGS)
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-controller -lhfsss-common $(LDFLAGS)
 
 $(TEST_NOR): $(TEST_DIR)/test_nor_flash.c $(SRC_DIR)/media/nor_flash.c $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
