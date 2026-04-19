@@ -1,5 +1,6 @@
 #include "hal/hal.h"
 #include "common/trace.h"
+#include "media/media.h"
 #ifdef HFSSS_DEBUG_TRACE
 #include "ftl/mapping.h"  /* union ppn layout; debug-only cross-layer pull */
 #endif
@@ -383,4 +384,16 @@ void hal_reset_stats(struct hal_ctx *ctx)
     mutex_lock(&ctx->lock, 0);
     memset(&ctx->stats, 0, sizeof(ctx->stats));
     mutex_unlock(&ctx->lock);
+}
+
+const struct nand_profile *hal_get_profile(struct hal_ctx *ctx)
+{
+    if (!ctx || !ctx->nand) {
+        return NULL;
+    }
+    struct media_ctx *m = (struct media_ctx *)ctx->nand->media_ctx;
+    if (!m || !m->initialized) {
+        return NULL;
+    }
+    return m->profile;
 }

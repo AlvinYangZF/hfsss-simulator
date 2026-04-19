@@ -1,6 +1,7 @@
 #include "ftl/ftl.h"
 #include "ftl/io_queue.h"
 #include "common/trace.h"
+#include "media/nand_profile.h"
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -277,6 +278,14 @@ int ftl_init(struct ftl_ctx *ctx, struct ftl_config *config, struct hal_ctx *hal
     /* Copy config */
     memcpy(&ctx->config, config, sizeof(*config));
     ctx->hal = hal;
+    /*
+     * Resolve the active NAND profile once at init. FTL does not hold
+     * a mutable profile reference — a profile switch would require
+     * tearing down the FTL stack (mapping, CWB, block manager are all
+     * keyed off profile-derived geometry/capability in later phases).
+     * Safe to be NULL: query helpers fall back to legacy defaults.
+     */
+    ctx->profile = hal_get_profile(hal);
 
     /* Initialize lock */
     ret = mutex_init(&ctx->lock);
@@ -897,4 +906,39 @@ int ftl_trim_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa, u64 lba)
     }
 
     return ret;
+}
+
+/* -------------------------------------------------------------------------
+ * Profile query API (Phase 7 consumer-layer).
+ *
+ * These helpers let upper layers (NBD server, SSD controller shim, test
+ * harnesses) reason about what the active NAND profile advertises without
+ * reaching through HAL->nand->media_ctx themselves. Semantics match the
+ * contract documented in include/ftl/ftl.h: NULL-profile inputs get a safe
+ * legacy default so pre-Phase-7 callers keep working.
+ * ------------------------------------------------------------------------- */
+
+const struct nand_profile *ftl_get_profile(struct ftl_ctx *ctx)
+{
+    if (!ctx) {
+        return NULL;
+    }
+    return ctx->profile;
+}
+
+u8 ftl_preferred_plane_batch(struct ftl_ctx *ctx)
+{
+    if (!ctx || !ctx->profile) {
+        return 1;
+    }
+    u8 cap = ctx->profile->mp_rules.max_planes_per_cmd;
+    return cap > 0 ? cap : 1;
+}
+
+bool ftl_supports_op(struct ftl_ctx *ctx, enum nand_cmd_opcode op)
+{
+    if (!ctx || !ctx->profile) {
+        return true;
+    }
+    return nand_profile_supports_op(ctx->profile, op);
 }

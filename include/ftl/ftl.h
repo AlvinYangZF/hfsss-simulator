@@ -11,6 +11,9 @@
 #include "ftl/error.h"
 #include "hal/hal.h"
 #include "ftl/superblock.h"
+#include "media/cmd_state.h"
+
+struct nand_profile;
 
 /* FTL Configuration */
 struct ftl_config {
@@ -57,6 +60,13 @@ struct ftl_ctx {
     struct error_ctx error;
     struct superblock_ctx sb;
     struct hal_ctx *hal;
+    /*
+     * NAND profile resolved at ftl_init via hal_get_profile(). Read-only
+     * snapshot for the lifetime of the FTL context. Never updated after
+     * init (a profile switch would require rebuilding the stack).
+     * NULL if HAL has no profile attached (legacy code paths).
+     */
+    const struct nand_profile *profile;
     struct ftl_stats stats;
     struct mutex lock;
     bool initialized;
@@ -77,6 +87,20 @@ void ftl_reset_stats(struct ftl_ctx *ctx);
 int ftl_map_l2p(struct ftl_ctx *ctx, u64 lba, union ppn *ppn);
 int ftl_unmap_lba(struct ftl_ctx *ctx, u64 lba);
 int ftl_gc_trigger(struct ftl_ctx *ctx);
+
+/*
+ * Profile query API. These all return safe defaults when ctx->profile is
+ * NULL so legacy code paths that skip profile resolution keep working:
+ *   - ftl_get_profile: returns the resolved profile pointer or NULL
+ *   - ftl_preferred_plane_batch: the per-command plane cap the profile
+ *     advertises (mp_rules.max_planes_per_cmd) or 1 if no profile
+ *   - ftl_supports_op: true if the profile advertises the opcode or if
+ *     no profile is attached (assume supported — matches pre-Phase-7
+ *     behavior where every op was legal at the bitmap layer)
+ */
+const struct nand_profile *ftl_get_profile(struct ftl_ctx *ctx);
+u8 ftl_preferred_plane_batch(struct ftl_ctx *ctx);
+bool ftl_supports_op(struct ftl_ctx *ctx, enum nand_cmd_opcode op);
 
 
 /* Multi-threaded page operations — use TAA shards instead of global lock */

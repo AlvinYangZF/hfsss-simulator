@@ -71,4 +71,14 @@ enum hal_nvme_power_state hal_power_get_state_sync(struct hal_ctx *ctx);
 void hal_get_stats(struct hal_ctx *ctx, struct hal_stats *stats);
 void hal_reset_stats(struct hal_ctx *ctx);
 
+/*
+ * Bridge to the active NAND profile attached to the media layer. HAL
+ * does not carry a profile of its own — it reaches through
+ * hal_nand_dev->media_ctx to the media's resolved profile. Returns
+ * NULL if HAL has no NAND device, no media context, or the media has
+ * no profile resolved (legacy code paths).
+ */
+struct nand_profile;
+const struct nand_profile *hal_get_profile(struct hal_ctx *ctx);
+
 #endif /* __HFSSS_HAL_H */
