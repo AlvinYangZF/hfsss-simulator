@@ -41,15 +41,11 @@ struct key_table {
     u32 crc32;
 };
 
-/* Firmware signature for secure boot */
-struct fw_signature {
-    u32 magic;
-    u32 fw_version;
-    u32 image_crc32;
-    u32 reserved;
-};
-
-#define FW_SIG_MAGIC 0x46575347U  /* "FWSG" */
+/* Firmware signature & FW_SIG_MAGIC now live in <common/boot.h> so the
+ * boot sequence can verify images without pulling in the controller
+ * layer. Include boot.h here so existing callers (test_security.c etc.)
+ * keep seeing the same declarations through this header. */
+#include "common/boot.h"
 
 /* AES-XTS simulation (XOR-based placeholder) */
 void crypto_xts_encrypt(const struct crypto_ctx *ctx, u64 sector,
@@ -82,8 +78,6 @@ int key_table_load(struct key_table *kt, const char *filepath);
 int crypto_erase_ns(struct key_table *kt, u32 nsid,
                     const u8 mk[SEC_KEY_LEN]);
 
-/* Secure boot verification */
-bool secure_boot_verify(const u8 *image, u32 size,
-                        const struct fw_signature *sig);
+/* Secure boot verification lives in common/boot.h. */
 
 #endif /* __HFSSS_SECURITY_H */

@@ -5,7 +5,6 @@
 #include <stdbool.h>
 #include "common/boot.h"
 #include "common/common.h"
-#include "controller/security.h"
 
 static int total = 0, passed = 0, failed = 0;
 

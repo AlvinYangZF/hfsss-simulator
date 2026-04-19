@@ -1,12 +1,29 @@
 #include "common/boot.h"
 #include "common/log.h"
 #include "common/common.h"
-#include "controller/security.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
 #include <signal.h>
+
+/* Forward declaration — defined in this file, referenced by phase1_post. */
+u32 hfsss_crc32(const void *data, size_t len);
+
+bool secure_boot_verify(const uint8_t *image, uint32_t size,
+                        const struct fw_signature *sig)
+{
+    if (!image || size == 0 || !sig) {
+        return false;
+    }
+    if (sig->magic != FW_SIG_MAGIC) {
+        return false;
+    }
+    if (hfsss_crc32(image, size) != sig->image_crc32) {
+        return false;
+    }
+    return true;
+}
 
 /* ------------------------------------------------------------------
  * CRC-32 (IEEE 802.3 polynomial)

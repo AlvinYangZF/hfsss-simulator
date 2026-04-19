@@ -208,11 +208,17 @@ static void media_inject_bit_errors(struct media_ctx *ctx, struct nand_page *pag
      * A more detailed implementation could actually flip random bits here.
      */
     (void)bit_errors;
-    (void)spare;
-    (void)spare_size;
 
-    /* Just copy the data without errors for now */
+    /* Copy data back to caller */
     memcpy(data, page->data, page_size);
+
+    /* Copy spare back to caller when a buffer was supplied (REQ-157).
+     * The spare carries T10 PI tuples on the GC/FTL read-then-rewrite
+     * path; if this copy is skipped, migrated pages lose their PI and
+     * fail pi_verify at the destination. */
+    if (spare && page->spare) {
+        memcpy(spare, page->spare, spare_size);
+    }
 }
 
 struct read_cb_ctx {

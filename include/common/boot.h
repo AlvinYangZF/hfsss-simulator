@@ -96,8 +96,25 @@ struct boot_log_entry {
     char     msg[BOOT_LOG_MSG_LEN];
 };
 
-/* Forward declaration to keep boot.h independent of controller/security.h. */
-struct fw_signature;
+/* ------------------------------------------------------------------
+ * Firmware signature / secure boot chain verification (REQ-164)
+ *
+ * `secure_boot_verify()` is defined here in common — its dependencies
+ * are just hfsss_crc32 + fixed-width types. Controller/security re-exports
+ * these symbols via `controller/security.h` so the security module's
+ * callers don't have to change their include lists.
+ * ------------------------------------------------------------------ */
+#define FW_SIG_MAGIC 0x46575347U  /* "FWSG" */
+
+struct fw_signature {
+    uint32_t magic;
+    uint32_t fw_version;
+    uint32_t image_crc32;
+    uint32_t reserved;
+};
+
+bool secure_boot_verify(const uint8_t *image, uint32_t size,
+                        const struct fw_signature *sig);
 
 struct boot_ctx {
     enum boot_phase      current_phase;
