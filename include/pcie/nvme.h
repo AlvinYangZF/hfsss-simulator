@@ -402,7 +402,12 @@ struct nvme_identify_ns {
     u16 nabspf;       /* 0x2C: Namespace Atomic Boundary Size Power Fail */
     u16 noiob;        /* 0x2E: Namespace Optimal I/O Boundary */
     u64 nvmcap[2];    /* 0x30: NVM Capacity */
-    u8  rsvd1[28];    /* 0x40: Reserved */
+    u16 npwg;         /* 0x40: Namespace Preferred Write Granularity */
+    u16 npwa;         /* 0x42: Namespace Preferred Write Alignment */
+    u16 npdg;         /* 0x44: Namespace Preferred Deallocate Granularity */
+    u16 npda;         /* 0x46: Namespace Preferred Deallocate Alignment */
+    u16 nows;         /* 0x48: Namespace Optimal Write Size */
+    u8  rsvd1[18];    /* 0x4A: Reserved */
     u8  anagrpid[4];  /* 0x5C: ANA Group Identifier */
     u8  rsvd2[3];     /* 0x60: Reserved */
     u8  attr;         /* 0x63: Namespace Attributes */
