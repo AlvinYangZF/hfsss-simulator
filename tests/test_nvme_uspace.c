@@ -1,7 +1,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include "pcie/nvme_uspace.h"
+#include "pcie/nvme.h"
+
+/* Mirror of the SMART/Health log layout written by
+ * nvme_uspace_get_log_page(). Keep in sync with src/pcie/nvme_uspace.c. */
+struct smart_log_mirror {
+    uint8_t  critical_warning;
+    uint16_t temperature;
+    uint8_t  avail_spare;
+    uint8_t  avail_spare_thresh;
+    uint8_t  percent_used;
+    uint8_t  rsvd[26];
+    uint64_t data_units_read;
+    uint64_t data_units_written;
+    uint64_t host_read_cmds;
+    uint64_t host_write_cmds;
+    uint64_t ctrl_busy_time;
+    uint64_t power_cycles;
+    uint64_t power_on_hours;
+    uint64_t unsafe_shutdowns;
+    uint64_t media_errors;
+    uint64_t num_err_log_entries;
+};
 
 #define TEST_PASS 0
 #define TEST_FAIL 1
@@ -292,6 +315,97 @@ static int test_error_log_page(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Production path: a dispatcher-level I/O failure must append to the
+ * Error Information Log ring and synchronously bump the SMART
+ * num_err_log_entries counter (REQ-115 / REQ-158). */
+static int test_error_log_production_path(void)
+{
+    printf("\n=== Error Log production path (REQ-115 / REQ-158) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+
+    nvme_uspace_config_default(&config);
+    config.sssim_cfg.page_size         = 4096;
+    config.sssim_cfg.spare_size        = 64;
+    config.sssim_cfg.channel_count     = 2;
+    config.sssim_cfg.chips_per_channel = 2;
+    config.sssim_cfg.dies_per_chip     = 1;
+    config.sssim_cfg.planes_per_die    = 1;
+    config.sssim_cfg.blocks_per_plane  = 64;
+    config.sssim_cfg.pages_per_block   = 64;
+    config.sssim_cfg.total_lbas        = 512;
+
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "err-prod: dev_init");
+    ret = nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(ret == HFSSS_OK, "err-prod: dev_start");
+
+    /* Baseline: Error Log empty, SMART agrees. */
+    struct nvme_error_log_entry entries[4];
+    memset(entries, 0, sizeof(entries));
+    ret = nvme_uspace_get_log_page(&dev, 1, NVME_LID_ERROR_INFO,
+                                   entries, sizeof(entries));
+    TEST_ASSERT(ret == HFSSS_OK && entries[0].error_count == 0,
+                "err-prod: error log starts empty");
+
+    struct smart_log_mirror smart;
+    memset(&smart, 0xAB, sizeof(smart));
+    ret = nvme_uspace_get_log_page(&dev, 1, NVME_LID_SMART,
+                                   &smart, sizeof(smart));
+    TEST_ASSERT(ret == HFSSS_OK && smart.num_err_log_entries == 0,
+                "err-prod: SMART num_err_log_entries starts at zero");
+
+    /* Dispatch a READ with an out-of-range starting LBA through the full
+     * NVMe pipeline. nvme_uspace_read() must return HFSSS_ERR_INVAL and
+     * the dispatcher must append an entry to the Error Log. */
+    struct nvme_sq_entry sq_cmd;
+    struct nvme_cq_entry cpl;
+    static uint8_t data_buf[4096];
+    memset(&sq_cmd, 0, sizeof(sq_cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    sq_cmd.opcode     = NVME_NVM_READ;
+    sq_cmd.command_id = 0xBEEF;
+    sq_cmd.nsid       = 1;
+    /* slba = 0xFFFFFFFF — guaranteed out of range for total_lbas=512 */
+    sq_cmd.cdw10      = 0xFFFFFFFFu;
+    sq_cmd.cdw11      = 0x00000000u;
+    sq_cmd.cdw12      = 0;  /* NLB = 0+1 = 1 block */
+
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &sq_cmd, &cpl,
+                                      data_buf, sizeof(data_buf));
+    TEST_ASSERT(ret == HFSSS_OK, "err-prod: dispatch returns OK");
+    TEST_ASSERT(cpl.status != 0,
+                "err-prod: CQE status is non-zero on I/O failure");
+
+    memset(entries, 0, sizeof(entries));
+    ret = nvme_uspace_get_log_page(&dev, 1, NVME_LID_ERROR_INFO,
+                                   entries, sizeof(entries));
+    TEST_ASSERT(ret == HFSSS_OK, "err-prod: LID=1 OK after dispatch");
+    TEST_ASSERT(entries[0].error_count == 1,
+                "err-prod: dispatch appended one Error Log entry");
+    TEST_ASSERT(entries[0].cmd_id == 0xBEEF,
+                "err-prod: Error Log entry carries the submitted cmd_id");
+    TEST_ASSERT(entries[0].nsid == 1,
+                "err-prod: Error Log entry carries the target NSID");
+    TEST_ASSERT(entries[0].lba == 0xFFFFFFFFu,
+                "err-prod: Error Log entry carries the failing SLBA");
+    TEST_ASSERT(entries[0].status_field == cpl.status,
+                "err-prod: Error Log status_field mirrors CQE status");
+
+    /* SMART must now report the same count. */
+    memset(&smart, 0, sizeof(smart));
+    ret = nvme_uspace_get_log_page(&dev, 1, NVME_LID_SMART,
+                                   &smart, sizeof(smart));
+    TEST_ASSERT(ret == HFSSS_OK, "err-prod: SMART get_log_page OK");
+    TEST_ASSERT(smart.num_err_log_entries == 1,
+                "err-prod: SMART num_err_log_entries synced with ring");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     print_separator();
@@ -301,6 +415,7 @@ int main(void)
     test_nvme_uspace_dev();
     test_sanitize_action_modes();
     test_error_log_page();
+    test_error_log_production_path();
 
     print_separator();
     printf("Test Summary\n");

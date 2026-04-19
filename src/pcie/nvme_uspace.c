@@ -629,7 +629,11 @@ int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void
     log.power_on_hours = 0;
     log.unsafe_shutdowns = 0;
     log.media_errors = 0;
-    log.num_err_log_entries = 0;
+    /* Keep SMART num_err_log_entries in sync with the Error Information
+     * Log ring counter so the two host-visible log pages agree. */
+    mutex_lock(&dev->error_log_lock, 0);
+    log.num_err_log_entries = dev->error_log_count;
+    mutex_unlock(&dev->error_log_lock);
 
     u32 copy_len = len < (u32)sizeof(log) ? len : (u32)sizeof(log);
     memset(buf, 0, len);
@@ -773,7 +777,23 @@ int nvme_uspace_dispatch_io_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_entr
     }
 
     if (result != HFSSS_OK) {
-        cpl->status = NVME_BUILD_STATUS(NVME_SC_INTERNAL_DEVICE_ERROR, NVME_STATUS_TYPE_GENERIC);
+        u16 status_field = NVME_BUILD_STATUS(NVME_SC_INTERNAL_DEVICE_ERROR,
+                                             NVME_STATUS_TYPE_GENERIC);
+        cpl->status = status_field;
+        /* Append the failure to the Error Information Log ring so host
+         * Get Log Page (LID=0x01) surfaces it (REQ-115 / REQ-158). Only
+         * LBA-bearing I/O opcodes carry a meaningful slba/nsid. */
+        if (cmd->opcode == NVME_NVM_READ ||
+            cmd->opcode == NVME_NVM_WRITE ||
+            cmd->opcode == NVME_NVM_WRITE_ZEROES ||
+            cmd->opcode == NVME_NVM_DATASET_MANAGEMENT) {
+            nvme_uspace_report_error(dev, 0 /* sq_id unknown at this layer */,
+                                     cmd->command_id, status_field,
+                                     slba, nsid);
+        } else {
+            nvme_uspace_report_error(dev, 0, cmd->command_id, status_field,
+                                     0, nsid);
+        }
     }
 
     return HFSSS_OK;
