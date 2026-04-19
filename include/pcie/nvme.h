@@ -402,23 +402,31 @@ struct nvme_identify_ns {
     u16 nabspf;       /* 0x2C: Namespace Atomic Boundary Size Power Fail */
     u16 noiob;        /* 0x2E: Namespace Optimal I/O Boundary */
     u64 nvmcap[2];    /* 0x30: NVM Capacity */
-    u8  rsvd1[40];    /* 0x40: Reserved */
-    u8  anagrpid[4];  /* 0x68: ANA Group Identifier */
-    u8  rsvd2[3];     /* 0x6C: Reserved */
-    u8  attr;         /* 0x6F: Namespace Attributes */
-    u16 nvmsetid;     /* 0x70: NVM Set Identifier */
-    u16 endgid;       /* 0x72: Endurance Group Identifier */
-    u8  nguid[16];    /* 0x74: Namespace Globally Unique Identifier */
-    u64 eui64;        /* 0x84: IEEE Extended Unique Identifier */
+    u16 npwg;         /* 0x40: Namespace Preferred Write Granularity */
+    u16 npwa;         /* 0x42: Namespace Preferred Write Alignment */
+    u16 npdg;         /* 0x44: Namespace Preferred Deallocate Granularity */
+    u16 npda;         /* 0x46: Namespace Preferred Deallocate Alignment */
+    u16 nows;         /* 0x48: Namespace Optimal Write Size */
+    u8  rsvd1[18];    /* 0x4A: Reserved */
+    u8  anagrpid[4];  /* 0x5C: ANA Group Identifier */
+    u8  rsvd2[3];     /* 0x60: Reserved */
+    u8  attr;         /* 0x63: Namespace Attributes */
+    u16 nvmsetid;     /* 0x64: NVM Set Identifier */
+    u16 endgid;       /* 0x66: Endurance Group Identifier */
+    u8  nguid[16];    /* 0x68: Namespace Globally Unique Identifier */
+    u64 eui64;        /* 0x78: IEEE Extended Unique Identifier */
     struct {
         u32 ms : 16;
         u32 lbads : 8;
         u32 rp : 2;
         u32 rsvd : 6;
-    } lbaf[16];        /* 0x88: LBA Format Support */
-    u8  rsvd3[192];   /* 0x108: Reserved */
-    u8  vs[3712];     /* 0x1C0: Vendor Specific */
+    } lbaf[16];        /* 0x80: LBA Format Support */
+    u8  rsvd3[192];   /* 0xC0: Reserved */
+    u8  vs[3712];     /* 0x180: Vendor Specific */
 } __attribute__((packed));
+
+_Static_assert(sizeof(struct nvme_identify_ns) == 4096,
+               "NVMe Identify Namespace data structure must be 4096 bytes per spec");
 
 /* NVMe Controller Context */
 struct nvme_ctrl_ctx {
