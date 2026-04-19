@@ -32,7 +32,7 @@ based on dependency depth, user-visible impact, and version target.
 | Phase 3 – User-Space NVMe | Admin/IO/DSM command processing, doorbell, CQ, identify, DSM trim | 87/138 | — | ✅ Complete |
 | Phase 4 – Boot/NOR/FTL Reliability/Trace | 6-stage boot, dual NOR slots, power mgmt, full NOR partitions, read/write retry, cmd state machine, flow control, trace ring | ~101/138 | — | ✅ Complete |
 | Phase 5 – OOB & Tools | JSON-RPC Unix socket, /proc interface, `hfsss-ctrl` CLI, YAML config, latency monitor | ~114/138 | — | ✅ Complete |
-| Phase 6 – Perf & Fault Inj. | `perf_validation` benchmark harness, `fault_inject` registry, DWRR, UPLP, thermal throttle, telemetry, security, multi-NS | **92/138 core + 30/40 enterprise** | 122/178 (✅) / 153/178 (✅+⚠️) | ✅ Complete (perf target enforcement remains ⚠️) |
+| Phase 6 – Perf & Fault Inj. | `perf_validation` benchmark harness, `fault_inject` registry, DWRR, UPLP, thermal throttle, telemetry, security, multi-NS | **91/138 core + 29/40 enterprise** | 120/178 (✅) / 154/178 (✅+⚠️) | ✅ Complete (perf target enforcement + NAND/TCG wiring remain ⚠️) |
 | Phase 7 – Kernel Module | `/dev/nvme` block device, real MSI-X / DMA / IOMMU, nvme-cli / fio on raw NVMe | 0/12 (intentional) | — | 🔲 Optional (deferred) |
 
 > **Note**: Core counts the 138 REQs from REQ-001..REQ-138; partials are visible in `REQUIREMENT_COVERAGE.md`. Phase 6 also covers the 40 Enterprise V3.0 REQs (UPLP / QoS / T10 PI / Security / Multi-NS / Thermal+Telemetry), most of which are implemented or partially implemented. Phase 7 is the only remaining scope, and is explicitly optional per the user-space-first architecture decision.

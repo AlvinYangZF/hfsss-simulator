@@ -9,7 +9,7 @@
 
 This document analyzes the coverage of the 178 requirements from the Requirements Matrix against the current HFSSS implementation. Requirements REQ-001 through REQ-138 cover core functionality; REQ-139 through REQ-178 cover enterprise SSD features added in PRD V2.0 (Chapter 12).
 
-**V3.0 Update (2026-04-19)**: End-to-end code audit against current source tree. Phase 4 (boot/NOR/FTL reliability/trace) and most of Phase 5/6 (OOB/hfsss-ctrl/YAML/perf framework/fault-inject) plus the Enterprise V3.0 groups (UPLP, Multi-NS, Security, Thermal/Telemetry) are now landed. Coverage rises from 38.8% to **68.5%** fully implemented (86.5% counting partials).
+**V3.0 Update (2026-04-19)**: End-to-end code audit against current source tree. Phase 4 (boot/NOR/FTL reliability/trace) and most of Phase 5/6 (OOB/hfsss-ctrl/YAML/perf framework/fault-inject) plus the Enterprise V3.0 groups (UPLP, Multi-NS, Security, Thermal/Telemetry) are now landed. Coverage rises from 38.8% to **67.4%** fully implemented (86.5% counting partials). Post-review corrections: REQ-132 (NAND fault wiring pending), REQ-161 (TCG Opal command parsing pending), REQ-163 (sanitize handler present but action modes partial) demoted from ✅ to ⚠️.
 
 **V2.0 Update**: Added 40 enterprise requirements (REQ-139 through REQ-178) covering UPLP, QoS Determinism, T10 DIF/PI, Security, Multi-Namespace Management, Thermal Management, and Advanced Telemetry.
 
@@ -35,17 +35,17 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Algorithm Task Layer (FTL) | 22 | 18 | 2 | 2 | 0 | 81.8% | ↑ +5 (cmd state machine, retries, flow ctl, wear monitor) |
 | Performance Requirements | 8 | 0 | 5 | 3 | 0 | 0% (62.5% partial) | ↑ framework landed, targets not enforced |
 | Product Interfaces | 8 | 4 | 3 | 1 | 0 | 50.0% | ↑ +4 (/proc, hfsss-ctrl, YAML, persistence) |
-| Fault Injection | 3 | 2 | 1 | 0 | 0 | 66.7% | ↑ +2 (NAND + power injection) |
+| Fault Injection | 3 | 1 | 2 | 0 | 0 | 33.3% (100% partial) | ↑ registry + power hook landed; NAND wiring pending |
 | System Reliability | 4 | 2 | 1 | 1 | 0 | 50.0% | -- |
-| **Core Subtotal** | **138** | **92** | **22** | **23** | **1** | **66.7%** (83.3% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **91** | **23** | **23** | **1** | **65.9%** (82.6% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% (100% partial) | ↑ DWRR + partial wiring |
 | Enterprise: T10 DIF/PI | 5 | 3 | 2 | 0 | 0 | 60.0% (100% partial) | ↑ Type 1/2/3 CRC-16 |
-| Enterprise: Security | 7 | 6 | 0 | 1 | 0 | 85.7% | ↑ AES-XTS sim, keys, crypto erase, secure boot |
+| Enterprise: Security | 7 | 5 | 2 | 0 | 0 | 71.4% (100% partial) | ↑ AES-XTS sim, keys, crypto erase, secure boot, sanitize handler |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 6 | 2 | 0 | 0 | 75.0% | ↑ throttle, telemetry, SMART predict |
-| **Enterprise Subtotal** | **40** | **30** | **9** | **1** | **0** | **75.0%** (97.5% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **122** | **31** | **24** | **1** | **68.5%** (86.5% partial) | ↑ from 38.8% |
+| **Enterprise Subtotal** | **40** | **29** | **11** | **0** | **0** | **72.5%** (100% partial) | ↑ from 0% |
+| **Grand Total** | **178** | **120** | **34** | **23** | **1** | **67.4%** (86.5% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -228,7 +228,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 
 | ID | Requirement Description | Status | Notes |
 |----|------------------------|--------|-------|
-| REQ-132 | NAND Media Fault Injection | ✅ | Fault registry + injection hooks in `src/common/fault_inject.c`; `tests/test_fault_inject.c` |
+| REQ-132 | NAND Media Fault Injection | ⚠️ | Fault registry + bit-flip/disturb/aging APIs in `src/common/fault_inject.c`; `tests/test_fault_inject.c` exercises the registry in isolation. NAND / HAL I/O path does not yet consult the registry, so injected faults do not surface at the media layer — per-hop wiring pending. |
 | REQ-133 | Power Fault Injection | ✅ | UPLP test hooks `uplp_inject_power_fail`/`uplp_inject_at_phase` in `src/common/uplp.c`; `tests/test_uplp.c` |
 | REQ-134 | Controller Fault Injection | ⚠️ | Some controller-level fault hooks via `fault_inject.c`; comprehensive panic / pool-exhaustion / timeout-storm scenarios not all wired |
 
@@ -282,9 +282,9 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 |----|------------------------|--------|-------|
 | REQ-159 | AES-XTS 256-bit simulation (XOR placeholder) | ✅ | `crypto_xts_encrypt`/`crypto_xts_decrypt` in `src/controller/security.c`; `tests/test_security.c` |
 | REQ-160 | Key hierarchy (MK→KEK→DEK, per-NS isolation) | ✅ | `sec_hkdf_derive` + per-NS `key_entry` in `security.c` |
-| REQ-161 | TCG Opal SSC basic commands (lock/unlock) | ✅ | Key state machine (EMPTY/ACTIVE/SUSPENDED/DESTROYED) in `security.c` |
+| REQ-161 | TCG Opal SSC basic commands (lock/unlock) | ⚠️ | `enum key_state` (EMPTY/ACTIVE/SUSPENDED/DESTROYED) in `include/controller/security.h` provides the underlying state transitions; TCG Opal-specific command parsing (lock/unlock opcodes) not yet wired |
 | REQ-162 | Crypto erase (destroy DEK) | ✅ | `crypto_erase_ns` in `security.c` |
-| REQ-163 | Secure erase (block erase all user data) | ❌ | Physical block-erase-all pass not implemented; crypto erase (REQ-162) only |
+| REQ-163 | Secure erase (block erase all user data) | ⚠️ | `nvme_uspace_sanitize` handler for `NVME_ADMIN_SANITIZE` (opcode 0x84) routes through `src/pcie/nvme_uspace.c`; NVMe sanitize action modes (block-erase / crypto-erase / overwrite) not all fully implemented end-to-end |
 | REQ-164 | Secure boot chain verification (ROM→BL→FW) | ✅ | `fw_signature` + `secure_boot_verify` (CRC32) in `security.c` |
 | REQ-165 | Key storage in NOR (dual-copy, UPLP-safe) | ✅ | `key_table_save`/`key_table_load` with dual-copy + CRC over NOR partitions |
 
