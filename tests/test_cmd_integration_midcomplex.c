@@ -262,6 +262,20 @@ static int test_is03_reset_abort_pattern_program(void)
     TEST_ASSERT(p_tgt != NULL, "IS-03a: target page pointer");
     TEST_ASSERT(p_tgt->state == PAGE_INVALID, "IS-03a: target page marked PAGE_INVALID");
     TEST_ASSERT(is_abort_pattern(p_tgt->data, cfg.page_size), "IS-03a: target page contains DEAD pattern");
+    TEST_ASSERT(p_tgt->dirty == true, "IS-03a: target page dirty flag set for checkpoint");
+
+    /*
+     * Containing block must also be dirty: media_save_incremental short-
+     * circuits on !blk->dirty and never reaches the page level. Before
+     * Phase 7 review round 1 commit 2, the stamp path only set page->dirty,
+     * so a reset-aborted page on a previously-clean block would be dropped
+     * by an incremental checkpoint and come back as stale on reload. Block
+     * 9 was never programmed before this test, so its clean-to-dirty
+     * transition here is the exact regression guard for that bug.
+     */
+    struct nand_block *blk_tgt = nand_get_block(ctx.nand, 0, 0, 0, 0, 9);
+    TEST_ASSERT(blk_tgt != NULL, "IS-03a: target block pointer");
+    TEST_ASSERT(blk_tgt->dirty == true, "IS-03a: target block dirty flag set by abort-stamp");
 
     /* Adjacent non-target page untouched (PAGE_FREE / 0xFF). */
     struct nand_page *p_adj = nand_get_page(ctx.nand, 0, 0, 0, 0, 9, 4);
@@ -341,10 +355,30 @@ static int test_is03_reset_abort_pattern_mp_erase(void)
         }
     }
 
+    /* Both target blocks must carry a dirty flag so an incremental
+     * checkpoint picks them up. Pre-programming at the top of the
+     * test already sets blk->dirty; the point here is that the
+     * abort-stamp path must not CLEAR or leave stale the block dirty
+     * bit, and must ensure it is set when the erase would otherwise
+     * clean the block. */
+    for (u32 plane = 0; plane < 2; plane++) {
+        struct nand_block *blk = nand_get_block(ctx.nand, 0, 0, 0, plane, target_block);
+        char msg[96];
+        snprintf(msg, sizeof(msg), "IS-03b: p%u target block dirty after abort-stamp", plane);
+        TEST_ASSERT(blk && blk->dirty == true, msg);
+    }
+
     /* Sanity: a page outside the erased block is NOT stamped. */
     struct nand_page *p_outside = nand_get_page(ctx.nand, 0, 0, 0, 0, target_block + 1, 0);
     TEST_ASSERT(p_outside != NULL, "IS-03b: adjacent block page pointer");
     TEST_ASSERT(!is_abort_pattern(p_outside->data, cfg.page_size), "IS-03b: adjacent block does not get DEAD");
+
+    /* Adjacent block was never touched by the aborted erase — it must
+     * remain clean so incremental checkpoint does not copy data for
+     * blocks the reset did not affect. */
+    struct nand_block *blk_adj = nand_get_block(ctx.nand, 0, 0, 0, 0, target_block + 1);
+    TEST_ASSERT(blk_adj != NULL, "IS-03b: adjacent block pointer");
+    TEST_ASSERT(blk_adj->dirty == false, "IS-03b: adjacent block stays clean after abort-stamp");
 
     /* Engine continues to accept commands after the abort. */
     int rc_erase2 = media_nand_erase(&ctx, 0, 0, 0, 0, target_block + 2);

@@ -687,19 +687,32 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
             u32 p;
             FOR_EACH_PLANE(p, aborted_tgt.plane_mask)
             {
+                struct nand_block *blk =
+                    nand_get_block(dev, target->ch, target->chip, target->die, p, aborted_tgt.block);
+                if (!blk) {
+                    continue;
+                }
                 if (stamp_block) {
-                    struct nand_block *blk =
-                        nand_get_block(dev, target->ch, target->chip, target->die, p, aborted_tgt.block);
-                    if (blk) {
-                        for (u32 pg = 0; pg < blk->page_count; pg++) {
-                            nand_stamp_abort_pattern(&blk->pages[pg], dev->page_size);
-                        }
+                    for (u32 pg = 0; pg < blk->page_count; pg++) {
+                        nand_stamp_abort_pattern(&blk->pages[pg], dev->page_size);
                     }
                 } else {
-                    struct nand_page *pg = nand_get_page(dev, target->ch, target->chip, target->die, p,
-                                                         aborted_tgt.block, aborted_tgt.page);
-                    nand_stamp_abort_pattern(pg, dev->page_size);
+                    if (aborted_tgt.page < blk->page_count) {
+                        nand_stamp_abort_pattern(&blk->pages[aborted_tgt.page], dev->page_size);
+                    }
                 }
+                /*
+                 * Propagate the dirty bit to the containing block.
+                 * media_save_incremental short-circuits on !blk->dirty
+                 * and never walks to the page-level dirty flags, so
+                 * marking the pages alone would let a reset-aborted
+                 * page fall out of the next incremental checkpoint and
+                 * come back as stale pre-abort data after reload. The
+                 * page-level dirty bit is still set by
+                 * nand_stamp_abort_pattern so the page's own metadata
+                 * is not skipped once the block reaches the walker.
+                 */
+                blk->dirty = true;
             }
         }
     }
