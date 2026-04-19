@@ -108,7 +108,27 @@ struct nand_device {
     const struct nand_profile *profile;
     struct nand_id nand_id;
     struct nand_parameter_page param_page;
+    /*
+     * Page/spare sizes cached at init so the command engine can stamp
+     * pages without reaching back up into media_ctx. Required by the
+     * reset-abort path which fills aborted target pages with the
+     * abort pattern below.
+     */
+    u32 page_size;
+    u32 spare_size;
 };
+
+/*
+ * Reset-abort pattern. When reset interrupts an in-flight PROG / CACHE_PROG
+ * / ERASE, the engine stamps the target page(s) with this two-byte
+ * pattern repeated over the page, and marks the page PAGE_INVALID. This
+ * replaces whatever partial state the aborted command left behind with a
+ * visually-distinct signature so debug tools can identify pages that
+ * witnessed an aborted operation (they are neither cleanly erased nor
+ * validly programmed).
+ */
+#define NAND_ABORT_PATTERN_BYTE_HI 0xDEu
+#define NAND_ABORT_PATTERN_BYTE_LO 0xADu
 
 /* Function Prototypes */
 int nand_device_init(struct nand_device *dev, u32 channel_count, u32 chips_per_channel, u32 dies_per_chip,
@@ -117,5 +137,14 @@ void nand_device_cleanup(struct nand_device *dev);
 struct nand_page *nand_get_page(struct nand_device *dev, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page);
 struct nand_block *nand_get_block(struct nand_device *dev, u32 ch, u32 chip, u32 die, u32 plane, u32 block);
 int nand_validate_address(struct nand_device *dev, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page);
+
+/*
+ * Stamp page data with the abort pattern (NAND_ABORT_PATTERN_BYTE_HI/LO
+ * alternating across page_size bytes) and mark state = PAGE_INVALID. Safe
+ * to call on a NULL page — the function is a no-op in that case so the
+ * engine reset path can invoke it over an iterator without extra NULL
+ * checks.
+ */
+void nand_stamp_abort_pattern(struct nand_page *page, u32 page_size);
 
 #endif /* __HFSSS_NAND_H */

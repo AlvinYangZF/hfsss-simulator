@@ -123,6 +123,11 @@ int nand_device_init(struct nand_device *dev, u32 channel_count, u32 chips_per_c
     dev->timing = NULL;
     dev->eat = NULL;
 
+    /* Cache geometry the engine needs without a media_ctx reference.
+     * Used by the reset-abort path to stamp aborted pages. */
+    dev->page_size = page_size;
+    dev->spare_size = spare_size;
+
     /* Initialize NAND hierarchy */
     return nand_init_hierarchy(dev, channel_count, chips_per_channel, dies_per_chip, planes_per_die, blocks_per_plane,
                                pages_per_block, page_size, spare_size);
@@ -254,4 +259,22 @@ int nand_validate_address(struct nand_device *dev, u32 ch, u32 chip, u32 die, u3
     }
 
     return HFSSS_OK;
+}
+
+void nand_stamp_abort_pattern(struct nand_page *page, u32 page_size)
+{
+    if (!page || !page->data || page_size == 0) {
+        return;
+    }
+    /*
+     * Two-byte signature repeated across the page. Starts with HI byte
+     * at offset 0 so a hex dump reads ... DE AD DE AD ... which is
+     * trivially recognizable during debug. Odd page_size (unusual but
+     * handled) gets one trailing HI byte.
+     */
+    for (u32 i = 0; i < page_size; i++) {
+        page->data[i] = (i & 1u) ? NAND_ABORT_PATTERN_BYTE_LO : NAND_ABORT_PATTERN_BYTE_HI;
+    }
+    page->state = PAGE_INVALID;
+    page->dirty = true;
 }

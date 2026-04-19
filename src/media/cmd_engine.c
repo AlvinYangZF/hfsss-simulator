@@ -627,6 +627,50 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
         }
     }
 
+    /*
+     * Stamp the abort pattern onto any pages whose PROG / CACHE_PROG /
+     * ERASE was interrupted by this reset. This includes both actively
+     * running commands (PROG_/ERASE_ARRAY_BUSY, setup states) and
+     * suspended commands (SUSPENDED_PROG/ERASE) — per design
+     * "Suspend/Resume Semantics" a suspended op aborted by reset is
+     * also not successfully committed.
+     *
+     * Snapshot the target before nand_cmd_state_init wipes it. The
+     * worker (if any) is still spinning on the array-busy path and has
+     * not yet observed the abort; doing the stamp under die_lock before
+     * releasing ensures the worker cannot overwrite the pattern via its
+     * on_array_commit callback (that callback is gated by the abort
+     * epoch check and is skipped when it reawakens).
+     */
+    {
+        enum nand_cmd_opcode aborted_op = die->cmd_state.opcode;
+        struct nand_cmd_target aborted_tgt = die->cmd_state.target;
+        enum nand_die_state prev_state = die->cmd_state.state;
+        bool stamp_page = (aborted_op == NAND_OP_PROG || aborted_op == NAND_OP_CACHE_PROG);
+        bool stamp_block = (aborted_op == NAND_OP_ERASE);
+        bool aborting = (prev_state != DIE_IDLE && prev_state != DIE_RESETTING);
+
+        if (aborting && (stamp_page || stamp_block) && aborted_tgt.plane_mask != 0) {
+            u32 p;
+            FOR_EACH_PLANE(p, aborted_tgt.plane_mask)
+            {
+                if (stamp_block) {
+                    struct nand_block *blk =
+                        nand_get_block(dev, target->ch, target->chip, target->die, p, aborted_tgt.block);
+                    if (blk) {
+                        for (u32 pg = 0; pg < blk->page_count; pg++) {
+                            nand_stamp_abort_pattern(&blk->pages[pg], dev->page_size);
+                        }
+                    }
+                } else {
+                    struct nand_page *pg = nand_get_page(dev, target->ch, target->chip, target->die, p,
+                                                         aborted_tgt.block, aborted_tgt.page);
+                    nand_stamp_abort_pattern(pg, dev->page_size);
+                }
+            }
+        }
+    }
+
     /* Increment the abort epoch so any running worker (past or present)
      * detects the reset via its saved epoch snapshot. Save the new epoch
      * before zeroing the rest of cmd_state so the memset in
