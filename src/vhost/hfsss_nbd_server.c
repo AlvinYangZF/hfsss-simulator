@@ -33,6 +33,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include "media/nand_profile.h"
 #include "pcie/nvme_uspace.h"
 #include "ftl/ftl_worker.h"
 #include "vhost/nbd_async.h"
@@ -619,6 +620,7 @@ static void print_usage(const char *prog)
             "  -v          Verbose I/O logging\n"
             "  -m          Multi-threaded FTL workers\n"
             "  -a          Async NBD pipeline (SPDK-style SQ/CQ, implies -m)\n"
+            "  -P <name>   NAND profile: onfi-tlc (default), onfi-qlc, toggle-tlc, toggle-qlc\n"
             "  -h          Show this help\n"
             "\n"
             "Connect QEMU with:\n"
@@ -640,9 +642,11 @@ int main(int argc, char *argv[])
     uint16_t port = 10809;
     uint64_t size_mb = 512;
     int verbose = 0;
+    enum nand_profile_id profile_id = NAND_PROFILE_GENERIC_ONFI_TLC;
+    bool profile_explicit = false;
     int opt;
 
-    while ((opt = getopt(argc, argv, "p:s:vmah")) != -1) {
+    while ((opt = getopt(argc, argv, "p:s:vmaP:h")) != -1) {
         switch (opt) {
         case 'p':
             port = (uint16_t)atoi(optarg);
@@ -665,6 +669,17 @@ int main(int argc, char *argv[])
             g_async = 1;
             g_multithread = 1; /* async implies multi-threaded */
             break;
+        case 'P': {
+            enum nand_profile_id id = nand_profile_id_from_name(optarg);
+            if (id == NAND_PROFILE_COUNT) {
+                fprintf(stderr, "ERROR: unknown profile '%s' (expected onfi-tlc|onfi-qlc|toggle-tlc|toggle-qlc)\n",
+                        optarg ? optarg : "");
+                return 1;
+            }
+            profile_id = id;
+            profile_explicit = true;
+            break;
+        }
         case 'h':
             print_usage(argv[0]);
             return 0;
@@ -741,6 +756,8 @@ int main(int argc, char *argv[])
     config.sssim_cfg.spare_size = spare_size;
     config.sssim_cfg.lba_size = lba_size;
     config.sssim_cfg.total_lbas = total_lbas;
+    config.sssim_cfg.profile_id = profile_id;
+    config.sssim_cfg.profile_explicit = profile_explicit;
 
     uint64_t raw_pages = (uint64_t)nch * nchip * ndie * nplane * nblk * npg;
     uint64_t raw_gb = (raw_pages * page_size) >> 30;
@@ -760,6 +777,17 @@ int main(int argc, char *argv[])
     if (nvme_uspace_dev_init(&dev, &config) != 0) {
         fprintf(stderr, "ERROR: nvme_uspace_dev_init failed\n");
         return 1;
+    }
+
+    /*
+     * Report the profile the initialized stack actually resolved, not the
+     * pre-init request. The CLI short name is round-trippable into -P.
+     */
+    {
+        const struct nand_profile *prof = dev.sssim.media.profile;
+        const char *alias = prof ? nand_profile_name(prof->id) : NULL;
+        fprintf(stderr, "Profile:  %s%s\n", alias ? alias : "<unknown>",
+                profile_explicit ? " (explicit)" : " (default)");
     }
 
     if (nvme_uspace_dev_start(&dev) != 0) {

@@ -2,6 +2,7 @@
 #define __HFSSS_EAT_H
 
 #include "common/common.h"
+#include "common/mutex.h"
 
 #define MAX_CHANNELS 64
 #define MAX_CHIPS_PER_CHANNEL 16
@@ -15,12 +16,23 @@ enum op_type {
     OP_ERASE = 2,
 };
 
-/* EAT Context */
+/* EAT Context
+ *
+ * The channel/chip/die/plane EAT arrays are updated via a
+ * compare-then-maybe-write (new_eat > cur ? cur = new_eat : keep) pattern
+ * that is NOT lost-update-safe across threads: two writers that both
+ * observe the same "cur" can race and the later (larger) value may be
+ * clobbered by the earlier one. The lock serializes every EAT access so
+ * the max invariant holds across the engine's worker and submit paths.
+ * PTHREAD_MUTEX_RECURSIVE is chosen so public helpers can call each
+ * other (eat_get_max delegates to eat_get_for_* for example).
+ */
 struct eat_ctx {
     u64 channel_eat[MAX_CHANNELS];
     u64 chip_eat[MAX_CHANNELS][MAX_CHIPS_PER_CHANNEL];
     u64 die_eat[MAX_CHANNELS][MAX_CHIPS_PER_CHANNEL][MAX_DIES_PER_CHIP];
     u64 plane_eat[MAX_CHANNELS][MAX_CHIPS_PER_CHANNEL][MAX_DIES_PER_CHIP][MAX_PLANES_PER_DIE];
+    struct mutex lock;
 };
 
 /* Function Prototypes */

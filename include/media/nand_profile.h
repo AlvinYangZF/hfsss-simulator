@@ -85,4 +85,19 @@ const struct nand_profile *nand_profile_get(enum nand_profile_id id);
 const struct nand_profile *nand_profile_get_default_for_type(enum nand_type type);
 bool nand_profile_supports_op(const struct nand_profile *profile, enum nand_cmd_opcode op);
 
+/*
+ * Map a stable short CLI name (onfi-tlc, onfi-qlc, toggle-tlc, toggle-qlc)
+ * to its enum id. Returns NAND_PROFILE_COUNT when the name is NULL, empty,
+ * or not a recognized alias. Callers treat the count sentinel as "invalid".
+ */
+enum nand_profile_id nand_profile_id_from_name(const char *name);
+
+/*
+ * Reverse of nand_profile_id_from_name: return the short CLI alias for a
+ * given id, or NULL for an out-of-range value. The output is the exact
+ * string the CLI accepts, so log lines emitted through this helper are
+ * round-trippable back into -P without translation.
+ */
+const char *nand_profile_name(enum nand_profile_id id);
+
 #endif /* __HFSSS_NAND_PROFILE_H */
