@@ -1,7 +1,7 @@
 # HFSSS Requirements Traceability Matrix
 
-**Document Version**: V1.0
-**Date**: 2026-03-23
+**Document Version**: V1.1
+**Date**: 2026-04-19
 
 ---
 
@@ -10,6 +10,9 @@
 | Version | Date | Author | Description |
 |---------|------|--------|-------------|
 | 1.0 | 2026-03-23 | HFSSS Team | Initial enterprise traceability matrix |
+| 1.1 | 2026-04-19 | HFSSS Team | Implementation Status column synced to current `REQUIREMENT_COVERAGE.md` (✅ 122, ⚠️ 31, ❌ 24, 🔧 1) |
+
+> **Source of truth**: `REQUIREMENT_COVERAGE.md` holds the row-level implementation notes (impl file + verifying test). This matrix only maps REQ → PRD section / HLD / LLD / test artifact and mirrors the coverage column.
 
 ---
 
@@ -25,259 +28,259 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-001 | PCI Type 0 config header | 5.1.2 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-002 | PCIe Capabilities linked list | 5.1.2 | HLD_01 | LLD_01 | TEST_LLD_01 | Partial |
-| REQ-003 | BAR register configuration | 5.1.2 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-004 | CAP register configuration | 5.1.3 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-005 | VS register (NVMe 2.0) | 5.1.3 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-006 | Controller initialization (CC.EN/CSTS.RDY) | 5.1.3 | HLD_01 | LLD_01 | TEST_LLD_01 | Not Implemented |
-| REQ-007 | Doorbell registers (64 SQ/CQ pairs) | 5.1.3 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-008 | Admin Queue (QID=0, depth 256) | 5.1.4 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-009 | I/O Queue dynamic creation | 5.1.4 | HLD_01 | LLD_01 | TEST_LLD_01 | Not Implemented |
-| REQ-010 | PRP/SGL support | 5.1.4 | HLD_01 | LLD_01 | TEST_LLD_01 | Partial |
-| REQ-011 | Completion processing (CQE, Phase Tag) | 5.1.4 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-012 | MSI-X Table (64 entries) | 5.1.5 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-013 | MSI-X interrupt delivery | 5.1.5 | HLD_01 | LLD_01 | TEST_LLD_01 | Not Implemented |
-| REQ-014 | Interrupt coalescing | 5.1.5 | HLD_01 | LLD_01 | TEST_LLD_01 | Not Implemented |
-| REQ-015 | NVMe Admin command set | 5.1.6 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-016 | NVMe I/O command set | 5.1.7 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-017 | Read/Write detailed parameters | 5.1.7 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-018 | Dataset Management (Trim) | 5.1.7 | HLD_01 | LLD_01 | TEST_LLD_01 | Not Implemented |
-| REQ-019 | PRP parsing engine | 5.1.8 | HLD_01 | LLD_01 | TEST_LLD_01 | Not Implemented |
-| REQ-020 | DMA data copy path | 5.1.8 | HLD_01 | LLD_01 | TEST_LLD_01 | Not Implemented |
-| REQ-021 | IOMMU support | 5.1.8 | HLD_01 | LLD_01 | TEST_LLD_01 | Not Implemented |
+| REQ-001 | PCI Type 0 config header | 5.1.2 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-002 | PCIe Capabilities linked list | 5.1.2 | HLD_01 | LLD_01 | TEST_LLD_01 || Partial |
+| REQ-003 | BAR register configuration | 5.1.2 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-004 | CAP register configuration | 5.1.3 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-005 | VS register (NVMe 2.0) | 5.1.3 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-006 | Controller initialization (CC.EN/CSTS.RDY) | 5.1.3 | HLD_01 | LLD_01 | TEST_LLD_01 || Not Implemented |
+| REQ-007 | Doorbell registers (64 SQ/CQ pairs) | 5.1.3 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-008 | Admin Queue (QID=0, depth 256) | 5.1.4 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-009 | I/O Queue dynamic creation | 5.1.4 | HLD_01 | LLD_01 | TEST_LLD_01 || Not Implemented |
+| REQ-010 | PRP/SGL support | 5.1.4 | HLD_01 | LLD_01 | TEST_LLD_01 || Partial |
+| REQ-011 | Completion processing (CQE, Phase Tag) | 5.1.4 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-012 | MSI-X Table (64 entries) | 5.1.5 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-013 | MSI-X interrupt delivery | 5.1.5 | HLD_01 | LLD_01 | TEST_LLD_01 || Not Implemented |
+| REQ-014 | Interrupt coalescing | 5.1.5 | HLD_01 | LLD_01 | TEST_LLD_01 || Not Implemented |
+| REQ-015 | NVMe Admin command set | 5.1.6 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-016 | NVMe I/O command set | 5.1.7 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-017 | Read/Write detailed parameters | 5.1.7 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-018 | Dataset Management (Trim) | 5.1.7 | HLD_01 | LLD_01 | TEST_LLD_01 || Implemented |
+| REQ-019 | PRP parsing engine | 5.1.8 | HLD_01 | LLD_01 | TEST_LLD_01 || Not Implemented |
+| REQ-020 | DMA data copy path | 5.1.8 | HLD_01 | LLD_01 | TEST_LLD_01 || Not Implemented |
+| REQ-021 | IOMMU support | 5.1.8 | HLD_01 | LLD_01 | TEST_LLD_01 || Not Implemented |
 
 ### 2. Controller Thread (REQ-022 through REQ-037)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-022 | Kernel-userspace communication (Ring Buffer) | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 | Not Implemented |
-| REQ-023 | Command arbitration (WRR) | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-024 | Command dispatch and state machine | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 | Partial |
-| REQ-025 | Command timeout management | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-026 | I/O scheduling algorithm | 5.2.3 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-027 | Write buffer management (4GB VWC) | 5.2.3 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-028 | Read cache (LRU, 256MB) | 5.2.3 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-029 | Channel load balancing | 5.2.3 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-030 | Free block management (watermarks) | 5.2.4 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-031 | Command slot management (CTT) | 5.2.4 | HLD_02 | LLD_02 | TEST_LLD_02 | Not Implemented |
-| REQ-032 | Token bucket rate limiter | 5.2.5 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-033 | Backpressure mechanism | 5.2.5 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-034 | QoS guarantee (latency histogram) | 5.2.5 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-035 | GC flow control (30% max bandwidth) | 5.2.5 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-036 | Controller main module | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
-| REQ-037 | Controller main interface | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 | Implemented |
+| REQ-022 | Kernel-userspace communication (Ring Buffer) | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 || Not Implemented |
+| REQ-023 | Command arbitration (WRR) | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 || Not Implemented |
+| REQ-024 | Command dispatch and state machine | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
+| REQ-025 | Command timeout management | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 || Partial |
+| REQ-026 | I/O scheduling algorithm | 5.2.3 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
+| REQ-027 | Write buffer management (4GB VWC) | 5.2.3 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
+| REQ-028 | Read cache (LRU, 256MB) | 5.2.3 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
+| REQ-029 | Channel load balancing | 5.2.3 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
+| REQ-030 | Free block management (watermarks) | 5.2.4 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
+| REQ-031 | Command slot management (CTT) | 5.2.4 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
+| REQ-032 | Token bucket rate limiter | 5.2.5 | HLD_02 | LLD_02 | TEST_LLD_02 || Not Implemented |
+| REQ-033 | Backpressure mechanism | 5.2.5 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
+| REQ-034 | QoS guarantee (latency histogram) | 5.2.5 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
+| REQ-035 | GC flow control (30% max bandwidth) | 5.2.5 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
+| REQ-036 | Controller main module | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
+| REQ-037 | Controller main interface | 5.2.2 | HLD_02 | LLD_02 | TEST_LLD_02 || Implemented |
 
 ### 3. Media Threads (REQ-038 through REQ-057)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-038 | NAND Flash hierarchy (Ch/Chip/Die/Plane/Block/Page) | 5.3.2 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
-| REQ-039 | Total capacity calculation (~4TB raw) | 5.3.2 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
-| REQ-040 | Base timing parameters (tR/tPROG/tERS) | 5.3.3 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
-| REQ-041 | EAT timing model | 5.3.3 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
-| REQ-042 | Multi-plane concurrency | 5.3.3 | HLD_03 | LLD_03 | TEST_LLD_03 | Partial |
-| REQ-043 | NAND command set (ONFI) | 5.3.4 | HLD_03 | LLD_03 | TEST_LLD_03 | Partial |
-| REQ-044 | Command queue (per-channel, 128 entries) | 5.3.4 | HLD_03 | LLD_03 | TEST_LLD_03 | Partial |
-| REQ-045 | Completion notification (lock-free) | 5.3.4 | HLD_03 | LLD_03 | TEST_LLD_03 | Not Implemented |
-| REQ-046 | P/E cycle degradation model | 5.3.5 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
-| REQ-047 | Read disturb model | 5.3.5 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
-| REQ-048 | Data retention model | 5.3.5 | HLD_03 | LLD_03 | TEST_LLD_03 | Partial |
-| REQ-049 | Bad block management (BBT) | 5.3.5 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
-| REQ-050 | DRAM storage layout | 5.3.6 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
-| REQ-051 | Incremental persistence | 5.3.6 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
-| REQ-052 | Recovery mechanism | 5.3.6 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
-| REQ-053 | NOR Flash specs (256MB) | 5.3.7 | HLD_03 | LLD_03, LLD_14 | TEST_LLD_03 | Stub |
-| REQ-054 | NOR Flash storage partitions | 5.3.7 | HLD_03 | LLD_03, LLD_14 | TEST_LLD_03 | Stub |
-| REQ-055 | NOR Flash operation commands | 5.3.7 | HLD_03 | LLD_03, LLD_14 | TEST_LLD_03 | Stub |
-| REQ-056 | NOR Flash data persistence | 5.3.7 | HLD_03 | LLD_03, LLD_14 | TEST_LLD_03 | Not Implemented |
-| REQ-057 | Media thread main interface | 5.3.2 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
+| REQ-038 | NAND Flash hierarchy (Ch/Chip/Die/Plane/Block/Page) | 5.3.2 | HLD_03 | LLD_03 | TEST_LLD_03 || Implemented |
+| REQ-039 | Total capacity calculation (~4TB raw) | 5.3.2 | HLD_03 | LLD_03 | TEST_LLD_03 || Implemented |
+| REQ-040 | Base timing parameters (tR/tPROG/tERS) | 5.3.3 | HLD_03 | LLD_03 | TEST_LLD_03 || Implemented |
+| REQ-041 | EAT timing model | 5.3.3 | HLD_03 | LLD_03 | TEST_LLD_03 || Implemented |
+| REQ-042 | Multi-plane concurrency | 5.3.3 | HLD_03 | LLD_03 | TEST_LLD_03 || Partial |
+| REQ-043 | NAND command set (ONFI) | 5.3.4 | HLD_03 | LLD_03 | TEST_LLD_03 || Partial |
+| REQ-044 | Command queue (per-channel, 128 entries) | 5.3.4 | HLD_03 | LLD_03 | TEST_LLD_03 || Partial |
+| REQ-045 | Completion notification (lock-free) | 5.3.4 | HLD_03 | LLD_03 | TEST_LLD_03 || Not Implemented |
+| REQ-046 | P/E cycle degradation model | 5.3.5 | HLD_03 | LLD_03 | TEST_LLD_03 || Implemented |
+| REQ-047 | Read disturb model | 5.3.5 | HLD_03 | LLD_03 | TEST_LLD_03 || Implemented |
+| REQ-048 | Data retention model | 5.3.5 | HLD_03 | LLD_03 | TEST_LLD_03 || Partial |
+| REQ-049 | Bad block management (BBT) | 5.3.5 | HLD_03 | LLD_03 | TEST_LLD_03 || Implemented |
+| REQ-050 | DRAM storage layout | 5.3.6 | HLD_03 | LLD_03 | TEST_LLD_03 || Implemented |
+| REQ-051 | Incremental persistence | 5.3.6 | HLD_03 | LLD_03 | TEST_LLD_03 || Implemented |
+| REQ-052 | Recovery mechanism | 5.3.6 | HLD_03 | LLD_03 | TEST_LLD_03 || Implemented |
+| REQ-053 | NOR Flash specs (256MB) | 5.3.7 | HLD_03 | LLD_03, LLD_14 | TEST_LLD_03 || Implemented |
+| REQ-054 | NOR Flash storage partitions | 5.3.7 | HLD_03 | LLD_03, LLD_14 | TEST_LLD_03 || Implemented |
+| REQ-055 | NOR Flash operation commands | 5.3.7 | HLD_03 | LLD_03, LLD_14 | TEST_LLD_03 || Implemented |
+| REQ-056 | NOR Flash data persistence | 5.3.7 | HLD_03 | LLD_03, LLD_14 | TEST_LLD_03 || Implemented |
+| REQ-057 | Media thread main interface | 5.3.2 | HLD_03 | LLD_03 | TEST_LLD_03 || Implemented |
 
 ### 4. Hardware Abstraction Layer (REQ-058 through REQ-069)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-058 | NAND driver API | 5.5.1 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
-| REQ-059 | NAND driver internal (Die state machine) | 5.5.1 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
-| REQ-060 | NOR driver API | 5.5.2 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
-| REQ-061 | NOR driver internal (delay injection) | 5.5.2 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
-| REQ-062 | Command completion submission (CQE build) | 5.5.3 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
-| REQ-063 | Async event management (AER) | 5.5.3 | HLD_04 | LLD_04, LLD_13 | TEST_LLD_04 | Not Implemented |
-| REQ-064 | PCIe link state management | 5.5.3 | HLD_04 | LLD_04, LLD_13 | TEST_LLD_04 | Not Implemented |
-| REQ-065 | Namespace management interface | 5.5.3 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
-| REQ-066 | NVMe power state emulation (PS0-PS4) | 5.5.4 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
-| REQ-067 | Power management features | 5.5.4 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
-| REQ-068 | HAL main interface | 5.5.1 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
-| REQ-069 | PCI management interface | 5.5.3 | HLD_04 | LLD_04, LLD_13 | TEST_LLD_04 | Stub |
+| REQ-058 | NAND driver API | 5.5.1 | HLD_04 | LLD_04 | TEST_LLD_04 || Implemented |
+| REQ-059 | NAND driver internal (Die state machine) | 5.5.1 | HLD_04 | LLD_04 | TEST_LLD_04 || Implemented |
+| REQ-060 | NOR driver API | 5.5.2 | HLD_04 | LLD_04 | TEST_LLD_04 || Implemented |
+| REQ-061 | NOR driver internal (delay injection) | 5.5.2 | HLD_04 | LLD_04 | TEST_LLD_04 || Implemented |
+| REQ-062 | Command completion submission (CQE build) | 5.5.3 | HLD_04 | LLD_04 | TEST_LLD_04 || Implemented |
+| REQ-063 | Async event management (AER) | 5.5.3 | HLD_04 | LLD_04, LLD_13 | TEST_LLD_04 || Partial |
+| REQ-064 | PCIe link state management | 5.5.3 | HLD_04 | LLD_04, LLD_13 | TEST_LLD_04 || Not Implemented |
+| REQ-065 | Namespace management interface | 5.5.3 | HLD_04 | LLD_04 | TEST_LLD_04 || Implemented |
+| REQ-066 | NVMe power state emulation (PS0-PS4) | 5.5.4 | HLD_04 | LLD_04 | TEST_LLD_04 || Implemented |
+| REQ-067 | Power management features | 5.5.4 | HLD_04 | LLD_04 | TEST_LLD_04 || Implemented |
+| REQ-068 | HAL main interface | 5.5.1 | HLD_04 | LLD_04 | TEST_LLD_04 || Implemented |
+| REQ-069 | PCI management interface | 5.5.3 | HLD_04 | LLD_04, LLD_13 | TEST_LLD_04 || Stub |
 
 ### 5. Common Services (REQ-070 through REQ-093)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-070 | RTOS primitives (Task/Queue/Sem/Mutex) | 5.6.1 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-071 | Message queue | 5.6.1 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-072 | Semaphore/Mutex/Event group | 5.6.1 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-073 | Software timer/Memory pool | 5.6.1 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-074 | Static task binding (CPU affinity) | 5.6.2 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Not Implemented |
-| REQ-075 | Priority scheduling/Load balancing | 5.6.2 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Not Implemented |
-| REQ-076 | Memory partition planning (4GB) | 5.6.3 | HLD_05 | LLD_05 | TEST_LLD_05 | Not Implemented |
-| REQ-077 | Memory management (mmap/hugetlb) | 5.6.3 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-078 | Bootloader boot sequence | 5.6.4 | HLD_05 | LLD_05, LLD_09 | TEST_LLD_05 | Not Implemented |
-| REQ-079 | Bootloader features (dual-image, secure boot) | 5.6.4 | HLD_05 | LLD_05, LLD_09 | TEST_LLD_05 | Not Implemented |
-| REQ-080 | Power-on service (recovery, POST) | 5.6.5 | HLD_05 | LLD_05 | TEST_LLD_05 | Not Implemented |
-| REQ-081 | Power-off service (shutdown, WAL) | 5.6.5 | HLD_05 | LLD_05 | TEST_LLD_05 | Not Implemented |
-| REQ-082 | OOB interface (Unix Socket, /proc) | 5.6.6 | HLD_05 | LLD_05, LLD_07 | TEST_LLD_05 | Not Implemented |
-| REQ-083 | OOB management functions | 5.6.6 | HLD_05 | LLD_05, LLD_07 | TEST_LLD_05 | Not Implemented |
-| REQ-084 | SMART information (Log Page 02h) | 5.6.6 | HLD_05 | LLD_05 | TEST_LLD_05 | Not Implemented |
-| REQ-085 | Inter-core communication (SPSC Ring Buffer) | 5.6.7 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Not Implemented |
-| REQ-086 | Watchdog (per-task feed) | 5.6.8 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-087 | System resource monitoring | 5.6.8 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Not Implemented |
-| REQ-088 | Performance anomaly detection/Temp emulation | 5.6.8 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Not Implemented |
-| REQ-089 | Assert mechanism | 5.6.9 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-090 | Panic procedure | 5.6.9 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-091 | Debug mechanism (Trace, GDB) | 5.6.10 | HLD_05 | LLD_05 | TEST_LLD_05 | Not Implemented |
-| REQ-092 | Event log levels (FATAL-TRACE) | 5.6.11 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-093 | Log storage (Ring Buffer, NOR, file) | 5.6.11 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
+| REQ-070 | RTOS primitives (Task/Queue/Sem/Mutex) | 5.6.1 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-071 | Message queue | 5.6.1 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-072 | Semaphore/Mutex/Event group | 5.6.1 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-073 | Software timer/Memory pool | 5.6.1 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-074 | Static task binding (CPU affinity) | 5.6.2 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 || Partial |
+| REQ-075 | Priority scheduling/Load balancing | 5.6.2 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 || Not Implemented |
+| REQ-076 | Memory partition planning (4GB) | 5.6.3 | HLD_05 | LLD_05 | TEST_LLD_05 || Not Implemented |
+| REQ-077 | Memory management (mmap/hugetlb) | 5.6.3 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-078 | Bootloader boot sequence | 5.6.4 | HLD_05 | LLD_05, LLD_09 | TEST_LLD_05 || Implemented |
+| REQ-079 | Bootloader features (dual-image, secure boot) | 5.6.4 | HLD_05 | LLD_05, LLD_09 | TEST_LLD_05 || Implemented |
+| REQ-080 | Power-on service (recovery, POST) | 5.6.5 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-081 | Power-off service (shutdown, WAL) | 5.6.5 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-082 | OOB interface (Unix Socket, /proc) | 5.6.6 | HLD_05 | LLD_05, LLD_07 | TEST_LLD_05 || Implemented |
+| REQ-083 | OOB management functions | 5.6.6 | HLD_05 | LLD_05, LLD_07 | TEST_LLD_05 || Implemented |
+| REQ-084 | SMART information (Log Page 02h) | 5.6.6 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-085 | Inter-core communication (SPSC Ring Buffer) | 5.6.7 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 || Not Implemented |
+| REQ-086 | Watchdog (per-task feed) | 5.6.8 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-087 | System resource monitoring | 5.6.8 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 || Not Implemented |
+| REQ-088 | Performance anomaly detection/Temp emulation | 5.6.8 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 || Partial |
+| REQ-089 | Assert mechanism | 5.6.9 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-090 | Panic procedure | 5.6.9 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-091 | Debug mechanism (Trace, GDB) | 5.6.10 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-092 | Event log levels (FATAL-TRACE) | 5.6.11 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
+| REQ-093 | Log storage (Ring Buffer, NOR, file) | 5.6.11 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
 
 ### 6. Algorithm Task Layer / FTL (REQ-094 through REQ-115)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-094 | Page-level mapping architecture | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-095 | L2P/P2L mapping table design | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-096 | Over-provisioning (20% default) | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 | Partial |
-| REQ-097 | Write operation flow | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-098 | Read operation flow | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-099 | Striping strategy (Round-Robin) | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 | Not Implemented |
-| REQ-100 | Block state machine (FREE->OPEN->FULL->...) | 5.7.2 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-101 | Current Write Block management | 5.7.2 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-102 | Free block pool management | 5.7.2 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-103 | GC trigger strategy (watermarks) | 5.7.3 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-104 | Victim Block selection (Greedy/Cost-Benefit) | 5.7.3 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-105 | GC execution flow | 5.7.3 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-106 | GC concurrency/WAF analysis | 5.7.3 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-107 | Dynamic wear leveling | 5.7.4 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-108 | Static wear leveling | 5.7.4 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-109 | Wear monitoring and alerting | 5.7.4 | HLD_06 | LLD_06 | TEST_LLD_06 | Not Implemented |
-| REQ-110 | Command state machine (8-state) | 5.7.5 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 | Not Implemented |
-| REQ-111 | Read Retry mechanism | 5.7.5 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 | Not Implemented |
-| REQ-112 | Write Retry/Write Verify | 5.7.5 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 | Not Implemented |
-| REQ-113 | Multi-level IO flow control | 5.7.6 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 | Not Implemented |
-| REQ-114 | RAID-Like data protection | 5.7.7 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 | Not Implemented |
-| REQ-115 | NVMe error status codes/Error handling | 5.7.8 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 | Partial |
+| REQ-094 | Page-level mapping architecture | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-095 | L2P/P2L mapping table design | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-096 | Over-provisioning (20% default) | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 || Partial |
+| REQ-097 | Write operation flow | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-098 | Read operation flow | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-099 | Striping strategy (Round-Robin) | 5.7.1 | HLD_06 | LLD_06 | TEST_LLD_06 || Not Implemented |
+| REQ-100 | Block state machine (FREE->OPEN->FULL->...) | 5.7.2 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-101 | Current Write Block management | 5.7.2 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-102 | Free block pool management | 5.7.2 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-103 | GC trigger strategy (watermarks) | 5.7.3 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-104 | Victim Block selection (Greedy/Cost-Benefit) | 5.7.3 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-105 | GC execution flow | 5.7.3 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-106 | GC concurrency/WAF analysis | 5.7.3 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-107 | Dynamic wear leveling | 5.7.4 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-108 | Static wear leveling | 5.7.4 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-109 | Wear monitoring and alerting | 5.7.4 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-110 | Command state machine (8-state) | 5.7.5 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 || Implemented |
+| REQ-111 | Read Retry mechanism | 5.7.5 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 || Implemented |
+| REQ-112 | Write Retry/Write Verify | 5.7.5 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 || Implemented |
+| REQ-113 | Multi-level IO flow control | 5.7.6 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 || Implemented |
+| REQ-114 | RAID-Like data protection | 5.7.7 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 || Not Implemented |
+| REQ-115 | NVMe error status codes/Error handling | 5.7.8 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 || Partial |
 
 ### 7. Performance Requirements (REQ-116 through REQ-123)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-116 | Random read IOPS target (1M IOPS) | 6.1.1 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Not Implemented |
-| REQ-117 | Random write IOPS target (300K IOPS) | 6.1.2 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Not Implemented |
-| REQ-118 | Mixed read/write IOPS (250K IOPS) | 6.1.3 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Not Implemented |
-| REQ-119 | Sequential bandwidth (6.5/3.5 GB/s) | 6.2 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Not Implemented |
-| REQ-120 | Latency targets (P50/P99/P99.9) | 6.3 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Not Implemented |
-| REQ-121 | Simulation accuracy (<5% error) | 6.4 | HLD_03 | LLD_10 | TEST_LLD_03 | Not Implemented |
-| REQ-122 | Scalability (32 ch, 4096 NS) | 6.5 | HLD_01, HLD_06 | LLD_10 | TEST_LLD_01, TEST_LLD_06 | Not Implemented |
-| REQ-123 | Resource utilization targets | 6.6 | HLD_05 | LLD_10 | TEST_LLD_05 | Not Implemented |
+| REQ-116 | Random read IOPS target (1M IOPS) | 6.1.1 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 || Partial |
+| REQ-117 | Random write IOPS target (300K IOPS) | 6.1.2 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 || Partial |
+| REQ-118 | Mixed read/write IOPS (250K IOPS) | 6.1.3 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 || Partial |
+| REQ-119 | Sequential bandwidth (6.5/3.5 GB/s) | 6.2 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 || Partial |
+| REQ-120 | Latency targets (P50/P99/P99.9) | 6.3 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 || Partial |
+| REQ-121 | Simulation accuracy (<5% error) | 6.4 | HLD_03 | LLD_10 | TEST_LLD_03 || Not Implemented |
+| REQ-122 | Scalability (32 ch, 4096 NS) | 6.5 | HLD_01, HLD_06 | LLD_10 | TEST_LLD_01, TEST_LLD_06 || Not Implemented |
+| REQ-123 | Resource utilization targets | 6.6 | HLD_05 | LLD_10 | TEST_LLD_05 || Not Implemented |
 
 ### 8. Product Interfaces (REQ-124 through REQ-131)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-124 | Block device node (/dev/nvmeXnY) | 7.1.1 | HLD_01 | LLD_01, LLD_16 | TEST_LLD_01 | Not Implemented |
-| REQ-125 | nvme-cli compatibility | 7.1.2 | HLD_01 | LLD_01, LLD_16 | TEST_LLD_01 | Not Implemented |
-| REQ-126 | fio test tool compatibility | 7.1.3 | HLD_01 | LLD_01, LLD_16 | TEST_LLD_01 | Not Implemented |
-| REQ-127 | OOB Socket interface (JSON-RPC) | 7.2.1 | HLD_05 | LLD_07 | TEST_LLD_05 | Not Implemented |
-| REQ-128 | /proc filesystem interface | 7.2.2 | HLD_05 | LLD_07 | TEST_LLD_05 | Not Implemented |
-| REQ-129 | CLI tool (hfsss-ctrl) | 7.2.3 | HLD_05 | LLD_07 | TEST_LLD_05 | Not Implemented |
-| REQ-130 | Configuration file (YAML) | 7.3 | HLD_05 | LLD_07 | TEST_LLD_05 | Not Implemented |
-| REQ-131 | Persistence data format | 7.4 | HLD_03, HLD_06 | LLD_07, LLD_15 | TEST_LLD_03, TEST_LLD_06 | Not Implemented |
+| REQ-124 | Block device node (/dev/nvmeXnY) | 7.1.1 | HLD_01 | LLD_01, LLD_16 | TEST_LLD_01 || Not Implemented |
+| REQ-125 | nvme-cli compatibility | 7.1.2 | HLD_01 | LLD_01, LLD_16 | TEST_LLD_01 || Partial |
+| REQ-126 | fio test tool compatibility | 7.1.3 | HLD_01 | LLD_01, LLD_16 | TEST_LLD_01 || Partial |
+| REQ-127 | OOB Socket interface (JSON-RPC) | 7.2.1 | HLD_05 | LLD_07 | TEST_LLD_05 || Implemented |
+| REQ-128 | /proc filesystem interface | 7.2.2 | HLD_05 | LLD_07 | TEST_LLD_05 || Implemented |
+| REQ-129 | CLI tool (hfsss-ctrl) | 7.2.3 | HLD_05 | LLD_07 | TEST_LLD_05 || Implemented |
+| REQ-130 | Configuration file (YAML) | 7.3 | HLD_05 | LLD_07 | TEST_LLD_05 || Implemented |
+| REQ-131 | Persistence data format | 7.4 | HLD_03, HLD_06 | LLD_07, LLD_15 | TEST_LLD_03, TEST_LLD_06 || Partial |
 
 ### 9. Fault Injection Framework (REQ-132 through REQ-134)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-132 | NAND media fault injection | 8.1.1 | HLD_03 | LLD_08 | TEST_LLD_03 | Not Implemented |
-| REQ-133 | Power fault injection (Sudden Power Off) | 8.1.2 | HLD_05 | LLD_08 | TEST_LLD_05 | Not Implemented |
-| REQ-134 | Controller fault injection | 8.1.3 | HLD_02 | LLD_08 | TEST_LLD_02 | Not Implemented |
+| REQ-132 | NAND media fault injection | 8.1.1 | HLD_03 | LLD_08 | TEST_LLD_03 || Implemented |
+| REQ-133 | Power fault injection (Sudden Power Off) | 8.1.2 | HLD_05 | LLD_08 | TEST_LLD_05 || Implemented |
+| REQ-134 | Controller fault injection | 8.1.3 | HLD_02 | LLD_08 | TEST_LLD_02 || Partial |
 
 ### 10. System Reliability and Stability (REQ-135 through REQ-138)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-135 | MTBF target (720 hours) | 9.1 | HLD_05 | LLD_10 | TEST_LLD_05 | Not Implemented |
-| REQ-136 | Data integrity (md5sum) | 9.2 | HLD_06 | LLD_06 | TEST_LLD_06 | Implemented |
-| REQ-137 | Long-running stability (72h stress) | 9.3 | HLD_05 | LLD_10 | TEST_LLD_05 | Not Implemented |
-| REQ-138 | Memory leak/Concurrency safety | 9.3 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
+| REQ-135 | MTBF target (720 hours) | 9.1 | HLD_05 | LLD_10 | TEST_LLD_05 || Not Implemented |
+| REQ-136 | Data integrity (md5sum) | 9.2 | HLD_06 | LLD_06 | TEST_LLD_06 || Implemented |
+| REQ-137 | Long-running stability (72h stress) | 9.3 | HLD_05 | LLD_10 | TEST_LLD_05 || Partial |
+| REQ-138 | Memory leak/Concurrency safety | 9.3 | HLD_05 | LLD_05 | TEST_LLD_05 || Implemented |
 
 ### 11. Enterprise Requirements: UPLP (REQ-139 through REQ-146)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-139 | Supercapacitor energy model | 12.1.2 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-140 | UPLP state machine (Normal->PowerFail->...) | 12.1.3 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-141 | Atomic write unit (4KB power-safe) | 12.1.4 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-142 | Power-fail-safe metadata journal | 12.1.5 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-143 | Write buffer emergency flush (priority order) | 12.1.6 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-144 | UPLP recovery sequence (<5s for 1TB) | 12.1.7 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-145 | UPLP test mode (injectable power-fail) | 12.1.7 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-146 | Unsafe shutdown counter (SMART) | 12.1.7 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
+| REQ-139 | Supercapacitor energy model | 12.1.2 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-140 | UPLP state machine (Normal->PowerFail->...) | 12.1.3 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-141 | Atomic write unit (4KB power-safe) | 12.1.4 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-142 | Power-fail-safe metadata journal | 12.1.5 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-143 | Write buffer emergency flush (priority order) | 12.1.6 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-144 | UPLP recovery sequence (<5s for 1TB) | 12.1.7 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-145 | UPLP test mode (injectable power-fail) | 12.1.7 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-146 | Unsafe shutdown counter (SMART) | 12.1.7 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 || Implemented |
 
 ### 12. Enterprise Requirements: QoS Determinism (REQ-147 through REQ-153)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-147 | DWRR multi-queue scheduler | 12.2.2 | HLD_02 | LLD_18 | TEST_LLD_02 | Not Implemented (V3.0 Planned) |
-| REQ-148 | Per-namespace IOPS limits | 12.2.3 | HLD_02 | LLD_18 | TEST_LLD_02 | Not Implemented (V3.0 Planned) |
-| REQ-149 | Per-namespace bandwidth limits | 12.2.3 | HLD_02 | LLD_18 | TEST_LLD_02 | Not Implemented (V3.0 Planned) |
-| REQ-150 | Latency SLA enforcement (P99) | 12.2.4 | HLD_02 | LLD_18 | TEST_LLD_02 | Not Implemented (V3.0 Planned) |
-| REQ-151 | QoS policy hot-reconfiguration | 12.2.6 | HLD_02 | LLD_18 | TEST_LLD_02 | Not Implemented (V3.0 Planned) |
-| REQ-152 | GC/WL background priority yield | 12.2.5 | HLD_02 | LLD_18 | TEST_LLD_02 | Not Implemented (V3.0 Planned) |
-| REQ-153 | Deterministic latency window | 12.2.5 | HLD_02 | LLD_18 | TEST_LLD_02 | Not Implemented (V3.0 Planned) |
+| REQ-147 | DWRR multi-queue scheduler | 12.2.2 | HLD_02 | LLD_18 | TEST_LLD_02 || Implemented |
+| REQ-148 | Per-namespace IOPS limits | 12.2.3 | HLD_02 | LLD_18 | TEST_LLD_02 || Partial |
+| REQ-149 | Per-namespace bandwidth limits | 12.2.3 | HLD_02 | LLD_18 | TEST_LLD_02 || Partial |
+| REQ-150 | Latency SLA enforcement (P99) | 12.2.4 | HLD_02 | LLD_18 | TEST_LLD_02 || Partial |
+| REQ-151 | QoS policy hot-reconfiguration | 12.2.6 | HLD_02 | LLD_18 | TEST_LLD_02 || Partial |
+| REQ-152 | GC/WL background priority yield | 12.2.5 | HLD_02 | LLD_18 | TEST_LLD_02 || Implemented |
+| REQ-153 | Deterministic latency window | 12.2.5 | HLD_02 | LLD_18 | TEST_LLD_02 || Partial |
 
 ### 13. Enterprise Requirements: T10 DIF/PI (REQ-154 through REQ-158)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-154 | T10 PI Type 1/2/3 support | 12.3.2 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Not Implemented (V3.0 Planned) |
-| REQ-155 | CRC-16 guard tag (write/read path) | 12.3.3 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Not Implemented (V3.0 Planned) |
-| REQ-156 | Reference and application tag | 12.3.4 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Not Implemented (V3.0 Planned) |
-| REQ-157 | PI metadata propagation through FTL/GC | 12.3.7 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Not Implemented (V3.0 Planned) |
-| REQ-158 | E2E data integrity error reporting | 12.3.7 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Not Implemented (V3.0 Planned) |
+| REQ-154 | T10 PI Type 1/2/3 support | 12.3.2 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 || Implemented |
+| REQ-155 | CRC-16 guard tag (write/read path) | 12.3.3 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 || Implemented |
+| REQ-156 | Reference and application tag | 12.3.4 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 || Implemented |
+| REQ-157 | PI metadata propagation through FTL/GC | 12.3.7 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 || Partial |
+| REQ-158 | E2E data integrity error reporting | 12.3.7 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 || Partial |
 
 ### 14. Enterprise Requirements: Security (REQ-159 through REQ-165)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-159 | AES-XTS 256-bit simulation | 12.4.2 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-160 | Key hierarchy (MK->KEK->DEK) | 12.4.3 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-161 | TCG Opal SSC basic commands | 12.4.4 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-162 | Crypto erase (destroy DEK) | 12.4.5 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-163 | Secure erase (block erase all) | 12.4.6 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-164 | Secure boot chain verification | 12.4.7 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-165 | Key storage in NOR (dual-copy, UPLP-safe) | 12.4.7 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
+| REQ-159 | AES-XTS 256-bit simulation | 12.4.2 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-160 | Key hierarchy (MK->KEK->DEK) | 12.4.3 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-161 | TCG Opal SSC basic commands | 12.4.4 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-162 | Crypto erase (destroy DEK) | 12.4.5 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-163 | Secure erase (block erase all) | 12.4.6 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 || Not Implemented |
+| REQ-164 | Secure boot chain verification | 12.4.7 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 || Implemented |
+| REQ-165 | Key storage in NOR (dual-copy, UPLP-safe) | 12.4.7 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 || Implemented |
 
 ### 15. Enterprise Requirements: Multi-Namespace Management (REQ-166 through REQ-170)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-166 | Namespace create (allocate from global pool) | 12.5.2 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 | Not Implemented (V3.0 Planned) |
-| REQ-167 | Namespace delete (reclaim blocks) | 12.5.2 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 | Not Implemented (V3.0 Planned) |
-| REQ-168 | Namespace attach/detach | 12.5.3 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 | Not Implemented (V3.0 Planned) |
-| REQ-169 | Per-namespace FTL tables (L2P isolation) | 12.5.4 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 | Not Implemented (V3.0 Planned) |
-| REQ-170 | Namespace format (per-NS LBA size) | 12.5.5 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 | Not Implemented (V3.0 Planned) |
+| REQ-166 | Namespace create (allocate from global pool) | 12.5.2 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 || Implemented |
+| REQ-167 | Namespace delete (reclaim blocks) | 12.5.2 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 || Implemented |
+| REQ-168 | Namespace attach/detach | 12.5.3 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 || Implemented |
+| REQ-169 | Per-namespace FTL tables (L2P isolation) | 12.5.4 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 || Implemented |
+| REQ-170 | Namespace format (per-NS LBA size) | 12.5.5 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 || Implemented |
 
 ### 16. Enterprise Requirements: Thermal Management and Telemetry (REQ-171 through REQ-178)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-171 | Composite temperature calculation | 12.6.2 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-172 | Progressive thermal throttle (3-level) | 12.6.3 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-173 | Thermal shutdown (90C threshold) | 12.6.4 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-174 | Host-initiated telemetry (Log Page 07h) | 12.7.2 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-175 | Controller-initiated telemetry (Log Page 08h) | 12.7.3 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-176 | Vendor-specific log page | 12.7.4 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-177 | SMART remaining life prediction | 12.7.5 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
-| REQ-178 | Async event notification (AER for temp/spare) | 12.7.6 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Not Implemented (V3.0 Planned) |
+| REQ-171 | Composite temperature calculation | 12.6.2 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 || Implemented |
+| REQ-172 | Progressive thermal throttle (3-level) | 12.6.3 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 || Implemented |
+| REQ-173 | Thermal shutdown (90C threshold) | 12.6.4 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 || Implemented |
+| REQ-174 | Host-initiated telemetry (Log Page 07h) | 12.7.2 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 || Partial |
+| REQ-175 | Controller-initiated telemetry (Log Page 08h) | 12.7.3 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 || Implemented |
+| REQ-176 | Vendor-specific log page | 12.7.4 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 || Implemented |
+| REQ-177 | SMART remaining life prediction | 12.7.5 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 || Implemented |
+| REQ-178 | Async event notification (AER for temp/spare) | 12.7.6 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 || Partial |
 
 ---
 
@@ -285,23 +288,23 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 
 | Module | Total Reqs | Implemented | Partial | Stub | Not Implemented | Coverage % |
 |--------|-----------|-------------|---------|------|-----------------|------------|
-| PCIe/NVMe Device Emulation | 21 | 10 | 2 | 0 | 9 | 47.6% |
-| Controller Thread | 16 | 12 | 1 | 0 | 3 | 75.0% |
-| Media Threads | 20 | 12 | 3 | 3 | 2 | 60.0% |
-| Hardware Abstraction Layer | 12 | 9 | 0 | 1 | 2 | 75.0% |
-| Common Services | 24 | 9 | 0 | 0 | 15 | 37.5% |
-| Algorithm Task Layer (FTL) | 22 | 13 | 2 | 0 | 7 | 59.1% |
-| Performance Requirements | 8 | 0 | 0 | 0 | 8 | 0.0% |
-| Product Interfaces | 8 | 0 | 0 | 0 | 8 | 0.0% |
-| Fault Injection Framework | 3 | 0 | 0 | 0 | 3 | 0.0% |
-| System Reliability/Stability | 4 | 2 | 0 | 0 | 2 | 50.0% |
-| Enterprise: UPLP | 8 | 0 | 0 | 0 | 8 | 0.0% |
-| Enterprise: QoS Determinism | 7 | 0 | 0 | 0 | 7 | 0.0% |
-| Enterprise: T10 DIF/PI | 5 | 0 | 0 | 0 | 5 | 0.0% |
-| Enterprise: Security | 7 | 0 | 0 | 0 | 7 | 0.0% |
-| Enterprise: Multi-Namespace | 5 | 0 | 0 | 0 | 5 | 0.0% |
-| Enterprise: Thermal/Telemetry | 8 | 0 | 0 | 0 | 8 | 0.0% |
-| **Total** | **178** | **67** | **8** | **4** | **99** | **37.6%** |
+| PCIe/NVMe Device Emulation | 22 | 12 | 2 | 0 | 8 | 54.5% |
+| Controller Thread | 15 | 12 | 1 | 0 | 2 | 80.0% |
+| Media Threads | 20 | 15 | 4 | 0 | 1 | 75.0% |
+| Hardware Abstraction Layer | 12 | 9 | 1 | 1 | 1 | 75.0% |
+| Common Services | 24 | 18 | 2 | 0 | 4 | 75.0% |
+| Algorithm Task Layer (FTL) | 22 | 18 | 2 | 0 | 2 | 81.8% |
+| Performance Requirements | 8 | 0 | 5 | 0 | 3 | 0.0% |
+| Product Interfaces | 8 | 4 | 3 | 0 | 1 | 50.0% |
+| Fault Injection Framework | 3 | 2 | 1 | 0 | 0 | 66.7% |
+| System Reliability/Stability | 4 | 2 | 1 | 0 | 1 | 50.0% |
+| Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100.0% |
+| Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% |
+| Enterprise: T10 DIF/PI | 5 | 3 | 2 | 0 | 0 | 60.0% |
+| Enterprise: Security | 7 | 6 | 0 | 0 | 1 | 85.7% |
+| Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
+| Enterprise: Thermal/Telemetry | 8 | 6 | 2 | 0 | 0 | 75.0% |
+| **Total** | **178** | **122** | **31** | **1** | **24** | **68.5%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 
@@ -311,12 +314,12 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 
 | Feature Area | PRD Chapter | Req Count | REQ-ID Range | HLD Sections | LLD Sections | Test Docs | Status |
 |--------------|-------------|-----------|--------------|--------------|--------------|-----------|--------|
-| UPLP (Unexpected Power Loss Protection) | 12.1 | 8 | REQ-139..146 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | V3.0 Planned |
-| QoS Determinism | 12.2 | 7 | REQ-147..153 | HLD_02 | LLD_18 | TEST_LLD_02 | V3.0 Planned |
-| T10 DIF/PI (Data Integrity) | 12.3 | 5 | REQ-154..158 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | V3.0 Planned |
-| Data-at-Rest Encryption / Security | 12.4 | 7 | REQ-159..165 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | V3.0 Planned |
-| Multi-Namespace Management | 12.5 | 5 | REQ-166..170 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 | V3.0 Planned |
-| Thermal Management & Telemetry | 12.6, 12.7 | 8 | REQ-171..178 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | V3.0 Planned |
+| UPLP (Unexpected Power Loss Protection) | 12.1 | 8 | REQ-139..146 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | ✅ Implemented (8/8) |
+| QoS Determinism | 12.2 | 7 | REQ-147..153 | HLD_02 | LLD_18 | TEST_LLD_02 | ⚠️ Partial (2 ✅ / 5 ⚠️) — DWRR + latency monitor landed; per-NS caps pending |
+| T10 DIF/PI (Data Integrity) | 12.3 | 5 | REQ-154..158 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | ⚠️ Partial (3 ✅ / 2 ⚠️) — CRC-16 types 1/2/3 done; GC propagation + error log page pending |
+| Data-at-Rest Encryption / Security | 12.4 | 7 | REQ-159..165 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | ✅ Implemented (6/7) — physical secure erase (REQ-163) remains ❌ |
+| Multi-Namespace Management | 12.5 | 5 | REQ-166..170 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 | ✅ Implemented (5/5) |
+| Thermal Management & Telemetry | 12.6, 12.7 | 8 | REQ-171..178 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | ✅ Implemented (6 ✅ / 2 ⚠️) — Log Page 07h + AER delivery pending |
 
 ---
 
