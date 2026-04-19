@@ -153,6 +153,41 @@
 #define NVME_LID_FW_SLOT           0x03
 #define NVME_LID_TELEMETRY_HOST    0x07  /* host-initiated (REQ-174) */
 #define NVME_LID_TELEMETRY_CTRL    0x08  /* controller-initiated (REQ-175) */
+#define NVME_LID_VENDOR_COUNTERS   0xC0  /* vendor-specific counters (REQ-176) */
+
+/* NVMe Telemetry Log Page header — 512 bytes. Maps the fields this
+ * simulator populates out of the spec §5.14.1.7 / §5.14.1.8 layout.
+ * Data Area 1 immediately follows and carries serialized tel_event
+ * records (most recent first). */
+struct nvme_telemetry_log_header {
+    uint8_t  log_identifier;                 /* byte 0: 0x07 or 0x08 */
+    uint8_t  reserved0[4];                   /* bytes 1-4 */
+    uint8_t  ieee_oui[3];                    /* bytes 5-7 */
+    uint16_t data_area_1_last_block;         /* bytes 8-9 (512-byte units) */
+    uint16_t data_area_2_last_block;         /* bytes 10-11 */
+    uint16_t data_area_3_last_block;         /* bytes 12-13 */
+    uint8_t  reserved1[368];                 /* bytes 14-381 */
+    uint8_t  host_gen_number;                /* byte 382: host-initiated gen */
+    uint8_t  ctrl_data_available;            /* byte 383: 1=data present */
+    uint8_t  ctrl_gen_number;                /* byte 384: ctrl-initiated gen */
+    uint8_t  reserved2[127];                 /* bytes 385-511 */
+} __attribute__((packed));
+
+/* NVMe Vendor-Specific Log Page: internal counters snapshot (LID 0xC0).
+ * Gives hfsss-ctrl and test harnesses a stable view of telemetry ring
+ * state without having to parse the per-event Data Area. */
+#define NVME_VENDOR_LOG_MAGIC  0x484C4754U  /* "HLGT" */
+#define NVME_VENDOR_LOG_EVENT_TYPES 8       /* covers tel_event_type enum */
+
+struct nvme_vendor_log_counters {
+    uint32_t magic;                                   /* bytes 0-3 */
+    uint32_t version;                                 /* bytes 4-7 */
+    uint64_t total_events;                            /* bytes 8-15 */
+    uint32_t events_in_ring;                          /* bytes 16-19 */
+    uint32_t ring_head;                               /* bytes 20-23 */
+    uint64_t events_by_type[NVME_VENDOR_LOG_EVENT_TYPES]; /* bytes 24-87 */
+    uint8_t  reserved[40];                            /* bytes 88-127 */
+} __attribute__((packed));
 
 /* Error Information Log Page entry — 64 bytes per NVMe spec §5.14.1.1 */
 #define NVME_ERROR_LOG_ENTRIES     64

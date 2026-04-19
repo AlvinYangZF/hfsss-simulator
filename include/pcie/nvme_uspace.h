@@ -4,6 +4,7 @@
 #include "pcie/nvme.h"
 #include "pcie/queue.h"
 #include "sssim.h"
+#include "common/telemetry.h"
 
 /* User-space NVMe Device Context */
 struct nvme_uspace_dev {
@@ -43,6 +44,19 @@ struct nvme_uspace_dev {
     u32  error_log_head;
     u64  error_log_count;
     struct mutex error_log_lock;
+
+    /* NVMe Telemetry Log Page backing ring (REQ-174 / REQ-175 / REQ-176).
+     * `telemetry` holds all recorded events. The generation numbers are
+     * stamped into the Telemetry Log header so the host can detect new
+     * data across polls. `last_ctrl_gen_total_events` tracks the
+     * telemetry count at the most recent controller-initiated (LID 0x08)
+     * read so the controller-initiated generation number only advances
+     * when genuinely new events have been appended. */
+    struct telemetry_log telemetry;
+    struct mutex         telemetry_lock;
+    u8                   telemetry_host_gen;
+    u8                   telemetry_ctrl_gen;
+    u64                  last_ctrl_gen_total_events;
 };
 
 /* User-space NVMe Configuration */

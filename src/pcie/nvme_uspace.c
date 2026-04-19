@@ -64,6 +64,21 @@ int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config 
         return ret;
     }
 
+    /* Initialize Telemetry ring + lock (REQ-174/175/176) */
+    ret = mutex_init(&dev->telemetry_lock);
+    if (ret != HFSSS_OK) {
+        mutex_cleanup(&dev->error_log_lock);
+        mutex_cleanup(&dev->lock);
+        return ret;
+    }
+    ret = telemetry_init(&dev->telemetry);
+    if (ret != HFSSS_OK) {
+        mutex_cleanup(&dev->telemetry_lock);
+        mutex_cleanup(&dev->error_log_lock);
+        mutex_cleanup(&dev->lock);
+        return ret;
+    }
+
     /* Initialize NVMe controller */
     ret = nvme_ctrl_init(&dev->ctrl);
     if (ret != HFSSS_OK) {
@@ -125,6 +140,8 @@ void nvme_uspace_dev_cleanup(struct nvme_uspace_dev *dev)
 
     nvme_queue_mgr_cleanup(&dev->qmgr);
     nvme_ctrl_cleanup(&dev->ctrl);
+    telemetry_cleanup(&dev->telemetry);
+    mutex_cleanup(&dev->telemetry_lock);
     mutex_cleanup(&dev->error_log_lock);
     mutex_cleanup(&dev->lock);
 
@@ -585,7 +602,121 @@ static u32 error_log_copy_recent(struct nvme_uspace_dev *dev,
     return to_copy;
 }
 
-/* Get Log Page: LID=1 (Error Info) + LID=2 (SMART/Health). */
+/* Serialize the telemetry ring into a caller-supplied buffer using the
+ * NVMe Telemetry Log Page layout: a 512-byte header followed by Data
+ * Area 1 carrying struct tel_event records in most-recent-first order.
+ * `host_initiated` selects LID 0x07 (host) vs LID 0x08 (controller)
+ * semantics for the generation-number and data-available fields. */
+static int telemetry_fill_log_page(struct nvme_uspace_dev *dev,
+                                   bool host_initiated,
+                                   void *buf, u32 len)
+{
+    const u32 header_size = (u32)sizeof(struct nvme_telemetry_log_header);
+    if (len < header_size) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    memset(buf, 0, len);
+    struct nvme_telemetry_log_header *hdr =
+        (struct nvme_telemetry_log_header *)buf;
+    hdr->log_identifier = host_initiated
+                          ? NVME_LID_TELEMETRY_HOST
+                          : NVME_LID_TELEMETRY_CTRL;
+    hdr->ieee_oui[0] = 0x48; /* 'H' */
+    hdr->ieee_oui[1] = 0x46; /* 'F' */
+    hdr->ieee_oui[2] = 0x53; /* 'S' */
+
+    mutex_lock(&dev->telemetry_lock, 0);
+
+    /* Generation-number policy differs between the two pages:
+     *  - Host-initiated (0x07): every Get Log Page call starts a new
+     *    snapshot, so the generation number advances unconditionally.
+     *  - Controller-initiated (0x08): the controller only increments
+     *    when genuinely new events have been appended since the last
+     *    read, so back-to-back polls don't appear to churn. */
+    if (host_initiated) {
+        dev->telemetry_host_gen++;
+        hdr->host_gen_number = dev->telemetry_host_gen;
+    } else {
+        u64 total_now = dev->telemetry.total_events;
+        if (total_now > dev->last_ctrl_gen_total_events) {
+            dev->telemetry_ctrl_gen++;
+            dev->last_ctrl_gen_total_events = total_now;
+        }
+        hdr->ctrl_gen_number = dev->telemetry_ctrl_gen;
+        hdr->ctrl_data_available = (dev->telemetry.count > 0) ? 1 : 0;
+    }
+
+    /* Fill Data Area 1 with the most recent events that fit. */
+    u8 *area1 = (u8 *)buf + header_size;
+    u32 area1_cap = len - header_size;
+    u32 max_events = area1_cap / (u32)sizeof(struct tel_event);
+    u32 actual = 0;
+    if (max_events > 0) {
+        telemetry_get_recent(&dev->telemetry,
+                             (struct tel_event *)area1, max_events,
+                             &actual);
+    }
+
+    /* data_area_1_last_block is in 512-byte units from the log start. */
+    if (actual > 0) {
+        u32 area1_bytes = actual * (u32)sizeof(struct tel_event);
+        u32 total_bytes = header_size + area1_bytes;
+        hdr->data_area_1_last_block = (u16)((total_bytes - 1) / 512);
+    } else {
+        hdr->data_area_1_last_block = 0;
+    }
+
+    mutex_unlock(&dev->telemetry_lock);
+    return HFSSS_OK;
+}
+
+/* Populate a vendor-specific counter snapshot from the telemetry ring.
+ * Used by hfsss-ctrl and the test harness to read device state without
+ * parsing the per-event Data Area of the standard Telemetry Log pages. */
+static int telemetry_fill_vendor_counters(struct nvme_uspace_dev *dev,
+                                          void *buf, u32 len)
+{
+    if (len < (u32)sizeof(struct nvme_vendor_log_counters)) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nvme_vendor_log_counters snap;
+    memset(&snap, 0, sizeof(snap));
+    snap.magic   = NVME_VENDOR_LOG_MAGIC;
+    snap.version = 1;
+
+    mutex_lock(&dev->telemetry_lock, 0);
+    snap.total_events   = dev->telemetry.total_events;
+    snap.events_in_ring = dev->telemetry.count;
+    snap.ring_head      = dev->telemetry.head;
+
+    /* Walk the live ring to produce per-type counts. Must go over
+     * `count` entries starting at the oldest slot, not the whole
+     * TEL_MAX_EVENTS array (stale slots could contain bogus type
+     * values from previous wraps — though telemetry_record zeroes
+     * slots before use, defending in depth is cheap here). */
+    u32 count = dev->telemetry.count;
+    u32 start = (count < TEL_MAX_EVENTS)
+                ? 0
+                : dev->telemetry.head; /* full ring → oldest at head */
+    for (u32 i = 0; i < count; i++) {
+        u32 idx = (start + i) % TEL_MAX_EVENTS;
+        u32 t = dev->telemetry.events[idx].type;
+        if (t < NVME_VENDOR_LOG_EVENT_TYPES) {
+            snap.events_by_type[t]++;
+        }
+    }
+    mutex_unlock(&dev->telemetry_lock);
+
+    memcpy(buf, &snap, sizeof(snap));
+    return HFSSS_OK;
+}
+
+/* Get Log Page: LID=0x01 (Error Info), 0x02 (SMART/Health),
+ * 0x07 (Host-Initiated Telemetry, REQ-174),
+ * 0x08 (Controller-Initiated Telemetry, REQ-175),
+ * 0xC0 (Vendor-Specific Counters, REQ-176). */
 int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void *buf, u32 len)
 {
     if (!dev || !dev->initialized || !buf) {
@@ -603,6 +734,18 @@ int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void
                               (struct nvme_error_log_entry *)buf,
                               max_entries);
         return HFSSS_OK;
+    }
+
+    if (lid == NVME_LID_TELEMETRY_HOST) {
+        return telemetry_fill_log_page(dev, true, buf, len);
+    }
+
+    if (lid == NVME_LID_TELEMETRY_CTRL) {
+        return telemetry_fill_log_page(dev, false, buf, len);
+    }
+
+    if (lid == NVME_LID_VENDOR_COUNTERS) {
+        return telemetry_fill_vendor_counters(dev, buf, len);
     }
 
     if (lid != NVME_LID_SMART) {
