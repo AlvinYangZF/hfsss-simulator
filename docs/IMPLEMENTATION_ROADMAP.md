@@ -1,15 +1,15 @@
 # HFSSS Implementation Roadmap
 
-**Version**: V2.0
-**Date**: 2026-03-15
-**Based on**: PRD V1.0, Requirements Matrix (134 requirements), REQUIREMENT_COVERAGE.md V1.2
+**Version**: V3.0
+**Date**: 2026-04-19
+**Based on**: PRD V2.0, Requirements Matrix (178 requirements — 138 core + 40 enterprise), `REQUIREMENT_COVERAGE.md` V3.0
 
 ---
 
 ## Overview
 
-This roadmap tracks implementation of all 134 requirements across 8 phases.
-All 134 requirements are classified as **P0** in the Requirements Matrix.
+This roadmap tracks implementation of all 178 requirements across 8 phases (138 core from REQ-001..138 + 40 enterprise from REQ-139..178).
+All 138 core requirements are classified as **P0** in the Requirements Matrix.
 This document adds a practical **tier classification** (Critical / High / Medium / Optional)
 based on dependency depth, user-visible impact, and version target.
 
@@ -32,7 +32,7 @@ based on dependency depth, user-visible impact, and version target.
 | Phase 3 – User-Space NVMe | Admin/IO/DSM command processing, doorbell, CQ, identify, DSM trim | 87/138 | — | ✅ Complete |
 | Phase 4 – Boot/NOR/FTL Reliability/Trace | 6-stage boot, dual NOR slots, power mgmt, full NOR partitions, read/write retry, cmd state machine, flow control, trace ring | ~101/138 | — | ✅ Complete |
 | Phase 5 – OOB & Tools | JSON-RPC Unix socket, /proc interface, `hfsss-ctrl` CLI, YAML config, latency monitor | ~114/138 | — | ✅ Complete |
-| Phase 6 – Perf & Fault Inj. | `perf_validation` benchmark harness, `fault_inject` registry, DWRR, UPLP, thermal throttle, telemetry, security, multi-NS | **91/138 core + 29/40 enterprise** | 120/178 (✅) / 154/178 (✅+⚠️) | ✅ Complete (perf target enforcement + NAND/TCG wiring remain ⚠️) |
+| Phase 6 – Perf & Fault Inj. | `perf_validation` benchmark harness, `fault_inject` registry, DWRR, UPLP, thermal throttle, telemetry, security, multi-NS | **91/138 core + 25/40 enterprise** | 116/178 (✅) / 154/178 (✅+⚠️) | ✅ Complete (perf target enforcement, NAND fault wiring, secure boot wiring, NVMe Log Page 07h/08h, key-table NOR backing all remain ⚠️) |
 | Phase 7 – Kernel Module | `/dev/nvme` block device, real MSI-X / DMA / IOMMU, nvme-cli / fio on raw NVMe | 0/12 (intentional) | — | 🔲 Optional (deferred) |
 
 > **Note**: Core counts the 138 REQs from REQ-001..REQ-138; partials are visible in `REQUIREMENT_COVERAGE.md`. Phase 6 also covers the 40 Enterprise V3.0 REQs (UPLP / QoS / T10 PI / Security / Multi-NS / Thermal+Telemetry), most of which are implemented or partially implemented. Phase 7 is the only remaining scope, and is explicitly optional per the user-space-first architecture decision.
@@ -46,7 +46,7 @@ based on dependency depth, user-visible impact, and version target.
 | V1.0 | Alpha — core simulation | Foundation + core FTL + HAL + Controller + user-space NVMe (REQ-001..115 core subset) | ✅ Complete |
 | V1.5 | Beta — full FTL + persistence + boot/power | L2P checkpoint + WAL + UPLP + dual-slot firmware + recovery | ✅ Complete |
 | V2.0 | Release — OOB, reliability, fault-inj, perf harness | JSON-RPC + `hfsss-ctrl` + YAML + fault-inject + `perf_validation` + thermal/telemetry | ✅ Complete (target enforcement ⚠️) |
-| V3.0 | Enterprise | UPLP / Multi-NS / Security / Thermal / Telemetry / DWRR QoS (REQ-139..178) | ✅ Mostly complete (30/40 ✅, 9/40 ⚠️) |
+| V3.0 | Enterprise | UPLP / Multi-NS / Security / Thermal / Telemetry / DWRR QoS (REQ-139..178) | ✅ Mostly complete (25/40 ✅, 15/40 ⚠️) |
 | V2.5 (optional) | Kernel module | `hfsss_nvme.ko`, real `/dev/nvme`, nvme-cli / fio on raw NVMe | 🔲 Deferred (Phase 7) |
 
 ---

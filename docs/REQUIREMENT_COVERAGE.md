@@ -9,7 +9,7 @@
 
 This document analyzes the coverage of the 178 requirements from the Requirements Matrix against the current HFSSS implementation. Requirements REQ-001 through REQ-138 cover core functionality; REQ-139 through REQ-178 cover enterprise SSD features added in PRD V2.0 (Chapter 12).
 
-**V3.0 Update (2026-04-19)**: End-to-end code audit against current source tree. Phase 4 (boot/NOR/FTL reliability/trace) and most of Phase 5/6 (OOB/hfsss-ctrl/YAML/perf framework/fault-inject) plus the Enterprise V3.0 groups (UPLP, Multi-NS, Security, Thermal/Telemetry) are now landed. Coverage rises from 38.8% to **67.4%** fully implemented (86.5% counting partials). Post-review corrections: REQ-132 (NAND fault wiring pending), REQ-161 (TCG Opal command parsing pending), REQ-163 (sanitize handler present but action modes partial) demoted from ✅ to ⚠️.
+**V3.0 Update (2026-04-19)**: End-to-end code audit against current source tree. Phase 4 (boot/NOR/FTL reliability/trace) and most of Phase 5/6 (OOB/hfsss-ctrl/YAML/perf framework/fault-inject) plus the Enterprise V3.0 groups (UPLP, Multi-NS, Security, Thermal/Telemetry) are now landed. Coverage rises from 38.8% to **65.2%** fully implemented (86.5% counting partials). Post-review corrections: REQ-132 (NAND fault wiring pending), REQ-161 (TCG Opal command parsing pending), REQ-163 (sanitize action modes partial), REQ-164 (`secure_boot_verify` not invoked from boot flow), REQ-165 (key table persists to arbitrary file, not NOR), REQ-175/176 (telemetry ring exists but NVMe Log Page 07h/08h dispatch not wired) all demoted from ✅ to ⚠️.
 
 **V2.0 Update**: Added 40 enterprise requirements (REQ-139 through REQ-178) covering UPLP, QoS Determinism, T10 DIF/PI, Security, Multi-Namespace Management, Thermal Management, and Advanced Telemetry.
 
@@ -41,11 +41,11 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% (100% partial) | ↑ DWRR + partial wiring |
 | Enterprise: T10 DIF/PI | 5 | 3 | 2 | 0 | 0 | 60.0% (100% partial) | ↑ Type 1/2/3 CRC-16 |
-| Enterprise: Security | 7 | 5 | 2 | 0 | 0 | 71.4% (100% partial) | ↑ AES-XTS sim, keys, crypto erase, secure boot, sanitize handler |
+| Enterprise: Security | 7 | 3 | 4 | 0 | 0 | 42.9% (100% partial) | ↑ AES-XTS sim, keys, crypto erase; secure boot + key-NOR + TCG-Opal + sanitize remain ⚠️ |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
-| Enterprise: Thermal/Telemetry | 8 | 6 | 2 | 0 | 0 | 75.0% | ↑ throttle, telemetry, SMART predict |
-| **Enterprise Subtotal** | **40** | **29** | **11** | **0** | **0** | **72.5%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **120** | **34** | **23** | **1** | **67.4%** (86.5% partial) | ↑ from 38.8% |
+| Enterprise: Thermal/Telemetry | 8 | 4 | 4 | 0 | 0 | 50.0% (100% partial) | ↑ throttle + SMART predict done; NVMe Log Page 07h/08h dispatch pending |
+| **Enterprise Subtotal** | **40** | **25** | **15** | **0** | **0** | **62.5%** (100% partial) | ↑ from 0% |
+| **Grand Total** | **178** | **116** | **38** | **23** | **1** | **65.2%** (86.5% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -285,8 +285,8 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-161 | TCG Opal SSC basic commands (lock/unlock) | ⚠️ | `enum key_state` (EMPTY/ACTIVE/SUSPENDED/DESTROYED) in `include/controller/security.h` provides the underlying state transitions; TCG Opal-specific command parsing (lock/unlock opcodes) not yet wired |
 | REQ-162 | Crypto erase (destroy DEK) | ✅ | `crypto_erase_ns` in `security.c` |
 | REQ-163 | Secure erase (block erase all user data) | ⚠️ | `nvme_uspace_sanitize` handler for `NVME_ADMIN_SANITIZE` (opcode 0x84) routes through `src/pcie/nvme_uspace.c`; NVMe sanitize action modes (block-erase / crypto-erase / overwrite) not all fully implemented end-to-end |
-| REQ-164 | Secure boot chain verification (ROM→BL→FW) | ✅ | `fw_signature` + `secure_boot_verify` (CRC32) in `security.c` |
-| REQ-165 | Key storage in NOR (dual-copy, UPLP-safe) | ✅ | `key_table_save`/`key_table_load` with dual-copy + CRC over NOR partitions |
+| REQ-164 | Secure boot chain verification (ROM→BL→FW) | ⚠️ | `secure_boot_verify` (CRC32) helper in `src/controller/security.c`; not yet invoked from `src/common/boot.c`, so tampered images do not abort the boot flow |
+| REQ-165 | Key storage in NOR (dual-copy, UPLP-safe) | ⚠️ | `key_table_save`/`key_table_load` persist to an arbitrary file path in `security.c`; NOR partition backing, dual-copy fallback and UPLP-safe update path not yet implemented |
 
 ### 15. Enterprise: Multi-Namespace Management (REQ-166 to REQ-170)
 
@@ -306,8 +306,8 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-172 | Progressive thermal throttle (75C/80C/85C) | ✅ | Factor table 1.0/0.80/0.50/0.20/0.0 at 75/80/85/90 °C thresholds in `thermal.c` |
 | REQ-173 | Thermal shutdown (90C threshold) | ✅ | `thermal_is_shutdown`/`THERMAL_LEVEL_SHUTDOWN` at ≥90 °C |
 | REQ-174 | Host-initiated telemetry (Log Page 07h) | ⚠️ | Telemetry ring populated in `src/common/telemetry.c`; Log Page 07h opcode wiring in NVMe admin path not yet complete |
-| REQ-175 | Controller-initiated telemetry (Log Page 08h) | ✅ | `telemetry_record` async event path with 7 event types (THERMAL/GC/ERROR/SLA/POWER/WEAR/SPARE) |
-| REQ-176 | Vendor-specific log page (internal counters) | ✅ | `telemetry_log` + internal counters in `telemetry.c` |
+| REQ-175 | Controller-initiated telemetry (Log Page 08h) | ⚠️ | `telemetry_record` async event ring landed in `src/common/telemetry.c`; NVMe Log Page 08h is not yet dispatched (`nvme_uspace_get_log_page` returns `HFSSS_ERR_NOTSUPP` for every LID except SMART 0x02) |
+| REQ-176 | Vendor-specific log page (internal counters) | ⚠️ | Internal counters + ring exist in `telemetry.c`; vendor-specific Log Page LIDs not exposed through the NVMe Get Log Page path |
 | REQ-177 | SMART remaining life prediction (PE+WAF trend) | ✅ | `smart_predict_life` computes `remaining_life_pct`/`waf`/`avg_erase_count` in `telemetry.c` |
 | REQ-178 | Async event notification (temp/spare/reliability AER) | ⚠️ | Event ring covers temperature/wear/spare paths; NVMe AER delivery depends on REQ-063 completion |
 
