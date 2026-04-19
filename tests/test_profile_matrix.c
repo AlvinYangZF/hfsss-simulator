@@ -240,21 +240,114 @@ static int test_v2_supported_cmd_bitmap(void)
         media_cleanup(&ctx);
     }
 
-    /* Baseline equality check. The four Phase 6 generic profiles currently
-     * share k_default_supported_ops. A future task will diverge ONFI vs
-     * Toggle (and TLC vs QLC) bitmaps per their respective protocol
-     * definitions, and the four-way equality below will then be replaced by
-     * a matrix of expected per-family bitmaps. */
-    if (k_case_count >= 2) {
-        bool all_equal = true;
-        for (size_t i = 1; i < k_case_count; i++) {
-            if (observed_bitmaps[i] != observed_bitmaps[0]) {
-                all_equal = false;
-                break;
+    /*
+     * Phase 7 divergence: ONFI 3.5 adds Read Status Enhanced (78h) over
+     * the core opcode set; JEDEC Toggle does not standardize it and uses
+     * classic Read Status (70h) for the same purpose. The expected
+     * cross-family relationship is:
+     *   - within a family (ONFI or Toggle), TLC and QLC share the bitmap
+     *   - across families, ONFI advertises READ_STATUS_ENHANCED, Toggle
+     *     does not, so the bitmaps must differ exactly on that bit
+     */
+    u32 onfi_bm = 0;
+    u32 toggle_bm = 0;
+    bool have_onfi = false;
+    bool have_toggle = false;
+    for (size_t i = 0; i < k_case_count; i++) {
+        const struct nand_profile *p = nand_profile_get(k_cases[i].id);
+        if (!p) {
+            continue;
+        }
+        if (p->interface_family == NAND_IF_ONFI) {
+            if (!have_onfi) {
+                onfi_bm = observed_bitmaps[i];
+                have_onfi = true;
+            } else {
+                TEST_ASSERT(observed_bitmaps[i] == onfi_bm,
+                            "V2: ONFI family members (TLC vs QLC) share one bitmap");
+            }
+        } else {
+            if (!have_toggle) {
+                toggle_bm = observed_bitmaps[i];
+                have_toggle = true;
+            } else {
+                TEST_ASSERT(observed_bitmaps[i] == toggle_bm,
+                            "V2: Toggle family members (TLC vs QLC) share one bitmap");
             }
         }
-        TEST_ASSERT(all_equal,
-                    "V2 baseline: all four generic profiles currently share one supported_cmd_bitmap");
+    }
+    TEST_ASSERT(have_onfi && have_toggle, "V2: both families represented in the matrix");
+    TEST_ASSERT(onfi_bm != toggle_bm, "V2: ONFI vs Toggle bitmaps differ (Phase 7 divergence landed)");
+
+    /* Enhanced-status is the concrete divergence point. */
+    TEST_ASSERT((onfi_bm & (1u << NAND_OP_READ_STATUS_ENHANCED)) != 0,
+                "V2: ONFI advertises READ_STATUS_ENHANCED (ONFI 3.5 section 5.17)");
+    TEST_ASSERT((toggle_bm & (1u << NAND_OP_READ_STATUS_ENHANCED)) == 0,
+                "V2: Toggle does not advertise READ_STATUS_ENHANCED");
+
+    /* The two bitmaps should differ on that single bit — nothing else. */
+    TEST_ASSERT((onfi_bm ^ toggle_bm) == (1u << NAND_OP_READ_STATUS_ENHANCED),
+                "V2: ONFI vs Toggle differ exactly on READ_STATUS_ENHANCED bit");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* ------------------------------------------------------------------------ */
+/* V2b: runtime rejection of unsupported opcodes.                            */
+/*                                                                           */
+/* nand_cmd_is_legal_for_profile_state already consults                     */
+/* nand_profile_supports_op, so a Toggle-profile media_ctx must reject      */
+/* media_nand_read_status_enhanced even in DIE_IDLE where the state-only    */
+/* legality table would accept it. Flip side: ONFI accepts it.              */
+/* ------------------------------------------------------------------------ */
+
+static int test_v2b_runtime_rejection_on_toggle(void)
+{
+    printf("\n=== V2b: runtime rejection of READ_STATUS_ENHANCED on Toggle ===\n");
+
+    struct media_config cfg_tgl = {
+        .channel_count = 1,
+        .chips_per_channel = 1,
+        .dies_per_chip = 1,
+        .planes_per_die = 1,
+        .blocks_per_plane = 8,
+        .pages_per_block = 8,
+        .page_size = 4096,
+        .spare_size = 64,
+        .nand_type = NAND_TYPE_TLC,
+        .profile_explicit = true,
+        .profile_id = NAND_PROFILE_GENERIC_TOGGLE_TLC,
+    };
+    struct media_ctx ctx_tgl;
+    int ret = media_init(&ctx_tgl, &cfg_tgl);
+    TEST_ASSERT(ret == HFSSS_OK, "V2b: media_init with Toggle profile");
+    if (ret == HFSSS_OK) {
+        struct nand_status_enhanced enh;
+        int r = media_nand_read_status_enhanced(&ctx_tgl, 0, 0, 0, &enh);
+        TEST_ASSERT(r != HFSSS_OK,
+                    "V2b: Toggle profile rejects media_nand_read_status_enhanced");
+
+        /* Classic status read remains serviceable — it is in the core
+         * bitmap both families advertise. */
+        u8 st = 0;
+        r = media_nand_read_status_byte(&ctx_tgl, 0, 0, 0, &st);
+        TEST_ASSERT(r == HFSSS_OK, "V2b: Toggle profile accepts classic read_status");
+
+        media_cleanup(&ctx_tgl);
+    }
+
+    /* Mirror with ONFI: enhanced status must be accepted. */
+    struct media_config cfg_onfi = cfg_tgl;
+    cfg_onfi.profile_id = NAND_PROFILE_GENERIC_ONFI_TLC;
+    struct media_ctx ctx_onfi;
+    ret = media_init(&ctx_onfi, &cfg_onfi);
+    TEST_ASSERT(ret == HFSSS_OK, "V2b: media_init with ONFI profile");
+    if (ret == HFSSS_OK) {
+        struct nand_status_enhanced enh;
+        int r = media_nand_read_status_enhanced(&ctx_onfi, 0, 0, 0, &enh);
+        TEST_ASSERT(r == HFSSS_OK,
+                    "V2b: ONFI profile accepts media_nand_read_status_enhanced");
+        media_cleanup(&ctx_onfi);
     }
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
@@ -331,6 +424,7 @@ int main(void)
 
     test_v1_parameter_page_timings();
     test_v2_supported_cmd_bitmap();
+    test_v2b_runtime_rejection_on_toggle();
     test_v4_mp_rules_and_capability();
 
     printf("\n========================================\n");

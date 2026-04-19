@@ -73,16 +73,29 @@ static void *prog_worker(void *arg)
     return NULL;
 }
 
+/*
+ * Profile-agnostic state poll. Uses the engine snapshot directly so this
+ * works on Toggle profiles too (those reject READ_STATUS_ENHANCED per
+ * the Phase 7 bitmap divergence). Snapshot is lock-free and safe to call
+ * concurrently with an in-flight worker.
+ */
 static bool wait_for_state(struct media_ctx *ctx, enum nand_die_state want, u64 timeout_ns)
 {
+    struct nand_cmd_target t = {.ch = 0, .chip = 0, .die = 0, .plane_mask = 0x1};
     u64 deadline = get_time_ns() + timeout_ns;
     while (get_time_ns() < deadline) {
-        struct nand_status_enhanced enh;
-        if (media_nand_read_status_enhanced(ctx, 0, 0, 0, &enh) == HFSSS_OK && enh.state == want) {
+        struct nand_die_cmd_state s;
+        if (nand_cmd_engine_snapshot(ctx->nand, &t, &s) == HFSSS_OK && s.state == want) {
             return true;
         }
     }
     return false;
+}
+
+static int snapshot_die(struct media_ctx *ctx, struct nand_die_cmd_state *out)
+{
+    struct nand_cmd_target t = {.ch = 0, .chip = 0, .die = 0, .plane_mask = 0x1};
+    return nand_cmd_engine_snapshot(ctx->nand, &t, out);
 }
 
 static struct media_config make_cfg(enum nand_profile_id pid, enum nand_type type)
@@ -180,14 +193,33 @@ static int run_profile_sequence(const struct profile_entry *pe)
     snprintf(tag, sizeof(tag), "%s: status byte RDY|ARDY set on idle die", pe->name);
     TEST_ASSERT((sb & (NAND_STATUS_RDY | NAND_STATUS_ARDY)) == (NAND_STATUS_RDY | NAND_STATUS_ARDY), tag);
 
+    /*
+     * Enhanced-status behavior is profile-dependent after the Phase 7
+     * divergence: ONFI profiles accept it, Toggle profiles reject it
+     * (the legality path consults profile->capability.supported_ops_bitmap).
+     * Either way the baseline die state must still be observable — we
+     * assert the correct outcome per profile family and then use the
+     * engine snapshot as the profile-agnostic source of truth for the
+     * state check.
+     */
+    bool enh_supported = nand_profile_supports_op(ctx.profile, NAND_OP_READ_STATUS_ENHANCED);
     struct nand_status_enhanced enh;
     ret = media_nand_read_status_enhanced(&ctx, 0, 0, 0, &enh);
-    snprintf(tag, sizeof(tag), "%s: read_status_enhanced OK on idle die", pe->name);
-    TEST_ASSERT(ret == HFSSS_OK, tag);
-    snprintf(tag, sizeof(tag), "%s: enhanced.ready && array_ready on idle die", pe->name);
-    TEST_ASSERT(enh.ready && enh.array_ready, tag);
-    snprintf(tag, sizeof(tag), "%s: enhanced.state == DIE_IDLE", pe->name);
-    TEST_ASSERT(enh.state == DIE_IDLE, tag);
+    if (enh_supported) {
+        snprintf(tag, sizeof(tag), "%s: read_status_enhanced OK on idle die (ONFI)", pe->name);
+        TEST_ASSERT(ret == HFSSS_OK, tag);
+        snprintf(tag, sizeof(tag), "%s: enhanced.ready && array_ready on idle die", pe->name);
+        TEST_ASSERT(enh.ready && enh.array_ready, tag);
+        snprintf(tag, sizeof(tag), "%s: enhanced.state == DIE_IDLE", pe->name);
+        TEST_ASSERT(enh.state == DIE_IDLE, tag);
+    } else {
+        snprintf(tag, sizeof(tag), "%s: read_status_enhanced rejected (Toggle)", pe->name);
+        TEST_ASSERT(ret != HFSSS_OK, tag);
+    }
+    struct nand_die_cmd_state snap_idle;
+    ret = snapshot_die(&ctx, &snap_idle);
+    snprintf(tag, sizeof(tag), "%s: snapshot on idle die OK", pe->name);
+    TEST_ASSERT(ret == HFSSS_OK && snap_idle.state == DIE_IDLE, tag);
 
     /* --- program + read round-trip --- */
     u8 wr[4096];
@@ -287,14 +319,18 @@ static int run_profile_sequence(const struct profile_entry *pe)
     snprintf(tag, sizeof(tag), "%s: entered SUSPENDED_PROG", pe->name);
     TEST_ASSERT(saw_susp, tag);
 
-    struct nand_status_enhanced enh_susp;
-    ret = media_nand_read_status_enhanced(&ctx, 0, 0, 0, &enh_susp);
-    snprintf(tag, sizeof(tag), "%s: status_enhanced during SUSPENDED_PROG OK", pe->name);
+    /* Snapshot works on every profile; the enhanced-status wrapper
+     * only works on profiles that advertise it, but the book-keeping
+     * we care about (suspend_count, remaining_ns) comes from the
+     * cmd_state itself, which the snapshot reads directly. */
+    struct nand_die_cmd_state snap_susp;
+    ret = snapshot_die(&ctx, &snap_susp);
+    snprintf(tag, sizeof(tag), "%s: snapshot during SUSPENDED_PROG OK", pe->name);
     TEST_ASSERT(ret == HFSSS_OK, tag);
     snprintf(tag, sizeof(tag), "%s: suspend_count == 1 after first suspend", pe->name);
-    TEST_ASSERT(enh_susp.suspend_count == 1, tag);
+    TEST_ASSERT(snap_susp.suspend_count == 1, tag);
     snprintf(tag, sizeof(tag), "%s: remaining_ns > 0 while suspended", pe->name);
-    TEST_ASSERT(enh_susp.remaining_ns > 0, tag);
+    TEST_ASSERT(snap_susp.remaining_ns > 0, tag);
 
     ret = media_nand_program_resume(&ctx, 0, 0, 0);
     snprintf(tag, sizeof(tag), "%s: program_resume accepted", pe->name);
@@ -311,9 +347,10 @@ static int run_profile_sequence(const struct profile_entry *pe)
     TEST_ASSERT(rd[0] == susp_pattern && rd[4095] == susp_pattern, tag);
 
     /* --- reset path (direct engine call during an in-flight program) --- */
-    ret = media_nand_read_status_enhanced(&ctx, 0, 0, 0, &enh);
+    struct nand_die_cmd_state snap_post_resume;
+    ret = snapshot_die(&ctx, &snap_post_resume);
     snprintf(tag, sizeof(tag), "%s: die idle after suspend/resume cycle", pe->name);
-    TEST_ASSERT(ret == HFSSS_OK && enh.state == DIE_IDLE, tag);
+    TEST_ASSERT(ret == HFSSS_OK && snap_post_resume.state == DIE_IDLE, tag);
 
     struct prog_worker_ctx rw = {
         .ctx = &ctx, .block = BLK_RESET_ABORT, .page = 0, .pattern = (u8)(pe->pattern ^ 0xFF), .rc = 0};
@@ -333,13 +370,14 @@ static int run_profile_sequence(const struct profile_entry *pe)
     snprintf(tag, sizeof(tag), "%s: in-flight program returns non-OK after reset abort", pe->name);
     TEST_ASSERT(rw.rc != HFSSS_OK, tag);
 
-    ret = media_nand_read_status_enhanced(&ctx, 0, 0, 0, &enh);
-    snprintf(tag, sizeof(tag), "%s: post-reset status_enhanced OK", pe->name);
+    struct nand_die_cmd_state snap_post_reset;
+    ret = snapshot_die(&ctx, &snap_post_reset);
+    snprintf(tag, sizeof(tag), "%s: post-reset snapshot OK", pe->name);
     TEST_ASSERT(ret == HFSSS_OK, tag);
     snprintf(tag, sizeof(tag), "%s: die returns to DIE_IDLE after reset", pe->name);
-    TEST_ASSERT(enh.state == DIE_IDLE, tag);
+    TEST_ASSERT(snap_post_reset.state == DIE_IDLE, tag);
     snprintf(tag, sizeof(tag), "%s: suspend_count cleared by reset", pe->name);
-    TEST_ASSERT(enh.suspend_count == 0, tag);
+    TEST_ASSERT(snap_post_reset.suspend_count == 0, tag);
 
     /* Post-reset: a fresh program against a clean block must succeed. */
     u8 post_pattern = (u8)(pe->pattern ^ 0x55);

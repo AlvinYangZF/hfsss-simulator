@@ -9,14 +9,39 @@
  * Read ID and Read Parameter Page.
  */
 
-static const u32 k_default_supported_ops =
+/*
+ * Core opcodes both ONFI 3.5 and JEDEC Toggle standardize: page read,
+ * page program, block erase, reset, classic status, read id, read
+ * parameter page, and the suspend/resume + cache pipelines that both
+ * specs formalize (under different wire encodings, same capability).
+ */
+static const u32 k_core_supported_ops =
     NAND_PROFILE_OP_BIT(NAND_OP_READ) | NAND_PROFILE_OP_BIT(NAND_OP_PROG) | NAND_PROFILE_OP_BIT(NAND_OP_ERASE)
     | NAND_PROFILE_OP_BIT(NAND_OP_RESET) | NAND_PROFILE_OP_BIT(NAND_OP_READ_STATUS)
-    | NAND_PROFILE_OP_BIT(NAND_OP_READ_STATUS_ENHANCED) | NAND_PROFILE_OP_BIT(NAND_OP_READ_ID)
-    | NAND_PROFILE_OP_BIT(NAND_OP_READ_PARAM_PAGE) | NAND_PROFILE_OP_BIT(NAND_OP_PROG_SUSPEND)
-    | NAND_PROFILE_OP_BIT(NAND_OP_PROG_RESUME) | NAND_PROFILE_OP_BIT(NAND_OP_ERASE_SUSPEND)
-    | NAND_PROFILE_OP_BIT(NAND_OP_ERASE_RESUME) | NAND_PROFILE_OP_BIT(NAND_OP_CACHE_READ)
-    | NAND_PROFILE_OP_BIT(NAND_OP_CACHE_READ_END) | NAND_PROFILE_OP_BIT(NAND_OP_CACHE_PROG);
+    | NAND_PROFILE_OP_BIT(NAND_OP_READ_ID) | NAND_PROFILE_OP_BIT(NAND_OP_READ_PARAM_PAGE)
+    | NAND_PROFILE_OP_BIT(NAND_OP_PROG_SUSPEND) | NAND_PROFILE_OP_BIT(NAND_OP_PROG_RESUME)
+    | NAND_PROFILE_OP_BIT(NAND_OP_ERASE_SUSPEND) | NAND_PROFILE_OP_BIT(NAND_OP_ERASE_RESUME)
+    | NAND_PROFILE_OP_BIT(NAND_OP_CACHE_READ) | NAND_PROFILE_OP_BIT(NAND_OP_CACHE_READ_END)
+    | NAND_PROFILE_OP_BIT(NAND_OP_CACHE_PROG);
+
+/*
+ * ONFI 3.5 adds Read Status Enhanced (78h) on top of the core set.
+ * ONFI 3.5 section 5.17 defines it as a status read that carries a
+ * target address, letting a multi-LUN host disambiguate which target
+ * a pending interrupt belongs to. Toggle does not standardize this.
+ */
+static const u32 k_onfi_supported_ops =
+    k_core_supported_ops | NAND_PROFILE_OP_BIT(NAND_OP_READ_STATUS_ENHANCED);
+
+/*
+ * JEDEC Toggle supports the core opcodes but does not standardize
+ * Read Status Enhanced; Toggle hosts use classic Read Status (70h)
+ * and address target disambiguation via chip-enable. The bitmap
+ * divergence here makes the engine reject READ_STATUS_ENHANCED on
+ * Toggle profiles deterministically (via nand_cmd_is_legal_for_profile_state
+ * in cmd_legality.c, which already consults supported_ops_bitmap).
+ */
+static const u32 k_toggle_supported_ops = k_core_supported_ops;
 
 static const struct timing_params k_slc_timing = {
     .tCCS = 100,
@@ -98,7 +123,7 @@ static const struct nand_profile k_profiles[NAND_PROFILE_COUNT] = {
                 },
             .capability =
                 {
-                    .supported_ops_bitmap = k_default_supported_ops,
+                    .supported_ops_bitmap = k_onfi_supported_ops,
                     .bits_per_cell = 3,
                     .ecc_bits_required = 40,
                     .ecc_codeword_size = 1024,
@@ -137,7 +162,7 @@ static const struct nand_profile k_profiles[NAND_PROFILE_COUNT] = {
                 },
             .capability =
                 {
-                    .supported_ops_bitmap = k_default_supported_ops,
+                    .supported_ops_bitmap = k_onfi_supported_ops,
                     .bits_per_cell = 4,
                     .ecc_bits_required = 72,
                     .ecc_codeword_size = 1024,
@@ -176,7 +201,7 @@ static const struct nand_profile k_profiles[NAND_PROFILE_COUNT] = {
                 },
             .capability =
                 {
-                    .supported_ops_bitmap = k_default_supported_ops,
+                    .supported_ops_bitmap = k_toggle_supported_ops,
                     .bits_per_cell = 3,
                     .ecc_bits_required = 40,
                     .ecc_codeword_size = 1024,
@@ -215,7 +240,7 @@ static const struct nand_profile k_profiles[NAND_PROFILE_COUNT] = {
                 },
             .capability =
                 {
-                    .supported_ops_bitmap = k_default_supported_ops,
+                    .supported_ops_bitmap = k_toggle_supported_ops,
                     .bits_per_cell = 4,
                     .ecc_bits_required = 72,
                     .ecc_codeword_size = 1024,
