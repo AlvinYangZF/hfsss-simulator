@@ -41,7 +41,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% (100% partial) | ↑ DWRR + partial wiring |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
-| Enterprise: Security | 7 | 4 | 3 | 0 | 0 | 57.1% (100% partial) | ↑ AES-XTS sim, keys, crypto erase, secure-boot-verify wired into POST; key-NOR + TCG-Opal + sanitize-depth remain ⚠️ |
+| Enterprise: Security | 7 | 5 | 2 | 0 | 0 | 71.4% (100% partial) | ↑ AES-XTS sim, keys, crypto erase, sanitize action modes, secure-boot-verify wired into POST and derived from the active NOR slot by default; key-NOR backing + TCG-Opal remain ⚠️ |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 4 | 4 | 0 | 0 | 50.0% (100% partial) | ↑ throttle + SMART predict done; NVMe Log Page 07h/08h dispatch pending |
 | **Enterprise Subtotal** | **40** | **29** | **11** | **0** | **0** | **72.5%** (100% partial) | ↑ from 0% |
@@ -348,10 +348,8 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 5. **RAID-like data protection** (REQ-114) — die-level XOR parity and dual-copy L2P not implemented; BBT dual mirror exists via NOR partitions.
 6. **IPC ring + resource sampling** (REQ-085, 087) — SPSC ring and periodic CPU/memory/thread-pool sampling not implemented; watchdog covers hang detection only.
 7. **Striping / memory partitioning** (REQ-099, 076) — single-channel mapping and unpartitioned mmap/malloc remain as designed for the current build.
-8. **T10 PI through the GC rewrite path** (REQ-157) and **Error Log Page population** (REQ-115, 158) — computed and verified end-to-end on the read path; full propagation / reporting pending.
-9. **Secure physical erase** (REQ-163) — distinct from the already-implemented crypto erase (REQ-162); a block-by-block sanitize pass is not wired.
-10. **RT scheduling** (REQ-075) — `SCHED_FIFO`/`SCHED_RR` hook absent; `pthread_setaffinity_np` side (REQ-074) is wired under Linux.
-11. **Long-haul stability report** (REQ-137) — `tests/stress_stability.c` provides the harness, but no published multi-day run.
+8. **RT scheduling** (REQ-075) — `SCHED_FIFO`/`SCHED_RR` hook absent; `pthread_setaffinity_np` side (REQ-074) is wired under Linux.
+9. **Long-haul stability report** (REQ-137) — `tests/stress_stability.c` provides the harness, but no published multi-day run.
 
 ### LLD Implementation Status
 
@@ -361,14 +359,14 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 | LLD_08_FAULT_INJECTION.md | REQ-132..134 | Mostly implemented; controller hooks partial |
 | LLD_09_BOOTLOADER.md | REQ-078..081 | Implemented |
 | LLD_10_PERFORMANCE_VALIDATION.md | REQ-116..122 | Framework landed; target enforcement pending |
-| LLD_11_FTL_RELIABILITY.md | REQ-110..115, REQ-154..158 | Implemented except RAID-XOR, GC PI propagation, error log page |
+| LLD_11_FTL_RELIABILITY.md | REQ-110..115, REQ-154..158 | Implemented except RAID-XOR (REQ-114) |
 | LLD_12_REALTIME_SERVICES.md | REQ-074, REQ-085..088, REQ-171..178 | Implemented except IPC ring + resource sampling + P99 anomaly alert |
 | LLD_13_HAL_ADVANCED.md | REQ-063, REQ-064, REQ-069 | Stubbed; full AER + PCIe link state pending |
 | LLD_14_NOR_FLASH.md | REQ-053..056 | Implemented |
 | LLD_15_PERSISTENCE_FORMAT.md | REQ-131 | Checkpoint + WAL formats landed; LLD-level spec doc not published |
 | LLD_17_POWER_LOSS_PROTECTION.md | REQ-139..146 | Implemented |
 | LLD_18_QOS_DETERMINISM.md | REQ-147..153 | DWRR + latency monitor landed; per-NS caps + SLA enforcement partial |
-| LLD_19_SECURITY_ENCRYPTION.md | REQ-159..165 | Implemented except REQ-163 (physical secure erase) |
+| LLD_19_SECURITY_ENCRYPTION.md | REQ-159..165 | Implemented except REQ-161 (TCG Opal commands) and REQ-165 (NOR-backed key table) |
 
 ---
 
@@ -379,15 +377,14 @@ Current position: **core + enterprise features largely landed; polish and gap-cl
 Near-term priorities:
 1. Close **REQ-063 AER** and **REQ-064 PCIe link-state** per LLD_13, then flip HAL from 75% to ~92%.
 2. Enforce **perf targets** (REQ-116..120) in `perf_validation_run_all`, converting the 5 ⚠️ rows to ✅.
-3. Wire **Error Log Page** (REQ-115, 158) and **GC-path PI propagation** (REQ-157) — closes most of Section 6 + T10 PI group.
-4. Add physical **secure erase** (REQ-163) on top of the existing crypto erase.
+3. Flip the remaining **Security** requirements — TCG Opal command parsing (REQ-161) and NOR-backed key table with dual-copy UPLP-safe updates (REQ-165).
 
 Mid-term:
-5. Broaden QoS coverage — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).
-6. Implement SPSC IPC ring + periodic resource sampling (REQ-085, 087).
-7. Schedule a published multi-day soak run (REQ-137) off the existing `stress_stability` harness.
+4. Broaden QoS coverage — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).
+5. Implement SPSC IPC ring + periodic resource sampling (REQ-085, 087).
+6. Schedule a published multi-day soak run (REQ-137) off the existing `stress_stability` harness.
 
 Long-term:
-8. **Phase 7 kernel module** — optional path to real `/dev/nvme`; gated on Phases 0–6 stability (now satisfied).
+7. **Phase 7 kernel module** — optional path to real `/dev/nvme`; gated on Phases 0–6 stability (now satisfied).
 
 See `IMPLEMENTATION_ROADMAP.md` for the phase-indexed plan.
