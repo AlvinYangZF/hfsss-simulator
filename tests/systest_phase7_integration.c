@@ -1,12 +1,22 @@
 /*
  * NAND command-engine long-form integration sweep.
  *
- * A single driver that exercises every command path delivered by the
- * preceding work in the NAND command-engine series (identity, status,
- * program/read, erase+reprogram, cache read/program, suspend/resume,
- * reset-abort) once per generic profile. Each profile gets a fresh
- * media_ctx; the sequence runs end-to-end; the ctx is torn down before
- * the next profile is instantiated.
+ * Scope (read before assuming what this suite proves):
+ *   Single-plane path coverage of identity, status, program/read,
+ *   erase+reprogram, cache read/program, suspend/resume, and
+ *   reset-abort under each generic profile. Each profile gets a
+ *   fresh media_ctx; the sequence runs end-to-end; the ctx is torn
+ *   down before the next profile is instantiated.
+ *
+ *   Multi-plane paths are NOT exercised here. The sweep geometry
+ *   uses planes_per_die=1 for fast iteration, so multi-plane legal
+ *   and illegal-mask behavior, multi-plane suspend, and multi-plane
+ *   reset-abort are explicitly skipped (see the annotated no-op in
+ *   run_profile_sequence). Multi-plane end-to-end coverage lives in
+ *   tests/test_cmd_integration_heavy.c (IS-01, IS-04, IS-07, IS-09)
+ *   and in the profile-matrix mp_rules assertions in
+ *   tests/test_profile_matrix.c. Do not read the pass output of this
+ *   binary as evidence that multi-plane is green.
  *
  * Profiles covered:
  *   NAND_PROFILE_GENERIC_ONFI_TLC
