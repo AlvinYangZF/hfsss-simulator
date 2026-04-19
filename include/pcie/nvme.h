@@ -147,6 +147,32 @@
 #define NVME_SANACT_OVERWRITE      0x03
 #define NVME_SANACT_CRYPTO_ERASE   0x04
 
+/* Get Log Page — Log Page Identifiers */
+#define NVME_LID_ERROR_INFO        0x01
+#define NVME_LID_SMART             0x02
+#define NVME_LID_FW_SLOT           0x03
+#define NVME_LID_TELEMETRY_HOST    0x07  /* host-initiated (REQ-174) */
+#define NVME_LID_TELEMETRY_CTRL    0x08  /* controller-initiated (REQ-175) */
+
+/* Error Information Log Page entry — 64 bytes per NVMe spec §5.14.1.1 */
+#define NVME_ERROR_LOG_ENTRIES     64
+
+struct nvme_error_log_entry {
+    uint64_t error_count;
+    uint16_t sq_id;
+    uint16_t cmd_id;
+    uint16_t status_field;      /* DNR:1 | SCT:3 | SC:8 (+ reserved) */
+    uint16_t parm_err_loc;
+    uint64_t lba;
+    uint32_t nsid;
+    uint8_t  vs;
+    uint8_t  trtype;
+    uint8_t  reserved[2];
+    uint64_t cmd_specific;
+    uint16_t trtype_specific;
+    uint8_t  reserved2[22];
+} __attribute__((packed));
+
 /* NVM I/O Command Opcodes */
 #define NVME_NVM_FLUSH             0x00
 #define NVME_NVM_WRITE             0x01

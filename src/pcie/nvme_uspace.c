@@ -57,6 +57,13 @@ int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config 
         return ret;
     }
 
+    /* Initialize Error Log ring lock (REQ-115/158) */
+    ret = mutex_init(&dev->error_log_lock);
+    if (ret != HFSSS_OK) {
+        mutex_cleanup(&dev->lock);
+        return ret;
+    }
+
     /* Initialize NVMe controller */
     ret = nvme_ctrl_init(&dev->ctrl);
     if (ret != HFSSS_OK) {
@@ -118,6 +125,7 @@ void nvme_uspace_dev_cleanup(struct nvme_uspace_dev *dev)
 
     nvme_queue_mgr_cleanup(&dev->qmgr);
     nvme_ctrl_cleanup(&dev->ctrl);
+    mutex_cleanup(&dev->error_log_lock);
     mutex_cleanup(&dev->lock);
 
     memset(dev, 0, sizeof(*dev));
@@ -532,7 +540,52 @@ int nvme_uspace_fw_commit(struct nvme_uspace_dev *dev, u32 slot, u32 action)
     return HFSSS_OK;
 }
 
-/* Get Log Page: only LID=2 (SMART/Health) is implemented. */
+/* Append an entry to the NVMe Error Information Log ring (REQ-115/158). */
+void nvme_uspace_report_error(struct nvme_uspace_dev *dev,
+                              u16 sq_id, u16 cmd_id, u16 status_field,
+                              u64 lba, u32 nsid)
+{
+    if (!dev) {
+        return;
+    }
+    mutex_lock(&dev->error_log_lock, 0);
+    u32 slot = dev->error_log_head % NVME_ERROR_LOG_ENTRIES;
+    struct nvme_error_log_entry *e = &dev->error_log[slot];
+    memset(e, 0, sizeof(*e));
+    dev->error_log_count++;
+    e->error_count   = dev->error_log_count;
+    e->sq_id         = sq_id;
+    e->cmd_id        = cmd_id;
+    e->status_field  = status_field;
+    e->lba           = lba;
+    e->nsid          = nsid;
+    dev->error_log_head = (dev->error_log_head + 1) % NVME_ERROR_LOG_ENTRIES;
+    mutex_unlock(&dev->error_log_lock);
+}
+
+/* Copy up to num_entries Error Log Page entries into caller-supplied buffer.
+ * Entries are copied newest-first per NVMe spec §5.14.1.1. Returns the
+ * number of entries actually written. */
+static u32 error_log_copy_recent(struct nvme_uspace_dev *dev,
+                                  struct nvme_error_log_entry *out,
+                                  u32 num_entries)
+{
+    mutex_lock(&dev->error_log_lock, 0);
+    u32 available = dev->error_log_count < NVME_ERROR_LOG_ENTRIES
+        ? (u32)dev->error_log_count
+        : NVME_ERROR_LOG_ENTRIES;
+    u32 to_copy = available < num_entries ? available : num_entries;
+    /* Newest-first: walk backwards from head-1. */
+    for (u32 i = 0; i < to_copy; i++) {
+        u32 idx = (dev->error_log_head + NVME_ERROR_LOG_ENTRIES - 1 - i)
+                  % NVME_ERROR_LOG_ENTRIES;
+        out[i] = dev->error_log[idx];
+    }
+    mutex_unlock(&dev->error_log_lock);
+    return to_copy;
+}
+
+/* Get Log Page: LID=1 (Error Info) + LID=2 (SMART/Health). */
 int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void *buf, u32 len)
 {
     if (!dev || !dev->initialized || !buf) {
@@ -540,7 +593,19 @@ int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void
     }
     (void)nsid;
 
-    if (lid != 2) {
+    if (lid == NVME_LID_ERROR_INFO) {
+        u32 max_entries = len / (u32)sizeof(struct nvme_error_log_entry);
+        if (max_entries == 0) {
+            return HFSSS_ERR_INVAL;
+        }
+        memset(buf, 0, len);
+        error_log_copy_recent(dev,
+                              (struct nvme_error_log_entry *)buf,
+                              max_entries);
+        return HFSSS_OK;
+    }
+
+    if (lid != NVME_LID_SMART) {
         return HFSSS_ERR_NOTSUPP;
     }
 

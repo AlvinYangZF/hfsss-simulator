@@ -209,6 +209,89 @@ static int test_sanitize_action_modes(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* NVMe Error Information Log Page (REQ-115 / REQ-158) */
+static int test_error_log_page(void)
+{
+    printf("\n=== Error Information Log Page (REQ-115 / REQ-158) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+
+    nvme_uspace_config_default(&config);
+    config.sssim_cfg.page_size        = 4096;
+    config.sssim_cfg.spare_size       = 64;
+    config.sssim_cfg.channel_count    = 2;
+    config.sssim_cfg.chips_per_channel = 2;
+    config.sssim_cfg.dies_per_chip    = 1;
+    config.sssim_cfg.planes_per_die   = 1;
+    config.sssim_cfg.blocks_per_plane = 64;
+    config.sssim_cfg.pages_per_block  = 64;
+    config.sssim_cfg.total_lbas       = 512;
+
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "err-log: dev_init");
+    ret = nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(ret == HFSSS_OK, "err-log: dev_start");
+
+    /* Empty log: LID=1 returns all-zero page */
+    struct nvme_error_log_entry entries[8];
+    memset(entries, 0xAB, sizeof(entries));
+    ret = nvme_uspace_get_log_page(&dev, 1, NVME_LID_ERROR_INFO,
+                                   entries, sizeof(entries));
+    TEST_ASSERT(ret == HFSSS_OK, "err-log: LID=1 returns OK when empty");
+    TEST_ASSERT(entries[0].error_count == 0,
+                "err-log: first entry cleared when log empty");
+
+    /* Report three UCE events and confirm newest-first ordering */
+    nvme_uspace_report_error(&dev, 1, 0x1001, 0x4281 /* SCT=2 SC=0x81 */,
+                             100 /* lba */, 1 /* nsid */);
+    nvme_uspace_report_error(&dev, 2, 0x1002, 0x4285 /* SC=0x85 */,
+                             200, 1);
+    nvme_uspace_report_error(&dev, 3, 0x1003, 0x4281,
+                             300, 1);
+
+    memset(entries, 0, sizeof(entries));
+    ret = nvme_uspace_get_log_page(&dev, 1, NVME_LID_ERROR_INFO,
+                                   entries, sizeof(entries));
+    TEST_ASSERT(ret == HFSSS_OK, "err-log: LID=1 after 3 reports");
+    TEST_ASSERT(entries[0].error_count == 3,
+                "err-log: newest entry first (error_count=3)");
+    TEST_ASSERT(entries[0].lba == 300,
+                "err-log: entry[0] LBA matches most recent report");
+    TEST_ASSERT(entries[0].status_field == 0x4281,
+                "err-log: entry[0] status field preserved");
+    TEST_ASSERT(entries[1].error_count == 2,
+                "err-log: entry[1] error_count=2");
+    TEST_ASSERT(entries[1].lba == 200,
+                "err-log: entry[1] LBA=200");
+    TEST_ASSERT(entries[2].error_count == 1,
+                "err-log: entry[2] error_count=1 (oldest of the three)");
+    TEST_ASSERT(entries[2].nsid == 1,
+                "err-log: entry[2] nsid preserved");
+
+    /* Ring wraparound: fill past capacity and confirm newest-first */
+    for (u32 i = 4; i < NVME_ERROR_LOG_ENTRIES + 5; i++) {
+        nvme_uspace_report_error(&dev, (u16)i, (u16)(i + 0x1000), 0x4281,
+                                 (u64)(i * 10), 1);
+    }
+    memset(entries, 0, sizeof(entries));
+    ret = nvme_uspace_get_log_page(&dev, 1, NVME_LID_ERROR_INFO,
+                                   entries, sizeof(entries));
+    TEST_ASSERT(ret == HFSSS_OK, "err-log: LID=1 after ring wrap");
+    TEST_ASSERT(entries[0].error_count == NVME_ERROR_LOG_ENTRIES + 4,
+                "err-log: newest entry has highest error_count after wrap");
+
+    /* Undersized buffer: len < one entry -> INVAL */
+    ret = nvme_uspace_get_log_page(&dev, 1, NVME_LID_ERROR_INFO,
+                                   entries, 32);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "err-log: len < sizeof(entry) returns INVAL");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     print_separator();
@@ -217,6 +300,7 @@ int main(void)
 
     test_nvme_uspace_dev();
     test_sanitize_action_modes();
+    test_error_log_page();
 
     print_separator();
     printf("Test Summary\n");

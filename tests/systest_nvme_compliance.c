@@ -276,10 +276,10 @@ static void test_nc005(void)
 
     free(wbuf);
 
-    /* Unsupported LID 1 (Error Information) */
+    /* LID=1 Error Information Log Page is now supported (REQ-115/158) */
     uint8_t dummy_log[512];
     rc = nvme_uspace_get_log_page(&dev, 1, 1, dummy_log, sizeof(dummy_log));
-    TEST_ASSERT(rc == HFSSS_ERR_NOTSUPP, "get_log_page LID=1 returns HFSSS_ERR_NOTSUPP");
+    TEST_ASSERT(rc == HFSSS_OK, "get_log_page LID=1 (Error Info) returns OK");
 
     teardown_device(&dev);
 }
