@@ -10,7 +10,7 @@
 | Version | Date | Author | Description |
 |---------|------|--------|-------------|
 | 1.0 | 2026-03-23 | HFSSS Team | Initial enterprise traceability matrix |
-| 1.1 | 2026-04-19 | HFSSS Team | Implementation Status column synced to current `REQUIREMENT_COVERAGE.md` (✅ 116, ⚠️ 38, ❌ 23, 🔧 1) |
+| 1.1 | 2026-04-19 | HFSSS Team | Implementation Status column synced to current `REQUIREMENT_COVERAGE.md` (✅ 121, ⚠️ 33, ❌ 23, 🔧 1) |
 
 > **Source of truth**: `REQUIREMENT_COVERAGE.md` holds the row-level implementation notes (impl file + verifying test). This matrix only maps REQ → PRD section / HLD / LLD / test artifact and mirrors the coverage column.
 
@@ -162,7 +162,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-112 | Write Retry/Write Verify | 5.7.5 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 | Implemented |
 | REQ-113 | Multi-level IO flow control | 5.7.6 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 | Implemented |
 | REQ-114 | RAID-Like data protection | 5.7.7 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 | Not Implemented |
-| REQ-115 | NVMe error status codes/Error handling | 5.7.8 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 | Partial |
+| REQ-115 | NVMe error status codes/Error handling | 5.7.8 | HLD_06 | LLD_06, LLD_11 | TEST_LLD_06 | Implemented |
 ### 7. Performance Requirements (REQ-116 through REQ-123)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
@@ -232,8 +232,8 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-154 | T10 PI Type 1/2/3 support | 12.3.2 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Implemented |
 | REQ-155 | CRC-16 guard tag (write/read path) | 12.3.3 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Implemented |
 | REQ-156 | Reference and application tag | 12.3.4 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Implemented |
-| REQ-157 | PI metadata propagation through FTL/GC | 12.3.7 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Partial |
-| REQ-158 | E2E data integrity error reporting | 12.3.7 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Partial |
+| REQ-157 | PI metadata propagation through FTL/GC | 12.3.7 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Implemented |
+| REQ-158 | E2E data integrity error reporting | 12.3.7 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | Implemented |
 ### 14. Enterprise Requirements: Security (REQ-159 through REQ-165)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
@@ -242,8 +242,8 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-160 | Key hierarchy (MK->KEK->DEK) | 12.4.3 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
 | REQ-161 | TCG Opal SSC basic commands | 12.4.4 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Partial |
 | REQ-162 | Crypto erase (destroy DEK) | 12.4.5 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
-| REQ-163 | Secure erase (block erase all) | 12.4.6 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Partial |
-| REQ-164 | Secure boot chain verification | 12.4.7 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Partial |
+| REQ-163 | Secure erase (block erase all) | 12.4.6 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
+| REQ-164 | Secure boot chain verification | 12.4.7 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
 | REQ-165 | Key storage in NOR (dual-copy, UPLP-safe) | 12.4.7 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Partial |
 ### 15. Enterprise Requirements: Multi-Namespace Management (REQ-166 through REQ-170)
 
@@ -277,18 +277,18 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Media Threads | 20 | 15 | 4 | 0 | 1 | 75.0% |
 | Hardware Abstraction Layer | 12 | 9 | 1 | 1 | 1 | 75.0% |
 | Common Services | 24 | 18 | 2 | 0 | 4 | 75.0% |
-| Algorithm Task Layer (FTL) | 22 | 18 | 2 | 0 | 2 | 81.8% |
+| Algorithm Task Layer (FTL) | 22 | 19 | 1 | 0 | 2 | 86.4% |
 | Performance Requirements | 8 | 0 | 5 | 0 | 3 | 0.0% |
 | Product Interfaces | 8 | 4 | 3 | 0 | 1 | 50.0% |
 | Fault Injection Framework | 3 | 1 | 2 | 0 | 0 | 33.3% |
 | System Reliability/Stability | 4 | 2 | 1 | 0 | 1 | 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100.0% |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% |
-| Enterprise: T10 DIF/PI | 5 | 3 | 2 | 0 | 0 | 60.0% |
-| Enterprise: Security | 7 | 3 | 4 | 0 | 0 | 42.9% |
+| Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100.0% |
+| Enterprise: Security | 7 | 5 | 2 | 0 | 0 | 71.4% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Thermal/Telemetry | 8 | 4 | 4 | 0 | 0 | 50.0% |
-| **Total** | **178** | **116** | **38** | **1** | **23** | **65.2%** |
+| **Total** | **178** | **121** | **33** | **1** | **23** | **68.0%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 

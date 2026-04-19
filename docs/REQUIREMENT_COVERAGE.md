@@ -32,20 +32,20 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Media Threads | 20 | 15 | 4 | 1 | 0 | 75.0% | ↑ +4 (NOR full) |
 | HAL | 12 | 9 | 1 | 1 | 1 | 75.0% | ↓ ⚠️ on REQ-063 (AER stub only) |
 | Common Services | 24 | 18 | 2 | 4 | 0 | 75.0% | ↑ +9 (boot/power/OOB/SMART/trace) |
-| Algorithm Task Layer (FTL) | 22 | 18 | 2 | 2 | 0 | 81.8% | ↑ +5 (cmd state machine, retries, flow ctl, wear monitor) |
+| Algorithm Task Layer (FTL) | 22 | 19 | 1 | 2 | 0 | 86.4% | ↑ +6 (cmd state machine, retries, flow ctl, wear monitor, Error Log Page) |
 | Performance Requirements | 8 | 0 | 5 | 3 | 0 | 0% (62.5% partial) | ↑ framework landed, targets not enforced |
 | Product Interfaces | 8 | 4 | 3 | 1 | 0 | 50.0% | ↑ +4 (/proc, hfsss-ctrl, YAML, persistence) |
 | Fault Injection | 3 | 1 | 2 | 0 | 0 | 33.3% (100% partial) | ↑ registry + power hook landed; NAND wiring pending |
 | System Reliability | 4 | 2 | 1 | 1 | 0 | 50.0% | -- |
-| **Core Subtotal** | **138** | **91** | **23** | **23** | **1** | **65.9%** (82.6% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **92** | **22** | **23** | **1** | **66.7%** (82.6% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% (100% partial) | ↑ DWRR + partial wiring |
-| Enterprise: T10 DIF/PI | 5 | 3 | 2 | 0 | 0 | 60.0% (100% partial) | ↑ Type 1/2/3 CRC-16 |
-| Enterprise: Security | 7 | 3 | 4 | 0 | 0 | 42.9% (100% partial) | ↑ AES-XTS sim, keys, crypto erase; secure boot + key-NOR + TCG-Opal + sanitize remain ⚠️ |
+| Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
+| Enterprise: Security | 7 | 4 | 3 | 0 | 0 | 57.1% (100% partial) | ↑ AES-XTS sim, keys, crypto erase, secure-boot-verify wired into POST; key-NOR + TCG-Opal + sanitize-depth remain ⚠️ |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 4 | 4 | 0 | 0 | 50.0% (100% partial) | ↑ throttle + SMART predict done; NVMe Log Page 07h/08h dispatch pending |
-| **Enterprise Subtotal** | **40** | **25** | **15** | **0** | **0** | **62.5%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **116** | **38** | **23** | **1** | **65.2%** (86.5% partial) | ↑ from 38.8% |
+| **Enterprise Subtotal** | **40** | **29** | **11** | **0** | **0** | **72.5%** (100% partial) | ↑ from 0% |
+| **Grand Total** | **178** | **121** | **33** | **23** | **1** | **68.0%** (86.5% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -196,7 +196,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-112 | Read/Write/Erase Command Management - Write Retry/Write Verify | ✅ | `max_write_retries` loop in `src/ftl/ftl.c`; spare-block fallback through `ftl_rel_consume_spare` in `ftl_reliability.c` |
 | REQ-113 | IO Flow Control - Multi-Level Flow Control | ✅ | `token_bucket` per-flow + per-QoS array in `src/controller/flow_control.c` (`FLOW_MAX` tiers + `QOS_MAX` classes); paired with backpressure (REQ-034) |
 | REQ-114 | Data Redundancy Backup - RAID-Like Data Protection | ❌ | Die-level XOR parity / dual-copy L2P not implemented; BBT mirror in NOR partitions exists via REQ-054 |
-| REQ-115 | Command Error Handling - NVMe Error Status Codes/Error Handling Flow | ⚠️ | Basic error codes in `include/ftl/error.h`; full NVMe Error Log Page / UCE/CE/Recovered-Error path classification not yet complete (LLD_11 designed) |
+| REQ-115 | Command Error Handling - NVMe Error Status Codes/Error Handling Flow | ✅ | Error Log Page (LID=0x01) population via `nvme_uspace_report_error()`; UCE/CE entries flow into the 64-entry ring in `nvme_uspace_dev`; SCT/SC carried in `status_field` per NVMe spec §5.14.1.1 |
 
 ### 7. Performance Requirements (REQ-116 to REQ-123)
 
@@ -273,8 +273,8 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-154 | T10 PI Type 1/2/3 support (per namespace) | ✅ | `src/ftl/t10_pi.c` implements Type 1/2/3 CRC-16; `tests/test_t10_pi.c` |
 | REQ-155 | CRC-16 guard tag (write generate, read verify) | ✅ | CRC-16 guard generate/verify in `t10_pi.c` |
 | REQ-156 | Reference and application tag processing | ✅ | Reference + application tag handling in `t10_pi.c` |
-| REQ-157 | PI metadata propagation through FTL/GC | ⚠️ | PI metadata computed and verified; propagation through full GC rewrite path not yet covered end-to-end |
-| REQ-158 | E2E data integrity error reporting (NVMe status) | ⚠️ | PI error returned as NVMe status in read path; error-log-page population pending |
+| REQ-157 | PI metadata propagation through FTL/GC | ✅ | GC read/program path passes spare_buf through HAL; `src/media/media.c` copies spare back on read so PI tuples survive the migrate. End-to-end covered by `tests/test_t10_pi.c::test_pi_gc_preservation` |
+| REQ-158 | E2E data integrity error reporting (NVMe status) | ✅ | PI errors map to NVMe status (SCT=2, SC=0x81/0x82/0x83); populated into Error Log Page ring via `nvme_uspace_report_error()`; host observable via `Get Log Page LID=0x01` |
 
 ### 14. Enterprise: Security / Data-at-Rest Encryption (REQ-159 to REQ-165)
 
@@ -284,8 +284,8 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-160 | Key hierarchy (MK→KEK→DEK, per-NS isolation) | ✅ | `sec_hkdf_derive` + per-NS `key_entry` in `security.c` |
 | REQ-161 | TCG Opal SSC basic commands (lock/unlock) | ⚠️ | `enum key_state` (EMPTY/ACTIVE/SUSPENDED/DESTROYED) in `include/controller/security.h` provides the underlying state transitions; TCG Opal-specific command parsing (lock/unlock opcodes) not yet wired |
 | REQ-162 | Crypto erase (destroy DEK) | ✅ | `crypto_erase_ns` in `security.c` |
-| REQ-163 | Secure erase (block erase all user data) | ⚠️ | `nvme_uspace_sanitize` handler for `NVME_ADMIN_SANITIZE` (opcode 0x84) routes through `src/pcie/nvme_uspace.c`; NVMe sanitize action modes (block-erase / crypto-erase / overwrite) not all fully implemented end-to-end |
-| REQ-164 | Secure boot chain verification (ROM→BL→FW) | ⚠️ | `secure_boot_verify` (CRC32) helper in `src/controller/security.c`; not yet invoked from `src/common/boot.c`, so tampered images do not abort the boot flow |
+| REQ-163 | Secure erase (block erase all user data) | ✅ | `nvme_uspace_sanitize` dispatches all four SANACT modes (EXIT_FAILURE/BLOCK_ERASE/OVERWRITE/CRYPTO_ERASE); OVERWRITE performs explicit zero-fill on every LBA |
+| REQ-164 | Secure boot chain verification (ROM→BL→FW) | ✅ | `secure_boot_verify()` invoked during `BOOT_PHASE_1_POST` in `src/common/boot.c`; tampered image or wrong magic → `HFSSS_ERR_AUTH` abort |
 | REQ-165 | Key storage in NOR (dual-copy, UPLP-safe) | ⚠️ | `key_table_save`/`key_table_load` persist to an arbitrary file path in `security.c`; NOR partition backing, dual-copy fallback and UPLP-safe update path not yet implemented |
 
 ### 15. Enterprise: Multi-Namespace Management (REQ-166 to REQ-170)
