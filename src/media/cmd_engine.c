@@ -45,7 +45,18 @@ static struct nand_channel *engine_get_channel(struct nand_device *dev, u32 ch)
  * is written to *out_first for backward compat; for multi-bit masks
  * *out_first receives the lowest set bit.
  */
-static int engine_validate_planes(u32 plane_mask, u32 plane_count, u32 *out_count, u32 *out_first)
+/*
+ * Validate the submission-time plane mask against die geometry and
+ * profile policy. Geometry rule: every bit in the mask must address a
+ * real plane (index < die->plane_count). Profile rule (when a profile
+ * is attached): the number of set bits must not exceed
+ * profile->mp_rules.max_planes_per_cmd — this captures the spec-level
+ * cap the host presents to firmware (ONFI 3.5 and JEDEC Toggle both
+ * express a per-command plane cap; different vendors and generations
+ * publish different values).
+ */
+static int engine_validate_planes(const struct nand_profile *profile, u32 plane_mask, u32 plane_count,
+                                  u32 *out_count, u32 *out_first)
 {
     if (plane_mask == 0) {
         return HFSSS_ERR_INVAL;
@@ -60,6 +71,9 @@ static int engine_validate_planes(u32 plane_mask, u32 plane_count, u32 *out_coun
         }
         count++;
         remaining &= remaining - 1;
+    }
+    if (profile && profile->mp_rules.max_planes_per_cmd > 0 && count > profile->mp_rules.max_planes_per_cmd) {
+        return HFSSS_ERR_INVAL;
     }
     if (out_count) {
         *out_count = count;
@@ -273,7 +287,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     if (!die) {
         return HFSSS_ERR_INVAL;
     }
-    int rc = engine_validate_planes(target->plane_mask, die->plane_count, &plane_count, &plane_first);
+    int rc = engine_validate_planes(dev->profile, target->plane_mask, die->plane_count, &plane_count, &plane_first);
     if (rc != HFSSS_OK) {
         return rc;
     }
@@ -462,9 +476,27 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
             mutex_lock(&channel->lock, 0);
         }
 
-        /* Recheck abort after the spin returns DONE: a reset could land
-         * between the spin exit and this point (the channel lock was just
-         * re-acquired, but die_lock was not held across the gap). */
+        /*
+         * Recheck abort and run the commit callback under die_lock so
+         * reset cannot interleave between the check and the commit.
+         * Reset takes die_lock across its entire critical section
+         * (stamp + state reset + epoch store); serializing here makes
+         * the ordering deterministic:
+         *   - worker wins: lock -> old epoch observed -> commit runs
+         *     under lock -> unlock. Reset then acquires the lock and
+         *     stamps the now-committed page, which is the correct
+         *     abort-evidence outcome.
+         *   - reset wins: reset's lock ordering puts the epoch store
+         *     and page stamp ahead of the worker's recheck. Worker
+         *     then acquires the lock, sees the new epoch, and skips
+         *     the commit entirely so caller data cannot overwrite the
+         *     DEAD stamp.
+         * Without this serialization there is a window between the
+         * pre-fix recheck and the commit call in which reset could
+         * stamp DEAD and increment the epoch, only to have the commit
+         * overwrite it — the race the reviewer flagged.
+         */
+        mutex_lock(&die->die_lock, 0);
         if (wait_rc == ENGINE_WAIT_DONE && atomic_load(&die->cmd_state.abort_epoch) != epoch_at_submit) {
             wait_rc = ENGINE_WAIT_ABORT;
         }
@@ -473,6 +505,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         } else if (ops && ops->on_array_commit) {
             stage_rc = ops->on_array_commit(cb_ctx);
         }
+        mutex_unlock(&die->die_lock);
     }
 
     /* Data transfer stage is only exercised by the read path today, but the
@@ -624,6 +657,87 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
         if (die->cmd_state.state != DIE_IDLE && die->cmd_state.state != DIE_RESETTING) {
             mutex_unlock(&die->die_lock);
             return HFSSS_ERR_BUSY;
+        }
+    }
+
+    /*
+     * Stamp the abort pattern only onto pages whose PROG / ERASE was
+     * actually mid-flight or suspended when this reset arrived. Scope
+     * is intentionally narrower than "any non-IDLE state":
+     *
+     *   - PROG_SETUP / ERASE_SETUP are transient states where the
+     *     worker has entered engine_submit but no array mutation has
+     *     happened yet; stamping DEAD there manufactures fake abort
+     *     evidence against a page that still carries either 0xFF or
+     *     whatever the caller last committed. The page content is
+     *     not a victim of the aborted op.
+     *   - CACHE_PROG commits its payload synchronously inside
+     *     engine_submit before the die transitions to the
+     *     PROG_ARRAY_BUSY trailing window that indicates "cache
+     *     sequence is open for the next page". A reset in that window
+     *     lands after the commit, and stamping would overwrite a
+     *     valid, already-persisted page.
+     *
+     * The four states that legitimately indicate an aborted array
+     * mutation are PROG_ARRAY_BUSY / ERASE_ARRAY_BUSY (worker still
+     * spinning) and SUSPENDED_PROG / SUSPENDED_ERASE (worker parked
+     * mid-op). For those, the target page (or every page in the target
+     * block for erase) is a victim of the abort and must carry DEAD
+     * so downstream tooling can distinguish it from clean data.
+     *
+     * Snapshot the target before nand_cmd_state_init wipes it. The
+     * worker (if any) is still spinning on the array-busy path and has
+     * not yet observed the abort; doing the stamp under die_lock before
+     * releasing, together with the matching die_lock around the
+     * worker's recheck + commit (see the array-busy block at the top
+     * of this file), closes the race where commit would overwrite the
+     * DEAD stamp.
+     */
+    {
+        enum nand_cmd_opcode aborted_op = die->cmd_state.opcode;
+        struct nand_cmd_target aborted_tgt = die->cmd_state.target;
+        enum nand_die_state prev_state = die->cmd_state.state;
+
+        bool in_prog_mutation = (prev_state == DIE_PROG_ARRAY_BUSY || prev_state == DIE_SUSPENDED_PROG);
+        bool in_erase_mutation = (prev_state == DIE_ERASE_ARRAY_BUSY || prev_state == DIE_SUSPENDED_ERASE);
+
+        /* CACHE_PROG is explicitly excluded: even though it can leave
+         * the die in PROG_ARRAY_BUSY for the trailing tCBSY window, at
+         * that point its commit already ran synchronously. */
+        bool stamp_page = (aborted_op == NAND_OP_PROG) && in_prog_mutation;
+        bool stamp_block = (aborted_op == NAND_OP_ERASE) && in_erase_mutation;
+
+        if ((stamp_page || stamp_block) && aborted_tgt.plane_mask != 0) {
+            u32 p;
+            FOR_EACH_PLANE(p, aborted_tgt.plane_mask)
+            {
+                struct nand_block *blk =
+                    nand_get_block(dev, target->ch, target->chip, target->die, p, aborted_tgt.block);
+                if (!blk) {
+                    continue;
+                }
+                if (stamp_block) {
+                    for (u32 pg = 0; pg < blk->page_count; pg++) {
+                        nand_stamp_abort_pattern(&blk->pages[pg], dev->page_size);
+                    }
+                } else {
+                    if (aborted_tgt.page < blk->page_count) {
+                        nand_stamp_abort_pattern(&blk->pages[aborted_tgt.page], dev->page_size);
+                    }
+                }
+                /*
+                 * Propagate the dirty bit to the containing block.
+                 * media_save_incremental short-circuits on !blk->dirty
+                 * and never walks to the page-level dirty flags, so
+                 * marking the pages alone would let a reset-aborted
+                 * page fall out of the next incremental checkpoint and
+                 * come back as stale pre-abort data after reload. The
+                 * page-level dirty bit is still set by
+                 * nand_stamp_abort_pattern so the page's own metadata
+                 * is not skipped once the block reaches the walker.
+                 */
+                blk->dirty = true;
+            }
         }
     }
 
