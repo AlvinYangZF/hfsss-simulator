@@ -267,6 +267,140 @@ static int test_reset_from_idle_does_not_stamp(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Scope: reset from PROG_SETUP must not stamp.                             */
+/*                                                                           */
+/* nand_cmd_state_begin is public so we can directly drive the die into      */
+/* DIE_PROG_SETUP without running a worker. A reset from that state should  */
+/* not stamp the target page — nothing has been written, so stamping DEAD   */
+/* would manufacture a false abort record.                                   */
+/* ------------------------------------------------------------------------ */
+
+static int test_reset_from_prog_setup_does_not_stamp(void)
+{
+    printf("\n=== reset from PROG_SETUP: no page stamping ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx ctx;
+    int ret = media_init(&ctx, &cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "setup: media_init");
+    if (ret != HFSSS_OK) {
+        return TEST_FAIL;
+    }
+
+    const u32 block = 20;
+    const u32 page = 0;
+
+    /* Seed the page with a recognizable pattern so we can tell that
+     * reset did not rewrite it. */
+    struct nand_page *pg = nand_get_page(ctx.nand, 0, 0, 0, 0, block, page);
+    TEST_ASSERT(pg != NULL, "setup: target page pointer");
+    memset(pg->data, 0x5C, cfg.page_size);
+    pg->state = PAGE_VALID;
+
+    /* Drive the die into PROG_SETUP without running a worker. The
+     * test navigates directly into the public cmd_state helpers so
+     * the state machine sits exactly at the transient setup point
+     * that a real worker passes through in nanoseconds. */
+    struct nand_die *die = &ctx.nand->channels[0].chips[0].dies[0];
+    struct nand_cmd_target tgt = {
+        .ch = 0, .chip = 0, .die = 0, .plane_mask = 0x1, .block = block, .page = page};
+    nand_cmd_state_begin(&die->cmd_state, NAND_OP_PROG, &tgt, 1000000);
+    TEST_ASSERT(die->cmd_state.state == DIE_PROG_SETUP, "setup: die now in DIE_PROG_SETUP");
+
+    /* Reset from the setup state. With the narrowed scope, the abort
+     * stamper must skip this page — no array mutation happened yet. */
+    struct nand_cmd_target rt = {.ch = 0, .chip = 0, .die = 0, .plane_mask = 0x1};
+    ret = nand_cmd_engine_submit_reset(ctx.nand, &rt);
+    TEST_ASSERT(ret == HFSSS_OK, "setup: reset accepted from PROG_SETUP");
+
+    /* Page content and state must be untouched. */
+    TEST_ASSERT(pg->state == PAGE_VALID,
+                "setup: reset-from-PROG_SETUP did not mark page PAGE_INVALID");
+    TEST_ASSERT(pg->data[0] == 0x5C && pg->data[cfg.page_size - 1] == 0x5C,
+                "setup: reset-from-PROG_SETUP did not stamp the page");
+    TEST_ASSERT(!is_abort_pattern(pg->data, cfg.page_size),
+                "setup: page does not carry DEAD pattern");
+
+    /* Die should be back in DIE_IDLE after the reset. */
+    struct nand_die_cmd_state snap;
+    struct nand_cmd_target tq = {.ch = 0, .chip = 0, .die = 0, .plane_mask = 0x1};
+    TEST_ASSERT(nand_cmd_engine_snapshot(ctx.nand, &tq, &snap) == HFSSS_OK, "setup: post-reset snapshot");
+    TEST_ASSERT(snap.state == DIE_IDLE, "setup: die back to DIE_IDLE");
+
+    media_cleanup(&ctx);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Scope: reset from cache_program trailing window must not stamp.          */
+/*                                                                           */
+/* A successful cache_program commits its payload synchronously inside      */
+/* engine_submit and then leaves the die in DIE_PROG_ARRAY_BUSY for tCBSY   */
+/* so the next cache_program can pipeline. A reset landing in that          */
+/* trailing window would — pre-fix — stamp over the valid, already-        */
+/* committed page. The scope narrowing excludes NAND_OP_CACHE_PROG from    */
+/* the stamp criteria for exactly this reason.                              */
+/* ------------------------------------------------------------------------ */
+
+static int test_reset_from_cache_prog_trailing_does_not_stamp(void)
+{
+    printf("\n=== reset from cache_program trailing: committed data preserved ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx ctx;
+    int ret = media_init(&ctx, &cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "cache: media_init");
+    if (ret != HFSSS_OK) {
+        return TEST_FAIL;
+    }
+
+    const u32 block = 30;
+    const u32 page = 0;
+    const u8 fill = 0xCC;
+
+    /* cache_program commits the page before returning and leaves the
+     * die in DIE_PROG_ARRAY_BUSY for the tCBSY overlap window. */
+    u8 wr[4096];
+    memset(wr, fill, sizeof(wr));
+    ret = media_nand_cache_program(&ctx, 0, 0, 0, 0, block, page, wr, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "cache: cache_program committed");
+
+    /* Verify we are actually in the trailing window before firing
+     * reset; otherwise the test proves nothing. */
+    struct nand_cmd_target tq = {.ch = 0, .chip = 0, .die = 0, .plane_mask = 0x1};
+    struct nand_die_cmd_state snap_before;
+    TEST_ASSERT(nand_cmd_engine_snapshot(ctx.nand, &tq, &snap_before) == HFSSS_OK, "cache: pre-reset snapshot");
+    TEST_ASSERT(snap_before.state == DIE_PROG_ARRAY_BUSY,
+                "cache: die in PROG_ARRAY_BUSY trailing window after cache_program");
+    TEST_ASSERT(snap_before.opcode == NAND_OP_CACHE_PROG,
+                "cache: opcode recorded as CACHE_PROG");
+
+    /* Reset from the trailing window. With the narrowed scope this
+     * must not stamp — the commit already ran and the page holds
+     * valid data. */
+    struct nand_cmd_target rt = {.ch = 0, .chip = 0, .die = 0, .plane_mask = 0x1};
+    ret = nand_cmd_engine_submit_reset(ctx.nand, &rt);
+    TEST_ASSERT(ret == HFSSS_OK, "cache: reset accepted from cache trailing window");
+
+    /* Committed page must still carry the fill value, not DEAD. */
+    struct nand_page *pg = nand_get_page(ctx.nand, 0, 0, 0, 0, block, page);
+    TEST_ASSERT(pg != NULL, "cache: target page pointer");
+    TEST_ASSERT(pg->state == PAGE_VALID,
+                "cache: cache-committed page keeps PAGE_VALID after reset");
+    TEST_ASSERT(pg->data[0] == fill && pg->data[cfg.page_size - 1] == fill,
+                "cache: cache-committed payload preserved across reset");
+    TEST_ASSERT(!is_abort_pattern(pg->data, cfg.page_size),
+                "cache: page does not carry DEAD pattern");
+
+    struct nand_die_cmd_state snap_after;
+    TEST_ASSERT(nand_cmd_engine_snapshot(ctx.nand, &tq, &snap_after) == HFSSS_OK, "cache: post-reset snapshot");
+    TEST_ASSERT(snap_after.state == DIE_IDLE, "cache: die back to DIE_IDLE");
+
+    media_cleanup(&ctx);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     printf("========================================\n");
@@ -274,6 +408,8 @@ int main(void)
     printf("========================================\n");
 
     test_reset_from_idle_does_not_stamp();
+    test_reset_from_prog_setup_does_not_stamp();
+    test_reset_from_cache_prog_trailing_does_not_stamp();
     test_reset_abort_race_stress();
 
     printf("\n========================================\n");

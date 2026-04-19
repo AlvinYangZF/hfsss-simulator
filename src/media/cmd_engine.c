@@ -661,29 +661,53 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
     }
 
     /*
-     * Stamp the abort pattern onto any pages whose PROG / CACHE_PROG /
-     * ERASE was interrupted by this reset. This includes both actively
-     * running commands (PROG_/ERASE_ARRAY_BUSY, setup states) and
-     * suspended commands (SUSPENDED_PROG/ERASE) — per design
-     * "Suspend/Resume Semantics" a suspended op aborted by reset is
-     * also not successfully committed.
+     * Stamp the abort pattern only onto pages whose PROG / ERASE was
+     * actually mid-flight or suspended when this reset arrived. Scope
+     * is intentionally narrower than "any non-IDLE state":
+     *
+     *   - PROG_SETUP / ERASE_SETUP are transient states where the
+     *     worker has entered engine_submit but no array mutation has
+     *     happened yet; stamping DEAD there manufactures fake abort
+     *     evidence against a page that still carries either 0xFF or
+     *     whatever the caller last committed. The page content is
+     *     not a victim of the aborted op.
+     *   - CACHE_PROG commits its payload synchronously inside
+     *     engine_submit before the die transitions to the
+     *     PROG_ARRAY_BUSY trailing window that indicates "cache
+     *     sequence is open for the next page". A reset in that window
+     *     lands after the commit, and stamping would overwrite a
+     *     valid, already-persisted page.
+     *
+     * The four states that legitimately indicate an aborted array
+     * mutation are PROG_ARRAY_BUSY / ERASE_ARRAY_BUSY (worker still
+     * spinning) and SUSPENDED_PROG / SUSPENDED_ERASE (worker parked
+     * mid-op). For those, the target page (or every page in the target
+     * block for erase) is a victim of the abort and must carry DEAD
+     * so downstream tooling can distinguish it from clean data.
      *
      * Snapshot the target before nand_cmd_state_init wipes it. The
      * worker (if any) is still spinning on the array-busy path and has
      * not yet observed the abort; doing the stamp under die_lock before
-     * releasing ensures the worker cannot overwrite the pattern via its
-     * on_array_commit callback (that callback is gated by the abort
-     * epoch check and is skipped when it reawakens).
+     * releasing, together with the matching die_lock around the
+     * worker's recheck + commit (see the array-busy block at the top
+     * of this file), closes the race where commit would overwrite the
+     * DEAD stamp.
      */
     {
         enum nand_cmd_opcode aborted_op = die->cmd_state.opcode;
         struct nand_cmd_target aborted_tgt = die->cmd_state.target;
         enum nand_die_state prev_state = die->cmd_state.state;
-        bool stamp_page = (aborted_op == NAND_OP_PROG || aborted_op == NAND_OP_CACHE_PROG);
-        bool stamp_block = (aborted_op == NAND_OP_ERASE);
-        bool aborting = (prev_state != DIE_IDLE && prev_state != DIE_RESETTING);
 
-        if (aborting && (stamp_page || stamp_block) && aborted_tgt.plane_mask != 0) {
+        bool in_prog_mutation = (prev_state == DIE_PROG_ARRAY_BUSY || prev_state == DIE_SUSPENDED_PROG);
+        bool in_erase_mutation = (prev_state == DIE_ERASE_ARRAY_BUSY || prev_state == DIE_SUSPENDED_ERASE);
+
+        /* CACHE_PROG is explicitly excluded: even though it can leave
+         * the die in PROG_ARRAY_BUSY for the trailing tCBSY window, at
+         * that point its commit already ran synchronously. */
+        bool stamp_page = (aborted_op == NAND_OP_PROG) && in_prog_mutation;
+        bool stamp_block = (aborted_op == NAND_OP_ERASE) && in_erase_mutation;
+
+        if ((stamp_page || stamp_block) && aborted_tgt.plane_mask != 0) {
             u32 p;
             FOR_EACH_PLANE(p, aborted_tgt.plane_mask)
             {
