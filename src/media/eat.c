@@ -8,7 +8,7 @@ int eat_ctx_init(struct eat_ctx *ctx)
     }
 
     memset(ctx, 0, sizeof(*ctx));
-    return HFSSS_OK;
+    return mutex_init(&ctx->lock);
 }
 
 void eat_ctx_cleanup(struct eat_ctx *ctx)
@@ -17,6 +17,7 @@ void eat_ctx_cleanup(struct eat_ctx *ctx)
         return;
     }
 
+    mutex_cleanup(&ctx->lock);
     memset(ctx, 0, sizeof(*ctx));
 }
 
@@ -31,7 +32,10 @@ u64 eat_get_for_plane(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane)
         return 0;
     }
 
-    return ctx->plane_eat[ch][chip][die][plane];
+    mutex_lock(&ctx->lock, 0);
+    u64 v = ctx->plane_eat[ch][chip][die][plane];
+    mutex_unlock(&ctx->lock);
+    return v;
 }
 
 u64 eat_get_for_die(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die)
@@ -44,7 +48,10 @@ u64 eat_get_for_die(struct eat_ctx *ctx, u32 ch, u32 chip, u32 die)
         return 0;
     }
 
-    return ctx->die_eat[ch][chip][die];
+    mutex_lock(&ctx->lock, 0);
+    u64 v = ctx->die_eat[ch][chip][die];
+    mutex_unlock(&ctx->lock);
+    return v;
 }
 
 u64 eat_get_for_chip(struct eat_ctx *ctx, u32 ch, u32 chip)
@@ -57,7 +64,10 @@ u64 eat_get_for_chip(struct eat_ctx *ctx, u32 ch, u32 chip)
         return 0;
     }
 
-    return ctx->chip_eat[ch][chip];
+    mutex_lock(&ctx->lock, 0);
+    u64 v = ctx->chip_eat[ch][chip];
+    mutex_unlock(&ctx->lock);
+    return v;
 }
 
 u64 eat_get_for_channel(struct eat_ctx *ctx, u32 ch)
@@ -70,7 +80,10 @@ u64 eat_get_for_channel(struct eat_ctx *ctx, u32 ch)
         return 0;
     }
 
-    return ctx->channel_eat[ch];
+    mutex_lock(&ctx->lock, 0);
+    u64 v = ctx->channel_eat[ch];
+    mutex_unlock(&ctx->lock);
+    return v;
 }
 
 u64 eat_get_max(struct eat_ctx *ctx, enum op_type op, u32 ch, u32 chip, u32 die, u32 plane)
@@ -133,6 +146,7 @@ void eat_update(struct eat_ctx *ctx, enum op_type op, u32 ch, u32 chip, u32 die,
     /* Update all levels - the new EAT is current time + duration */
     new_eat = current_time + duration;
 
+    mutex_lock(&ctx->lock, 0);
     switch (op) {
     case OP_READ:
     case OP_PROGRAM:
@@ -156,6 +170,7 @@ void eat_update(struct eat_ctx *ctx, enum op_type op, u32 ch, u32 chip, u32 die,
     if (new_eat > ctx->plane_eat[ch][chip][die][plane]) {
         ctx->plane_eat[ch][chip][die][plane] = new_eat;
     }
+    mutex_unlock(&ctx->lock);
 }
 
 void eat_update_stage(struct eat_ctx *ctx, enum op_type op, u32 ch, u32 chip, u32 die, u32 plane, u64 stage_duration)
@@ -169,5 +184,10 @@ void eat_reset(struct eat_ctx *ctx)
         return;
     }
 
-    memset(ctx, 0, sizeof(*ctx));
+    mutex_lock(&ctx->lock, 0);
+    memset(ctx->channel_eat, 0, sizeof(ctx->channel_eat));
+    memset(ctx->chip_eat, 0, sizeof(ctx->chip_eat));
+    memset(ctx->die_eat, 0, sizeof(ctx->die_eat));
+    memset(ctx->plane_eat, 0, sizeof(ctx->plane_eat));
+    mutex_unlock(&ctx->lock);
 }

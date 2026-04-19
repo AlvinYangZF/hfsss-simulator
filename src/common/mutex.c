@@ -87,8 +87,16 @@ int mutex_unlock(struct mutex *mtx)
     }
 
     struct mutex_lock *lock = (struct mutex_lock *)mtx->lock;
-    pthread_mutex_unlock(&lock->mutex);
+    /*
+     * The debug counter must be bumped while the mutex is still held.
+     * mutex_stats reads both counters under the same mutex, so if we
+     * unlocked before the increment another thread could observe a
+     * torn pair (lock_count > unlock_count + 1). TSAN also correctly
+     * flagged the unlocked write as a data race with concurrent
+     * acquirers.
+     */
     mtx->unlock_count++;
+    pthread_mutex_unlock(&lock->mutex);
 
     return HFSSS_OK;
 }
