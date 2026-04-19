@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "common/common.h"
+#include "media/cmd_engine.h"
 #include "media/cmd_state.h"
 #include "media/media.h"
 #include "media/nand_identity.h"
@@ -422,6 +423,134 @@ static int test_v4_mp_rules_and_capability(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* ------------------------------------------------------------------------ */
+/* V3: status byte semantics across profiles.                                */
+/*                                                                           */
+/* The classic status byte is computed from nand_die_cmd_state (ONFI 4.2     */
+/* Status Register encoding) and does not vary by profile. V3 asserts this  */
+/* invariant: across all four profiles, an idle die and a post-erase die    */
+/* produce the same status byte bits. Separately asserts the specific bit   */
+/* pattern for an idle, write-permitted die (RDY | ARDY | WP_N).            */
+/* ------------------------------------------------------------------------ */
+
+static int test_v3_status_byte_semantics(void)
+{
+    printf("\n=== V3: classic status byte semantics parity across profiles ===\n");
+
+    u8 idle_status_per_profile[sizeof(k_cases) / sizeof(k_cases[0])];
+    u8 post_erase_per_profile[sizeof(k_cases) / sizeof(k_cases[0])];
+    memset(idle_status_per_profile, 0, sizeof(idle_status_per_profile));
+    memset(post_erase_per_profile, 0, sizeof(post_erase_per_profile));
+
+    for (size_t i = 0; i < k_case_count; i++) {
+        const struct profile_case *pc = &k_cases[i];
+        struct media_config cfg = make_cfg(pc);
+        struct media_ctx ctx;
+        int ret = media_init(&ctx, &cfg);
+        TEST_ASSERT(ret == HFSSS_OK, msg(pc->name, "V3: media_init OK"));
+        if (ret != HFSSS_OK) {
+            continue;
+        }
+
+        u8 sb = 0;
+        ret = media_nand_read_status_byte(&ctx, 0, 0, 0, &sb);
+        TEST_ASSERT(ret == HFSSS_OK, msg(pc->name, "V3: read_status_byte on idle die OK"));
+        idle_status_per_profile[i] = sb;
+
+        /* ONFI 4.2 Status Register idle contract: ARDY|RDY|WP_N set,
+         * FAIL/FAILC clear. Assert both bit groups explicitly so a
+         * regression to either side is caught. */
+        u8 want = NAND_STATUS_RDY | NAND_STATUS_ARDY | NAND_STATUS_WP_N;
+        TEST_ASSERT((sb & want) == want,
+                    msg(pc->name, "V3: idle status has RDY|ARDY|WP_N set"));
+        TEST_ASSERT((sb & (NAND_STATUS_FAIL | NAND_STATUS_FAILC)) == 0,
+                    msg(pc->name, "V3: idle status has FAIL and FAILC clear"));
+
+        /* Drive a clean erase on a fresh block and re-read. A successful
+         * erase must not set FAIL; RDY/ARDY must reassert when the die
+         * returns to idle. */
+        ret = media_nand_erase(&ctx, 0, 0, 0, 0, 1);
+        TEST_ASSERT(ret == HFSSS_OK, msg(pc->name, "V3: clean erase OK"));
+        ret = media_nand_read_status_byte(&ctx, 0, 0, 0, &sb);
+        TEST_ASSERT(ret == HFSSS_OK, msg(pc->name, "V3: read_status_byte post-erase OK"));
+        post_erase_per_profile[i] = sb;
+        TEST_ASSERT((sb & want) == want, msg(pc->name, "V3: post-erase has RDY|ARDY|WP_N set"));
+        TEST_ASSERT((sb & NAND_STATUS_FAIL) == 0, msg(pc->name, "V3: post-erase FAIL bit clear"));
+
+        media_cleanup(&ctx);
+    }
+
+    /* Cross-profile parity: the observed status byte must be identical
+     * across all profiles for both the idle and post-erase checkpoints.
+     * The status byte is a projection of cmd_state, not a function of
+     * profile, so divergence here would indicate a silent regression in
+     * nand_status_byte_from_cmd_state. */
+    for (size_t i = 1; i < k_case_count; i++) {
+        TEST_ASSERT(idle_status_per_profile[i] == idle_status_per_profile[0],
+                    "V3 parity: idle status byte identical across profiles");
+        TEST_ASSERT(post_erase_per_profile[i] == post_erase_per_profile[0],
+                    "V3 parity: post-erase status byte identical across profiles");
+    }
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* ------------------------------------------------------------------------ */
+/* V6: reset_policy exposure and behavior per profile.                       */
+/*                                                                           */
+/* Data-layer: every generic profile currently sets                         */
+/* abort_inflight_on_reset=true and preserve_partial_program=false. V6      */
+/* asserts this contract so a future profile addition cannot silently       */
+/* invert the default.                                                       */
+/*                                                                           */
+/* Behavior: confirm that reset-in-IDLE succeeds on every profile and       */
+/* leaves the die state in IDLE with cmd_state cleared. The heavier         */
+/* reset-abort coverage (stamping target pages with the DEAD pattern) is    */
+/* in test_cmd_integration_midcomplex::IS-03; V6 only verifies the policy   */
+/* surface and the simplest reset path.                                      */
+/* ------------------------------------------------------------------------ */
+
+static int test_v6_reset_policy(void)
+{
+    printf("\n=== V6: reset_policy data-layer + in-idle behavior per profile ===\n");
+
+    for (size_t i = 0; i < k_case_count; i++) {
+        const struct profile_case *pc = &k_cases[i];
+        const struct nand_profile *prof = nand_profile_get(pc->id);
+        TEST_ASSERT(prof != NULL, msg(pc->name, "V6: nand_profile_get resolves"));
+        if (!prof) {
+            continue;
+        }
+
+        TEST_ASSERT(prof->reset_policy.abort_inflight_on_reset == true,
+                    msg(pc->name, "V6: reset_policy.abort_inflight_on_reset == true"));
+        TEST_ASSERT(prof->reset_policy.preserve_partial_program == false,
+                    msg(pc->name, "V6: reset_policy.preserve_partial_program == false"));
+
+        struct media_config cfg = make_cfg(pc);
+        struct media_ctx ctx;
+        int ret = media_init(&ctx, &cfg);
+        TEST_ASSERT(ret == HFSSS_OK, msg(pc->name, "V6: media_init OK"));
+        if (ret != HFSSS_OK) {
+            continue;
+        }
+
+        struct nand_cmd_target t = {.ch = 0, .chip = 0, .die = 0, .plane_mask = 0x1};
+        ret = nand_cmd_engine_submit_reset(ctx.nand, &t);
+        TEST_ASSERT(ret == HFSSS_OK, msg(pc->name, "V6: reset in IDLE accepted"));
+
+        struct nand_die_cmd_state snap;
+        ret = nand_cmd_engine_snapshot(ctx.nand, &t, &snap);
+        TEST_ASSERT(ret == HFSSS_OK, msg(pc->name, "V6: post-reset snapshot OK"));
+        TEST_ASSERT(snap.state == DIE_IDLE, msg(pc->name, "V6: post-reset state == DIE_IDLE"));
+        TEST_ASSERT(snap.suspend_count == 0, msg(pc->name, "V6: post-reset suspend_count == 0"));
+
+        media_cleanup(&ctx);
+    }
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     printf("========================================\n");
@@ -431,7 +560,9 @@ int main(void)
     test_v1_parameter_page_timings();
     test_v2_supported_cmd_bitmap();
     test_v2b_runtime_rejection_on_toggle();
+    test_v3_status_byte_semantics();
     test_v4_mp_rules_and_capability();
+    test_v6_reset_policy();
 
     printf("\n========================================\n");
     printf("Profile Matrix Summary\n");
