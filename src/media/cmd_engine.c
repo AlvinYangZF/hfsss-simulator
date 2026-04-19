@@ -476,9 +476,27 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
             mutex_lock(&channel->lock, 0);
         }
 
-        /* Recheck abort after the spin returns DONE: a reset could land
-         * between the spin exit and this point (the channel lock was just
-         * re-acquired, but die_lock was not held across the gap). */
+        /*
+         * Recheck abort and run the commit callback under die_lock so
+         * reset cannot interleave between the check and the commit.
+         * Reset takes die_lock across its entire critical section
+         * (stamp + state reset + epoch store); serializing here makes
+         * the ordering deterministic:
+         *   - worker wins: lock -> old epoch observed -> commit runs
+         *     under lock -> unlock. Reset then acquires the lock and
+         *     stamps the now-committed page, which is the correct
+         *     abort-evidence outcome.
+         *   - reset wins: reset's lock ordering puts the epoch store
+         *     and page stamp ahead of the worker's recheck. Worker
+         *     then acquires the lock, sees the new epoch, and skips
+         *     the commit entirely so caller data cannot overwrite the
+         *     DEAD stamp.
+         * Without this serialization there is a window between the
+         * pre-fix recheck and the commit call in which reset could
+         * stamp DEAD and increment the epoch, only to have the commit
+         * overwrite it — the race the reviewer flagged.
+         */
+        mutex_lock(&die->die_lock, 0);
         if (wait_rc == ENGINE_WAIT_DONE && atomic_load(&die->cmd_state.abort_epoch) != epoch_at_submit) {
             wait_rc = ENGINE_WAIT_ABORT;
         }
@@ -487,6 +505,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         } else if (ops && ops->on_array_commit) {
             stage_rc = ops->on_array_commit(cb_ctx);
         }
+        mutex_unlock(&die->die_lock);
     }
 
     /* Data transfer stage is only exercised by the read path today, but the
