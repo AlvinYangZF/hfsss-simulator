@@ -43,6 +43,31 @@ static const u32 k_onfi_supported_ops =
  */
 static const u32 k_toggle_supported_ops = k_core_supported_ops;
 
+/*
+ * Multi-plane rules per family. Both protocols describe a per-command
+ * plane cap; the simulator diverges the cap so IS-09 can exercise the
+ * profile-aware engine rejection path:
+ *   - ONFI generic profiles carry a 4-plane cap, matching ONFI 3.5
+ *     enterprise-class parts that publish 4 planes per die
+ *   - Toggle generic profiles carry a 2-plane cap, matching the
+ *     dual-plane baseline common in Toggle 2.x parts
+ * plane_addr_mask and allow_cross_block stay at their Phase 6 defaults
+ * (strict) — the struct nand_cmd_target in this simulator carries one
+ * shared block and page across all planes, so there is no cross-block
+ * multi-plane command surface to exercise relaxed-addressing rules.
+ */
+static const struct nand_profile_mp_rules k_onfi_mp_rules = {
+    .allow_cross_block = false,
+    .plane_addr_mask = 0x01,
+    .max_planes_per_cmd = 4,
+};
+
+static const struct nand_profile_mp_rules k_toggle_mp_rules = {
+    .allow_cross_block = false,
+    .plane_addr_mask = 0x01,
+    .max_planes_per_cmd = 2,
+};
+
 static const struct timing_params k_slc_timing = {
     .tCCS = 100,
     .tR = 25000,
@@ -135,12 +160,7 @@ static const struct nand_profile k_profiles[NAND_PROFILE_COUNT] = {
                     .qlc_params = k_qlc_timing,
                     .tlc_timing = k_tlc_timing,
                 },
-            .mp_rules =
-                {
-                    .allow_cross_block = false,
-                    .plane_addr_mask = 0x01,
-                    .max_planes_per_cmd = 4,
-                },
+            .mp_rules = k_onfi_mp_rules,
             .reset_policy =
                 {
                     .abort_inflight_on_reset = true,
@@ -174,12 +194,7 @@ static const struct nand_profile k_profiles[NAND_PROFILE_COUNT] = {
                     .qlc_params = k_qlc_timing,
                     .tlc_timing = k_tlc_timing,
                 },
-            .mp_rules =
-                {
-                    .allow_cross_block = false,
-                    .plane_addr_mask = 0x01,
-                    .max_planes_per_cmd = 4,
-                },
+            .mp_rules = k_onfi_mp_rules,
             .reset_policy =
                 {
                     .abort_inflight_on_reset = true,
@@ -213,12 +228,7 @@ static const struct nand_profile k_profiles[NAND_PROFILE_COUNT] = {
                     .qlc_params = k_qlc_timing,
                     .tlc_timing = k_tlc_timing,
                 },
-            .mp_rules =
-                {
-                    .allow_cross_block = false,
-                    .plane_addr_mask = 0x01,
-                    .max_planes_per_cmd = 4,
-                },
+            .mp_rules = k_toggle_mp_rules,
             .reset_policy =
                 {
                     .abort_inflight_on_reset = true,
@@ -252,12 +262,7 @@ static const struct nand_profile k_profiles[NAND_PROFILE_COUNT] = {
                     .qlc_params = k_qlc_timing,
                     .tlc_timing = k_tlc_timing,
                 },
-            .mp_rules =
-                {
-                    .allow_cross_block = false,
-                    .plane_addr_mask = 0x01,
-                    .max_planes_per_cmd = 4,
-                },
+            .mp_rules = k_toggle_mp_rules,
             .reset_policy =
                 {
                     .abort_inflight_on_reset = true,

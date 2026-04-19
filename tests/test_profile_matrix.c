@@ -370,8 +370,14 @@ static int test_v4_mp_rules_and_capability(void)
         }
 
         /* mp_rules: all four Phase 6 profiles publish the same trio. */
-        TEST_ASSERT(prof->mp_rules.max_planes_per_cmd == 4,
-                    msg(pc->name, "V4: mp_rules.max_planes_per_cmd == 4"));
+        /* Phase 7 T5b divergence: ONFI profiles cap at 4 planes/cmd
+         * (matches ONFI 3.5 enterprise-class parts with 4 planes per
+         * die); Toggle profiles cap at 2 planes/cmd (matches the
+         * dual-plane baseline common in Toggle 2.x parts). The engine
+         * side of this wiring lives in cmd_engine.c::engine_validate_planes. */
+        u8 expected_max_planes = (prof->interface_family == NAND_IF_ONFI) ? 4 : 2;
+        TEST_ASSERT(prof->mp_rules.max_planes_per_cmd == expected_max_planes,
+                    msg(pc->name, "V4: mp_rules.max_planes_per_cmd matches family cap"));
         TEST_ASSERT(prof->mp_rules.allow_cross_block == false,
                     msg(pc->name, "V4: mp_rules.allow_cross_block == false"));
         TEST_ASSERT(prof->mp_rules.plane_addr_mask == 0x01,

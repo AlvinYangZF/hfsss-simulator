@@ -45,7 +45,18 @@ static struct nand_channel *engine_get_channel(struct nand_device *dev, u32 ch)
  * is written to *out_first for backward compat; for multi-bit masks
  * *out_first receives the lowest set bit.
  */
-static int engine_validate_planes(u32 plane_mask, u32 plane_count, u32 *out_count, u32 *out_first)
+/*
+ * Validate the submission-time plane mask against die geometry and
+ * profile policy. Geometry rule: every bit in the mask must address a
+ * real plane (index < die->plane_count). Profile rule (when a profile
+ * is attached): the number of set bits must not exceed
+ * profile->mp_rules.max_planes_per_cmd — this captures the spec-level
+ * cap the host presents to firmware (ONFI 3.5 and JEDEC Toggle both
+ * express a per-command plane cap; different vendors and generations
+ * publish different values).
+ */
+static int engine_validate_planes(const struct nand_profile *profile, u32 plane_mask, u32 plane_count,
+                                  u32 *out_count, u32 *out_first)
 {
     if (plane_mask == 0) {
         return HFSSS_ERR_INVAL;
@@ -60,6 +71,9 @@ static int engine_validate_planes(u32 plane_mask, u32 plane_count, u32 *out_coun
         }
         count++;
         remaining &= remaining - 1;
+    }
+    if (profile && profile->mp_rules.max_planes_per_cmd > 0 && count > profile->mp_rules.max_planes_per_cmd) {
+        return HFSSS_ERR_INVAL;
     }
     if (out_count) {
         *out_count = count;
@@ -273,7 +287,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     if (!die) {
         return HFSSS_ERR_INVAL;
     }
-    int rc = engine_validate_planes(target->plane_mask, die->plane_count, &plane_count, &plane_first);
+    int rc = engine_validate_planes(dev->profile, target->plane_mask, die->plane_count, &plane_count, &plane_first);
     if (rc != HFSSS_OK) {
         return rc;
     }

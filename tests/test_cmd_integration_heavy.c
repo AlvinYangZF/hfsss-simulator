@@ -33,6 +33,17 @@
  *          resume.
  *          (Phase 3 suspend + Phase 4 multi-plane + read-during-
  *          suspend conflict gating)
+ *
+ *   IS-09: profile-aware multi-plane legality. ONFI profiles cap
+ *          max_planes_per_cmd at 4; Toggle profiles cap at 2. The
+ *          engine's validate_planes consults the active profile,
+ *          so the same plane_mask must be accepted on ONFI and
+ *          rejected on Toggle when the bit-count exceeds the
+ *          Toggle cap. The rejection must be deterministic and
+ *          must not perturb the die's cmd_state (no opcode/target
+ *          drift, die stays DIE_IDLE).
+ *          (Phase 4 multi-plane + Phase 6 profile mp_rules +
+ *          T5b engine wiring)
  */
 
 #include <pthread.h>
@@ -136,6 +147,25 @@ static struct media_config make_cfg_two_plane(void)
         .nand_type = NAND_TYPE_TLC,
         .profile_explicit = true,
         .profile_id = NAND_PROFILE_GENERIC_ONFI_TLC,
+        .enable_multi_plane = true,
+    };
+    return cfg;
+}
+
+static struct media_config make_cfg_four_plane(enum nand_profile_id pid)
+{
+    struct media_config cfg = {
+        .channel_count = 1,
+        .chips_per_channel = 1,
+        .dies_per_chip = 1,
+        .planes_per_die = 4,
+        .blocks_per_plane = 16,
+        .pages_per_block = 16,
+        .page_size = 4096,
+        .spare_size = 64,
+        .nand_type = NAND_TYPE_TLC,
+        .profile_explicit = true,
+        .profile_id = pid,
         .enable_multi_plane = true,
     };
     return cfg;
@@ -388,6 +418,91 @@ static int test_is07_mp_program_foreground_read_preemption(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* ------------------------------------------------------------------------ */
+/* IS-09: profile-aware multi-plane cap enforcement                          */
+/* ------------------------------------------------------------------------ */
+
+static int test_is09_profile_mp_plane_cap(void)
+{
+    printf("\n=== IS-09: profile-aware multi-plane cap (ONFI 4 vs Toggle 2) ===\n");
+
+    /* ONFI profile at 4-plane geometry: up to 4-plane erase must be
+     * accepted (within the ONFI cap of 4). */
+    {
+        struct media_config cfg = make_cfg_four_plane(NAND_PROFILE_GENERIC_ONFI_TLC);
+        struct media_ctx ctx;
+        int ret = media_init(&ctx, &cfg);
+        TEST_ASSERT(ret == HFSSS_OK, "IS-09: media_init ONFI 4-plane");
+        if (ret == HFSSS_OK) {
+            TEST_ASSERT(ctx.profile && ctx.profile->mp_rules.max_planes_per_cmd == 4,
+                        "IS-09: ONFI profile exposes max_planes_per_cmd=4");
+            int r2 = media_nand_multi_plane_erase(&ctx, 0, 0, 0, 0x3, 3);
+            TEST_ASSERT(r2 == HFSSS_OK, "IS-09: ONFI accepts 2-plane erase (within cap)");
+            int r3 = media_nand_multi_plane_erase(&ctx, 0, 0, 0, 0x7, 4);
+            TEST_ASSERT(r3 == HFSSS_OK, "IS-09: ONFI accepts 3-plane erase (within cap)");
+            int r4 = media_nand_multi_plane_erase(&ctx, 0, 0, 0, 0xF, 5);
+            TEST_ASSERT(r4 == HFSSS_OK, "IS-09: ONFI accepts 4-plane erase (at cap)");
+            media_cleanup(&ctx);
+        }
+    }
+
+    /* Toggle profile at 4-plane geometry: mp_rules.max=2 means anything
+     * above 2 planes must be rejected by the engine. The rejection
+     * must come from engine_validate_planes (profile-aware path), not
+     * from geometry — the geometry accepts up to 4 planes. Rejected
+     * submissions must not mutate the die's cmd_state. */
+    {
+        struct media_config cfg = make_cfg_four_plane(NAND_PROFILE_GENERIC_TOGGLE_TLC);
+        struct media_ctx ctx;
+        int ret = media_init(&ctx, &cfg);
+        TEST_ASSERT(ret == HFSSS_OK, "IS-09: media_init Toggle 4-plane");
+        if (ret == HFSSS_OK) {
+            TEST_ASSERT(ctx.profile && ctx.profile->mp_rules.max_planes_per_cmd == 2,
+                        "IS-09: Toggle profile exposes max_planes_per_cmd=2");
+
+            /* Pre-snapshot for state-preservation check. */
+            struct nand_cmd_target t_idle = {.ch = 0, .chip = 0, .die = 0, .plane_mask = 0x1};
+            struct nand_die_cmd_state snap_before;
+            TEST_ASSERT(nand_cmd_engine_snapshot(ctx.nand, &t_idle, &snap_before) == HFSSS_OK,
+                        "IS-09: pre-reject snapshot");
+            TEST_ASSERT(snap_before.state == DIE_IDLE, "IS-09: pre-reject state is DIE_IDLE");
+
+            /* 2-plane within Toggle cap: accepted. */
+            int r2 = media_nand_multi_plane_erase(&ctx, 0, 0, 0, 0x3, 3);
+            TEST_ASSERT(r2 == HFSSS_OK, "IS-09: Toggle accepts 2-plane erase (at cap)");
+
+            /* 3-plane exceeds Toggle cap: rejected by profile check. */
+            int r3 = media_nand_multi_plane_erase(&ctx, 0, 0, 0, 0x7, 4);
+            TEST_ASSERT(r3 != HFSSS_OK, "IS-09: Toggle rejects 3-plane erase (exceeds cap)");
+
+            /* 4-plane exceeds Toggle cap: rejected. */
+            int r4 = media_nand_multi_plane_erase(&ctx, 0, 0, 0, 0xF, 5);
+            TEST_ASSERT(r4 != HFSSS_OK, "IS-09: Toggle rejects 4-plane erase (exceeds cap)");
+
+            /* Also reject on multi-plane program (same engine path). */
+            u8 bufs[4][4096];
+            for (int i = 0; i < 4; i++) {
+                memset(bufs[i], 0x60 + i, sizeof(bufs[i]));
+            }
+            const void *arr3[3] = {bufs[0], bufs[1], bufs[2]};
+            int rp3 = media_nand_multi_plane_program(&ctx, 0, 0, 0, 0x7, 6, 0, arr3, NULL);
+            TEST_ASSERT(rp3 != HFSSS_OK, "IS-09: Toggle rejects 3-plane program");
+
+            /* State invariant: after all the rejections, die is still
+             * IDLE and no stale opcode/target remains. */
+            struct nand_die_cmd_state snap_after;
+            TEST_ASSERT(nand_cmd_engine_snapshot(ctx.nand, &t_idle, &snap_after) == HFSSS_OK,
+                        "IS-09: post-reject snapshot");
+            TEST_ASSERT(snap_after.state == DIE_IDLE, "IS-09: rejections left die DIE_IDLE");
+            TEST_ASSERT(snap_after.in_flight == false, "IS-09: rejections left in_flight clear");
+
+            media_cleanup(&ctx);
+        }
+    }
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     printf("========================================\n");
@@ -397,6 +512,7 @@ int main(void)
     test_is01_suspend_under_mp_program();
     test_is04_cache_vs_mp_erase_stage_conflict();
     test_is07_mp_program_foreground_read_preemption();
+    test_is09_profile_mp_plane_cap();
 
     printf("\n========================================\n");
     printf("Integration Heavy Summary\n");
