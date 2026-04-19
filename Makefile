@@ -224,7 +224,10 @@ COVERAGE_UT_BINS = $(COVERAGE_BIN_DIR)/test_common $(COVERAGE_BIN_DIR)/test_medi
 	$(COVERAGE_BIN_DIR)/test_cmd_integration_heavy \
 	$(COVERAGE_BIN_DIR)/test_profile_matrix \
 	$(COVERAGE_BIN_DIR)/systest_phase7_integration \
-	$(COVERAGE_BIN_DIR)/test_reset_abort_race
+	$(COVERAGE_BIN_DIR)/test_reset_abort_race \
+	$(COVERAGE_BIN_DIR)/test_ftl_profile \
+	$(COVERAGE_BIN_DIR)/test_sssim_profile \
+	$(COVERAGE_BIN_DIR)/test_trace
 COVERAGE_E2E_BINS = $(COVERAGE_BIN_DIR)/hfsss-nbd-server
 COVERAGE_BINS = $(COVERAGE_UT_BINS) $(COVERAGE_E2E_BINS)
 

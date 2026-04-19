@@ -126,6 +126,31 @@ static int test_name_lookup(void)
     return TEST_PASS;
 }
 
+/*
+ * nand_profile_name is the inverse used for round-trippable log output:
+ * banners, nvme vendor-log synthesis, and diagnostics all want the CLI
+ * short alias rather than the internal id_string.
+ */
+static int test_name_roundtrip(void)
+{
+    printf("\n--- nand_profile_name reverse lookup ---\n");
+    const char *tlc = nand_profile_name(NAND_PROFILE_GENERIC_ONFI_TLC);
+    const char *qlc = nand_profile_name(NAND_PROFILE_GENERIC_ONFI_QLC);
+    const char *ttlc = nand_profile_name(NAND_PROFILE_GENERIC_TOGGLE_TLC);
+    const char *tqlc = nand_profile_name(NAND_PROFILE_GENERIC_TOGGLE_QLC);
+
+    CHECK(tlc && strcmp(tlc, "onfi-tlc") == 0, "ONFI TLC -> onfi-tlc");
+    CHECK(qlc && strcmp(qlc, "onfi-qlc") == 0, "ONFI QLC -> onfi-qlc");
+    CHECK(ttlc && strcmp(ttlc, "toggle-tlc") == 0, "TOGGLE TLC -> toggle-tlc");
+    CHECK(tqlc && strcmp(tqlc, "toggle-qlc") == 0, "TOGGLE QLC -> toggle-qlc");
+    CHECK(nand_profile_name((enum nand_profile_id)NAND_PROFILE_COUNT) == NULL, "invalid id -> NULL");
+
+    /* Round-trip through both directions to catch table drift. */
+    CHECK(nand_profile_id_from_name(tlc) == NAND_PROFILE_GENERIC_ONFI_TLC, "round-trip onfi-tlc");
+    CHECK(nand_profile_id_from_name(ttlc) == NAND_PROFILE_GENERIC_TOGGLE_TLC, "round-trip toggle-tlc");
+    return TEST_PASS;
+}
+
 int main(void)
 {
     printf("=== sssim profile selection tests ===\n");
@@ -135,6 +160,7 @@ int main(void)
     test_explicit_toggle_tlc();
     test_explicit_toggle_qlc();
     test_name_lookup();
+    test_name_roundtrip();
 
     printf("\n=== Summary: run=%d pass=%d fail=%d ===\n", tests_run, tests_passed, tests_failed);
     return (tests_failed == 0) ? 0 : 1;

@@ -92,4 +92,12 @@ bool nand_profile_supports_op(const struct nand_profile *profile, enum nand_cmd_
  */
 enum nand_profile_id nand_profile_id_from_name(const char *name);
 
+/*
+ * Reverse of nand_profile_id_from_name: return the short CLI alias for a
+ * given id, or NULL for an out-of-range value. The output is the exact
+ * string the CLI accepts, so log lines emitted through this helper are
+ * round-trippable back into -P without translation.
+ */
+const char *nand_profile_name(enum nand_profile_id id);
+
 #endif /* __HFSSS_NAND_PROFILE_H */

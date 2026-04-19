@@ -772,16 +772,22 @@ int main(int argc, char *argv[])
             (unsigned long long)total_lbas, lba_size);
     fprintf(stderr, "NAND:     %uch/%uchip/%udie/%uplane/%ublk/%upg/%uB (%" PRIu64 " GB raw)\n", nch, nchip, ndie,
             nplane, nblk, npg, page_size, raw_gb);
-    {
-        const struct nand_profile *prof = nand_profile_get(profile_id);
-        fprintf(stderr, "Profile:  %s%s\n", prof ? prof->id_string : "<unknown>",
-                profile_explicit ? " (explicit)" : " (default)");
-    }
     fprintf(stderr, "Initializing simulator...\n");
 
     if (nvme_uspace_dev_init(&dev, &config) != 0) {
         fprintf(stderr, "ERROR: nvme_uspace_dev_init failed\n");
         return 1;
+    }
+
+    /*
+     * Report the profile the initialized stack actually resolved, not the
+     * pre-init request. The CLI short name is round-trippable into -P.
+     */
+    {
+        const struct nand_profile *prof = dev.sssim.media.profile;
+        const char *alias = prof ? nand_profile_name(prof->id) : NULL;
+        fprintf(stderr, "Profile:  %s%s\n", alias ? alias : "<unknown>",
+                profile_explicit ? " (explicit)" : " (default)");
     }
 
     if (nvme_uspace_dev_start(&dev) != 0) {

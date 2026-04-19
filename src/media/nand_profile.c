@@ -330,3 +330,13 @@ enum nand_profile_id nand_profile_id_from_name(const char *name)
     }
     return NAND_PROFILE_COUNT;
 }
+
+const char *nand_profile_name(enum nand_profile_id id)
+{
+    for (size_t i = 0; i < sizeof(k_profile_aliases) / sizeof(k_profile_aliases[0]); ++i) {
+        if (k_profile_aliases[i].id == id) {
+            return k_profile_aliases[i].name;
+        }
+    }
+    return NULL;
+}
