@@ -141,6 +141,12 @@
 #define NVME_ADMIN_SANITIZE        0x84
 #define NVME_ADMIN_GET_LBA_STATUS  0x86
 
+/* Sanitize Action (CDW10 bits [2:0], NVMe spec §5.22) */
+#define NVME_SANACT_EXIT_FAILURE   0x01
+#define NVME_SANACT_BLOCK_ERASE    0x02
+#define NVME_SANACT_OVERWRITE      0x03
+#define NVME_SANACT_CRYPTO_ERASE   0x04
+
 /* NVM I/O Command Opcodes */
 #define NVME_NVM_FLUSH             0x00
 #define NVME_NVM_WRITE             0x01

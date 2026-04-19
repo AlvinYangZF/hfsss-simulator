@@ -432,22 +432,59 @@ int nvme_uspace_format_nvm(struct nvme_uspace_dev *dev, u32 nsid)
     return sssim_flush(&dev->sssim);
 }
 
-/* Sanitize: same semantics as format_nvm for simulation purposes. */
+/* Sanitize: dispatch on Sanitize Action (SANACT) per NVMe spec §5.22.
+ *  - EXIT_FAILURE   (0x01): no-op (no simulated failure-mode to clear)
+ *  - BLOCK_ERASE    (0x02): trim every LBA then flush
+ *  - OVERWRITE      (0x03): fill-zero pass across all LBAs then flush
+ *  - CRYPTO_ERASE   (0x04): destroy user data by dropping the mapping
+ *                           (simulated crypto erase), then flush
+ *  - anything else : HFSSS_ERR_INVAL -- caller translates to INVALID_FIELD
+ */
 int nvme_uspace_sanitize(struct nvme_uspace_dev *dev, u32 sanact)
 {
     if (!dev || !dev->initialized) {
         return HFSSS_ERR_INVAL;
     }
-    /* sanact values 1=block-erase, 2=overwrite, 3=crypto-erase are all
-     * treated identically: trim all LBAs + flush. */
-    (void)sanact;
 
-    u64 total_lbas = dev->sssim.config.total_lbas;
-    int ret = sssim_trim(&dev->sssim, 0, (u32)total_lbas);
-    if (ret != HFSSS_OK) {
-        return ret;
+    switch (sanact) {
+    case NVME_SANACT_EXIT_FAILURE:
+        return HFSSS_OK;
+    case NVME_SANACT_BLOCK_ERASE:
+    case NVME_SANACT_CRYPTO_ERASE: {
+        u64 total_lbas = dev->sssim.config.total_lbas;
+        int ret = sssim_trim(&dev->sssim, 0, (u32)total_lbas);
+        if (ret != HFSSS_OK) {
+            return ret;
+        }
+        return sssim_flush(&dev->sssim);
     }
-    return sssim_flush(&dev->sssim);
+    case NVME_SANACT_OVERWRITE: {
+        /* Overwrite every LBA with zeros. Simulator collapses this to a
+         * trim plus a single zero-fill pass so the host observes all-
+         * zero reads after completion. */
+        u64 total_lbas = dev->sssim.config.total_lbas;
+        u32 lba_size = dev->sssim.config.lba_size;
+        int ret = sssim_trim(&dev->sssim, 0, (u32)total_lbas);
+        if (ret != HFSSS_OK) {
+            return ret;
+        }
+        u8 *zbuf = calloc(1, lba_size);
+        if (!zbuf) {
+            return HFSSS_ERR_NOMEM;
+        }
+        for (u64 lba = 0; lba < total_lbas; lba++) {
+            ret = sssim_write(&dev->sssim, lba, 1, zbuf);
+            if (ret != HFSSS_OK) {
+                free(zbuf);
+                return ret;
+            }
+        }
+        free(zbuf);
+        return sssim_flush(&dev->sssim);
+    }
+    default:
+        return HFSSS_ERR_INVAL;
+    }
 }
 
 /* Stage firmware image bytes into dev->fw_staging_buf at the given offset. */
