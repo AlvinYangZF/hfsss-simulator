@@ -41,11 +41,11 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% (100% partial) | ↑ DWRR + partial wiring |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
-| Enterprise: Security | 7 | 6 | 1 | 0 | 0 | 85.7% (100% partial) | ↑ AES-XTS sim, keys, crypto erase, sanitize action modes, secure-boot-verify wired into POST, NOR-backed dual-copy UPLP-safe key table; only TCG-Opal command parsing (REQ-161) remains ⚠️ |
+| Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100% | ↑ AES-XTS sim, keys, crypto erase, sanitize action modes, secure-boot-verify, NOR-backed dual-copy UPLP-safe key table, TCG-Opal lock/unlock |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER (temp/wear/spare) |
-| **Enterprise Subtotal** | **40** | **34** | **6** | **0** | **0** | **85.0%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **129** | **26** | **22** | **1** | **72.5%** (86.5% partial) | ↑ from 38.8% |
+| **Enterprise Subtotal** | **40** | **35** | **5** | **0** | **0** | **87.5%** (100% partial) | ↑ from 0% |
+| **Grand Total** | **178** | **130** | **25** | **22** | **1** | **73.0%** (86.5% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -282,7 +282,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 |----|------------------------|--------|-------|
 | REQ-159 | AES-XTS 256-bit simulation (XOR placeholder) | ✅ | `crypto_xts_encrypt`/`crypto_xts_decrypt` in `src/controller/security.c`; `tests/test_security.c` |
 | REQ-160 | Key hierarchy (MK→KEK→DEK, per-NS isolation) | ✅ | `sec_hkdf_derive` + per-NS `key_entry` in `security.c` |
-| REQ-161 | TCG Opal SSC basic commands (lock/unlock) | ⚠️ | `enum key_state` (EMPTY/ACTIVE/SUSPENDED/DESTROYED) in `include/controller/security.h` provides the underlying state transitions; TCG Opal-specific command parsing (lock/unlock opcodes) not yet wired |
+| REQ-161 | TCG Opal SSC basic commands (lock/unlock) | ✅ | `opal_lock_ns` / `opal_unlock_ns` in `src/controller/security.c` drive the existing ACTIVE<->SUSPENDED state transitions. Per-NS auth tokens derived from the master key via `opal_derive_auth` (HKDF with a domain-separation tag XORed into MK). Wrong auth returns `HFSSS_ERR_AUTH` and leaves the namespace locked. Covered by five `tests/test_security.c::test_opal_*` cases including deterministic+NS-unique derivation and cross-NSID auth rejection. |
 | REQ-162 | Crypto erase (destroy DEK) | ✅ | `crypto_erase_ns` in `security.c` |
 | REQ-163 | Secure erase (block erase all user data) | ✅ | `nvme_uspace_sanitize` dispatches all four SANACT modes (EXIT_FAILURE/BLOCK_ERASE/OVERWRITE/CRYPTO_ERASE); OVERWRITE performs explicit zero-fill on every LBA |
 | REQ-164 | Secure boot chain verification (ROM→BL→FW) | ✅ | `secure_boot_verify()` invoked during `BOOT_PHASE_1_POST` in `src/common/boot.c`; tampered image or wrong magic → `HFSSS_ERR_AUTH` abort |
@@ -366,7 +366,7 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 | LLD_15_PERSISTENCE_FORMAT.md | REQ-131 | Checkpoint + WAL formats landed; LLD-level spec doc not published |
 | LLD_17_POWER_LOSS_PROTECTION.md | REQ-139..146 | Implemented |
 | LLD_18_QOS_DETERMINISM.md | REQ-147..153 | DWRR + latency monitor landed; per-NS caps + SLA enforcement partial |
-| LLD_19_SECURITY_ENCRYPTION.md | REQ-159..165 | Implemented except REQ-161 (TCG Opal commands) |
+| LLD_19_SECURITY_ENCRYPTION.md | REQ-159..165 | Implemented (all 7) |
 
 ---
 

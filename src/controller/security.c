@@ -426,6 +426,112 @@ int crypto_erase_ns(struct key_table *kt, u32 nsid,
 }
 
 /* ----------------------------------------------------------------
+ * TCG Opal SSC basic lock/unlock (REQ-161)
+ *
+ * Per-NS authentication token is derived from the master key using
+ * the same HKDF primitive as the KEK, but with a domain-separation
+ * tag XORed into the master key so a leaked KEK does not imply a
+ * leaked Opal PIN. The simulator maps ACTIVE <-> SUSPENDED on the
+ * existing key_state machine; unlock with the wrong auth returns
+ * HFSSS_ERR_AUTH without changing state.
+ * ---------------------------------------------------------------- */
+
+#define OPAL_DOMAIN_SEP_TAG  0xA5
+
+void opal_derive_auth(const u8 mk[SEC_KEY_LEN], u32 nsid,
+                      u8 auth_out[SEC_KEY_LEN])
+{
+    if (!mk || !auth_out) {
+        return;
+    }
+    u8 tagged_mk[SEC_KEY_LEN];
+    for (u32 i = 0; i < SEC_KEY_LEN; i++) {
+        tagged_mk[i] = mk[i] ^ OPAL_DOMAIN_SEP_TAG;
+    }
+    sec_hkdf_derive(tagged_mk, nsid, auth_out);
+    /* Wipe the tagged intermediate so it doesn't linger on stack. */
+    memset(tagged_mk, 0, sizeof(tagged_mk));
+}
+
+/* Locate the key_entry for `nsid`. Returns NULL when not present. */
+static struct key_entry *opal_find_entry(struct key_table *kt, u32 nsid)
+{
+    for (u32 i = 0; i < SEC_MAX_NS; i++) {
+        if (kt->entries[i].nsid == nsid) {
+            return &kt->entries[i];
+        }
+    }
+    return NULL;
+}
+
+int opal_lock_ns(struct key_table *kt, u32 nsid)
+{
+    if (!kt || nsid == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+    struct key_entry *entry = opal_find_entry(kt, nsid);
+    if (!entry) {
+        return HFSSS_ERR_NOENT;
+    }
+    if (entry->state != KEY_ACTIVE) {
+        /* Idempotent-locked or the key has been destroyed; nothing
+         * to do. Distinguish "already locked" so callers can detect
+         * double locks without pattern-matching on state. */
+        return (entry->state == KEY_SUSPENDED) ? HFSSS_OK
+                                               : HFSSS_ERR_INVAL;
+    }
+    entry->state = KEY_SUSPENDED;
+    kt->crc32 = hfsss_crc32(kt, offsetof(struct key_table, crc32));
+    return HFSSS_OK;
+}
+
+int opal_unlock_ns(struct key_table *kt, const u8 mk[SEC_KEY_LEN],
+                   u32 nsid, const u8 auth[SEC_KEY_LEN])
+{
+    if (!kt || !mk || !auth || nsid == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Verify auth FIRST so a wrong PIN doesn't leak whether the
+     * namespace exists or what state it's in. */
+    u8 expected[SEC_KEY_LEN];
+    opal_derive_auth(mk, nsid, expected);
+    int cmp = memcmp(expected, auth, SEC_KEY_LEN);
+    memset(expected, 0, sizeof(expected));
+    if (cmp != 0) {
+        return HFSSS_ERR_AUTH;
+    }
+
+    struct key_entry *entry = opal_find_entry(kt, nsid);
+    if (!entry) {
+        return HFSSS_ERR_NOENT;
+    }
+    if (entry->state == KEY_ACTIVE) {
+        /* Already unlocked — benign, treat as success. */
+        return HFSSS_OK;
+    }
+    if (entry->state != KEY_SUSPENDED) {
+        return HFSSS_ERR_INVAL;
+    }
+    entry->state = KEY_ACTIVE;
+    kt->crc32 = hfsss_crc32(kt, offsetof(struct key_table, crc32));
+    return HFSSS_OK;
+}
+
+bool opal_is_locked(const struct key_table *kt, u32 nsid)
+{
+    if (!kt || nsid == 0) {
+        return false;
+    }
+    for (u32 i = 0; i < SEC_MAX_NS; i++) {
+        if (kt->entries[i].nsid == nsid) {
+            return kt->entries[i].state == KEY_SUSPENDED;
+        }
+    }
+    return false;
+}
+
+/* ----------------------------------------------------------------
  * Secure Boot Verification
  * ---------------------------------------------------------------- */
 

@@ -750,6 +750,184 @@ static void test_key_table_nor_interrupted_save(void)
 }
 
 /* ----------------------------------------------------------------
+ * TCG Opal SSC lock/unlock (REQ-161)
+ * ---------------------------------------------------------------- */
+
+/* Seed a key_table with one ACTIVE namespace for the Opal tests. */
+static void seed_active_ns(struct key_table *kt, u32 nsid)
+{
+    key_table_init(kt);
+    kt->entries[0].nsid  = nsid;
+    kt->entries[0].state = KEY_ACTIVE;
+    kt->crc32 = hfsss_crc32(kt, offsetof(struct key_table, crc32));
+}
+
+static void test_opal_lock_transitions_active_to_suspended(void)
+{
+    printf("Test: Opal lock transitions ACTIVE -> SUSPENDED (REQ-161)\n");
+
+    struct key_table kt;
+    seed_active_ns(&kt, 7);
+
+    TEST_ASSERT(opal_is_locked(&kt, 7) == false,
+                "opal: fresh ACTIVE namespace reports unlocked");
+    int rc = opal_lock_ns(&kt, 7);
+    TEST_ASSERT(rc == HFSSS_OK, "opal: lock_ns OK on ACTIVE namespace");
+    TEST_ASSERT(opal_is_locked(&kt, 7) == true,
+                "opal: namespace reports locked after lock");
+    TEST_ASSERT(kt.entries[0].state == KEY_SUSPENDED,
+                "opal: key_state is SUSPENDED after lock");
+
+    /* Locking an already-locked NS is idempotent. */
+    rc = opal_lock_ns(&kt, 7);
+    TEST_ASSERT(rc == HFSSS_OK,
+                "opal: re-locking an already-locked NS is idempotent");
+    TEST_ASSERT(kt.entries[0].state == KEY_SUSPENDED,
+                "opal: state stays SUSPENDED on redundant lock");
+
+    printf("\n");
+}
+
+static void test_opal_unlock_with_correct_auth_restores_active(void)
+{
+    printf("Test: Opal unlock with correct auth -> ACTIVE (REQ-161)\n");
+
+    u8 mk[SEC_KEY_LEN];
+    for (u32 i = 0; i < SEC_KEY_LEN; i++) {
+        mk[i] = (u8)(0x30 + (i * 7));
+    }
+
+    struct key_table kt;
+    seed_active_ns(&kt, 11);
+    opal_lock_ns(&kt, 11);
+    TEST_ASSERT(opal_is_locked(&kt, 11) == true,
+                "opal: baseline locked");
+
+    u8 auth[SEC_KEY_LEN];
+    opal_derive_auth(mk, 11, auth);
+    int rc = opal_unlock_ns(&kt, mk, 11, auth);
+    TEST_ASSERT(rc == HFSSS_OK,
+                "opal: unlock with correct auth returns OK");
+    TEST_ASSERT(opal_is_locked(&kt, 11) == false,
+                "opal: namespace unlocked after correct auth");
+    TEST_ASSERT(kt.entries[0].state == KEY_ACTIVE,
+                "opal: key_state back to ACTIVE after unlock");
+
+    /* Unlocking an already-unlocked NS with the right auth is a
+     * no-op success (matches TCG Opal §5.3 redundant-unlock). */
+    rc = opal_unlock_ns(&kt, mk, 11, auth);
+    TEST_ASSERT(rc == HFSSS_OK,
+                "opal: redundant unlock with correct auth is benign");
+
+    printf("\n");
+}
+
+static void test_opal_unlock_with_wrong_auth_rejects(void)
+{
+    printf("Test: Opal unlock with wrong auth rejects (REQ-161)\n");
+
+    u8 mk[SEC_KEY_LEN];
+    for (u32 i = 0; i < SEC_KEY_LEN; i++) {
+        mk[i] = (u8)(0x60 + i);
+    }
+
+    struct key_table kt;
+    seed_active_ns(&kt, 13);
+    opal_lock_ns(&kt, 13);
+
+    u8 bad_auth[SEC_KEY_LEN];
+    for (u32 i = 0; i < SEC_KEY_LEN; i++) {
+        bad_auth[i] = 0xFF;
+    }
+    int rc = opal_unlock_ns(&kt, mk, 13, bad_auth);
+    TEST_ASSERT(rc == HFSSS_ERR_AUTH,
+                "opal: unlock with wrong auth returns ERR_AUTH");
+    TEST_ASSERT(opal_is_locked(&kt, 13) == true,
+                "opal: namespace stays locked after wrong auth");
+    TEST_ASSERT(kt.entries[0].state == KEY_SUSPENDED,
+                "opal: key_state still SUSPENDED after rejected unlock");
+
+    /* Unlock with an auth derived for a DIFFERENT nsid also rejects. */
+    u8 wrong_ns_auth[SEC_KEY_LEN];
+    opal_derive_auth(mk, 99 /* wrong nsid */, wrong_ns_auth);
+    rc = opal_unlock_ns(&kt, mk, 13, wrong_ns_auth);
+    TEST_ASSERT(rc == HFSSS_ERR_AUTH,
+                "opal: auth derived for a different nsid is rejected");
+    TEST_ASSERT(opal_is_locked(&kt, 13) == true,
+                "opal: namespace still locked after cross-nsid attempt");
+
+    printf("\n");
+}
+
+static void test_opal_derive_auth_is_deterministic_and_ns_unique(void)
+{
+    printf("Test: Opal auth derivation is deterministic + NS-unique (REQ-161)\n");
+
+    u8 mk[SEC_KEY_LEN];
+    for (u32 i = 0; i < SEC_KEY_LEN; i++) {
+        mk[i] = (u8)(i * 3 + 1);
+    }
+
+    u8 a1[SEC_KEY_LEN];
+    u8 a2[SEC_KEY_LEN];
+    opal_derive_auth(mk, 5, a1);
+    opal_derive_auth(mk, 5, a2);
+    TEST_ASSERT(memcmp(a1, a2, SEC_KEY_LEN) == 0,
+                "opal: same (mk, nsid) -> same auth (deterministic)");
+
+    u8 a_ns5[SEC_KEY_LEN];
+    u8 a_ns6[SEC_KEY_LEN];
+    opal_derive_auth(mk, 5, a_ns5);
+    opal_derive_auth(mk, 6, a_ns6);
+    TEST_ASSERT(memcmp(a_ns5, a_ns6, SEC_KEY_LEN) != 0,
+                "opal: different nsid -> different auth (ns-unique)");
+
+    /* Different MK -> different auth. */
+    u8 mk2[SEC_KEY_LEN];
+    for (u32 i = 0; i < SEC_KEY_LEN; i++) {
+        mk2[i] = mk[i] ^ 0xFFu;
+    }
+    u8 a_mk2[SEC_KEY_LEN];
+    opal_derive_auth(mk2, 5, a_mk2);
+    TEST_ASSERT(memcmp(a_ns5, a_mk2, SEC_KEY_LEN) != 0,
+                "opal: different MK -> different auth");
+
+    printf("\n");
+}
+
+static void test_opal_lock_unknown_nsid_returns_noent(void)
+{
+    printf("Test: Opal lock/unlock unknown nsid -> NOENT (REQ-161)\n");
+
+    u8 mk[SEC_KEY_LEN];
+    for (u32 i = 0; i < SEC_KEY_LEN; i++) {
+        mk[i] = (u8)i;
+    }
+
+    struct key_table kt;
+    key_table_init(&kt);
+    /* No NS populated — every nsid should be "unknown". */
+    int rc = opal_lock_ns(&kt, 42);
+    TEST_ASSERT(rc == HFSSS_ERR_NOENT,
+                "opal: lock_ns on unknown nsid returns NOENT");
+
+    u8 auth[SEC_KEY_LEN];
+    opal_derive_auth(mk, 42, auth);
+    rc = opal_unlock_ns(&kt, mk, 42, auth);
+    TEST_ASSERT(rc == HFSSS_ERR_NOENT,
+                "opal: unlock_ns on unknown nsid returns NOENT "
+                "(after auth verified)");
+
+    /* Invalid args rejected up front. */
+    TEST_ASSERT(opal_lock_ns(NULL, 42) == HFSSS_ERR_INVAL,
+                "opal: NULL kt rejected");
+    TEST_ASSERT(opal_lock_ns(&kt, 0) == HFSSS_ERR_INVAL,
+                "opal: nsid=0 rejected");
+
+    printf("\n");
+}
+
+/* ----------------------------------------------------------------
  * Main
  * ---------------------------------------------------------------- */
 int main(void)
@@ -777,6 +955,11 @@ int main(void)
     test_key_table_nor_slot_b_corruption_still_loads_a();
     test_key_table_nor_both_corrupt();
     test_key_table_nor_interrupted_save();
+    test_opal_lock_transitions_active_to_suspended();
+    test_opal_unlock_with_correct_auth_restores_active();
+    test_opal_unlock_with_wrong_auth_rejects();
+    test_opal_derive_auth_is_deterministic_and_ns_unique();
+    test_opal_lock_unknown_nsid_returns_noent();
 
     print_separator();
     printf("Test Summary\n");

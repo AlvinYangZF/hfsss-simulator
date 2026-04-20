@@ -240,7 +240,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
 | REQ-159 | AES-XTS 256-bit simulation | 12.4.2 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
 | REQ-160 | Key hierarchy (MK->KEK->DEK) | 12.4.3 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
-| REQ-161 | TCG Opal SSC basic commands | 12.4.4 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Partial |
+| REQ-161 | TCG Opal SSC basic commands | 12.4.4 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
 | REQ-162 | Crypto erase (destroy DEK) | 12.4.5 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
 | REQ-163 | Secure erase (block erase all) | 12.4.6 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
 | REQ-164 | Secure boot chain verification | 12.4.7 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
@@ -285,10 +285,10 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100.0% |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100.0% |
-| Enterprise: Security | 7 | 6 | 1 | 0 | 0 | 85.7% |
+| Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100.0% |
-| **Total** | **178** | **129** | **26** | **1** | **22** | **72.5%** |
+| **Total** | **178** | **130** | **25** | **1** | **22** | **73.0%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 
@@ -301,7 +301,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | UPLP (Unexpected Power Loss Protection) | 12.1 | 8 | REQ-139..146 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | ✅ Implemented (8/8) |
 | QoS Determinism | 12.2 | 7 | REQ-147..153 | HLD_02 | LLD_18 | TEST_LLD_02 | ⚠️ Partial (2 ✅ / 5 ⚠️) — DWRR + latency monitor landed; per-NS caps pending |
 | T10 DIF/PI (Data Integrity) | 12.3 | 5 | REQ-154..158 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | ⚠️ Partial (3 ✅ / 2 ⚠️) — CRC-16 types 1/2/3 done; GC propagation + error log page pending |
-| Data-at-Rest Encryption / Security | 12.4 | 7 | REQ-159..165 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | ⚠️ Partial (6 ✅ / 1 ⚠️) — AES-XTS sim, key hierarchy, crypto erase, sanitize action modes, secure-boot wiring, NOR-backed dual-copy key table ✅; only TCG Opal command parsing pending |
+| Data-at-Rest Encryption / Security | 12.4 | 7 | REQ-159..165 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | ✅ Implemented (7/7) — AES-XTS sim, key hierarchy, crypto erase, sanitize action modes, secure-boot wiring, NOR-backed dual-copy key table, TCG Opal lock/unlock |
 | Multi-Namespace Management | 12.5 | 5 | REQ-166..170 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 | ✅ Implemented (5/5) |
 | Thermal Management & Telemetry | 12.6, 12.7 | 8 | REQ-171..178 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | ✅ Implemented (8/8) — throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER (temp/wear/spare) notifiers |
 
