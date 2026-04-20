@@ -9,10 +9,15 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 
+/* Returns monotonic wall time in nanoseconds, or 0 if the OS clock
+ * call fails. Callers treat 0 as "no usable sample" so a transient
+ * clock failure never poisons cpu_pct with a bogus delta. */
 static u64 now_ns(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
     return (u64)ts.tv_sec * 1000000000ULL + (u64)ts.tv_nsec;
 }
 
@@ -53,13 +58,18 @@ void system_monitor_poll_once(struct system_monitor *m)
         m->cpu_pct      = 0.0;
         m->have_baseline = true;
     } else {
-        u64 cpu_delta  = cpu_ns  - m->prev_cpu_ns;
-        u64 wall_delta = wall_ns - m->prev_wall_ns;
-        /* Guard against zero / backward clock. A stuck wall_delta
-         * would otherwise divide-by-zero and poison the reading. */
-        m->cpu_pct = (wall_delta > 0)
-            ? 100.0 * (double)cpu_delta / (double)wall_delta
-            : 0.0;
+        /* u64 subtraction underflows silently if wall_ns <= prev —
+         * that would feed a huge bogus delta into the division and
+         * hide a real clock regression behind a tiny cpu_pct.
+         * Signed compare first; `0.0` here means "no usable wall
+         * delta this poll" and keeps cpu_pct stable. */
+        if (wall_ns > m->prev_wall_ns && cpu_ns >= m->prev_cpu_ns) {
+            u64 cpu_delta  = cpu_ns  - m->prev_cpu_ns;
+            u64 wall_delta = wall_ns - m->prev_wall_ns;
+            m->cpu_pct = 100.0 * (double)cpu_delta / (double)wall_delta;
+        } else {
+            m->cpu_pct = 0.0;
+        }
         m->prev_cpu_ns  = cpu_ns;
         m->prev_wall_ns = wall_ns;
     }

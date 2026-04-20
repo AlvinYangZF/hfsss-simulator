@@ -22,6 +22,14 @@ int spsc_ring_init(struct spsc_ring *r, u32 elem_size, u32 capacity)
     if (!r || elem_size == 0 || !is_pow2(capacity)) {
         return HFSSS_ERR_INVAL;
     }
+    /* Guard against capacity * elem_size overflowing size_t on the
+     * allocation path. A ring sized beyond what size_t can address
+     * can't be represented even for a conforming calloc, and the
+     * same overflow would corrupt slot-offset arithmetic on every
+     * tryput/tryget thereafter. */
+    if ((size_t)capacity > (size_t)-1 / (size_t)elem_size) {
+        return HFSSS_ERR_INVAL;
+    }
     memset(r, 0, sizeof(*r));
     r->buffer = (u8 *)calloc(capacity, elem_size);
     if (!r->buffer) {
@@ -54,8 +62,13 @@ int spsc_ring_tryput(struct spsc_ring *r, const void *elem)
     if ((unsigned)(h - t) >= r->capacity) {
         return HFSSS_ERR_NOSPC;
     }
-    memcpy(r->buffer + (u32)(h & r->mask) * r->elem_size,
-           elem, r->elem_size);
+    /* Promote the index to size_t before multiplying by elem_size.
+     * The naive `(u32) slot * elem_size` expression is evaluated in
+     * u32 arithmetic — for large rings (capacity * elem_size past
+     * 2^32) the product wraps and the producer and consumer write
+     * to the wrong byte offsets. */
+    size_t off = (size_t)(h & r->mask) * (size_t)r->elem_size;
+    memcpy(r->buffer + off, elem, r->elem_size);
     atomic_store_explicit(&r->head, h + 1, memory_order_release);
     return HFSSS_OK;
 }
@@ -70,9 +83,9 @@ int spsc_ring_tryget(struct spsc_ring *r, void *elem)
     if (h == t) {
         return HFSSS_ERR_AGAIN;
     }
-    memcpy(elem,
-           r->buffer + (u32)(t & r->mask) * r->elem_size,
-           r->elem_size);
+    /* Same size_t promotion as tryput — see comment there. */
+    size_t off = (size_t)(t & r->mask) * (size_t)r->elem_size;
+    memcpy(elem, r->buffer + off, r->elem_size);
     atomic_store_explicit(&r->tail, t + 1, memory_order_release);
     return HFSSS_OK;
 }
