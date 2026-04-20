@@ -219,10 +219,10 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
 | REQ-147 | DWRR multi-queue scheduler | 12.2.2 | HLD_02 | LLD_18 | TEST_LLD_02 | Implemented |
-| REQ-148 | Per-namespace IOPS limits | 12.2.3 | HLD_02 | LLD_18 | TEST_LLD_02 | Partial |
-| REQ-149 | Per-namespace bandwidth limits | 12.2.3 | HLD_02 | LLD_18 | TEST_LLD_02 | Partial |
-| REQ-150 | Latency SLA enforcement (P99) | 12.2.4 | HLD_02 | LLD_18 | TEST_LLD_02 | Partial |
-| REQ-151 | QoS policy hot-reconfiguration | 12.2.6 | HLD_02 | LLD_18 | TEST_LLD_02 | Partial |
+| REQ-148 | Per-namespace IOPS limits | 12.2.3 | HLD_02 | LLD_18 | TEST_LLD_02 | Implemented |
+| REQ-149 | Per-namespace bandwidth limits | 12.2.3 | HLD_02 | LLD_18 | TEST_LLD_02 | Implemented |
+| REQ-150 | Latency SLA enforcement (P99) | 12.2.4 | HLD_02 | LLD_18 | TEST_LLD_02 | Implemented |
+| REQ-151 | QoS policy hot-reconfiguration | 12.2.6 | HLD_02 | LLD_18 | TEST_LLD_02 | Implemented |
 | REQ-152 | GC/WL background priority yield | 12.2.5 | HLD_02 | LLD_18 | TEST_LLD_02 | Implemented |
 | REQ-153 | Deterministic latency window | 12.2.5 | HLD_02 | LLD_18 | TEST_LLD_02 | Partial |
 ### 13. Enterprise Requirements: T10 DIF/PI (REQ-154 through REQ-158)
@@ -283,12 +283,12 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Fault Injection Framework | 3 | 2 | 1 | 0 | 0 | 66.7% |
 | System Reliability/Stability | 4 | 3 | 0 | 0 | 1 | 75.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100.0% |
-| Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% |
+| Enterprise: QoS Determinism | 7 | 6 | 1 | 0 | 0 | 85.7% |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100.0% |
-| **Total** | **178** | **140** | **18** | **0** | **20** | **78.7%** |
+| **Total** | **178** | **144** | **14** | **0** | **20** | **80.9%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 

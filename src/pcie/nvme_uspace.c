@@ -98,6 +98,16 @@ int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config 
     dev->avail_spare_pct  = 100;
     dev->percent_used_pct = 0;
 
+    /* REQ-148 / REQ-149 / REQ-150: prime per-NS QoS + latency
+     * tracking. Default policy is unenforced so the I/O path passes
+     * through; a caller arms it later via nvme_uspace_dev_set_qos_policy.
+     * Latency monitors are created without a P99 target; the SLA
+     * rollback slot is empty until set_sla_rollback is called. */
+    for (u32 i = 0; i < QOS_MAX_NAMESPACES; i++) {
+        (void)qos_ctx_init(&dev->qos_by_ns[i], i + 1, NULL);
+        (void)lat_monitor_init(&dev->lat_by_ns[i], i + 1, 0);
+    }
+
     ret = nvme_ctrl_init(&dev->ctrl);
     if (ret != HFSSS_OK) goto fail_aer;
 
@@ -633,6 +643,18 @@ int nvme_uspace_read(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count, 
         mutex_unlock(&dev->keys_lock);
         return HFSSS_ERR_AUTH;
     }
+
+    /* REQ-148 / REQ-149: per-NS QoS gate. An unenforced policy
+     * passes through; an enforced one throttles the command with
+     * HFSSS_ERR_BUSY when the token bucket is exhausted. */
+    struct ns_qos_ctx *qctx = &dev->qos_by_ns[nsid - 1];
+    qos_refill_tokens(qctx, get_time_ns());
+    u32 io_bytes = count * (u32)dev->sssim.config.lba_size;
+    if (!qos_acquire_tokens(qctx, /*is_write=*/false, io_bytes)) {
+        mutex_unlock(&dev->keys_lock);
+        return HFSSS_ERR_BUSY;
+    }
+
     int rc = sssim_read(&dev->sssim, lba, count, data);
     mutex_unlock(&dev->keys_lock);
     return rc;
@@ -661,9 +683,103 @@ int nvme_uspace_write(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count,
         mutex_unlock(&dev->keys_lock);
         return HFSSS_ERR_AUTH;
     }
+
+    /* REQ-148 / REQ-149: per-NS QoS gate. Write costs 2 IOPS tokens
+     * per the existing qos_acquire_tokens contract. */
+    struct ns_qos_ctx *qctx = &dev->qos_by_ns[nsid - 1];
+    qos_refill_tokens(qctx, get_time_ns());
+    u32 io_bytes = count * (u32)dev->sssim.config.lba_size;
+    if (!qos_acquire_tokens(qctx, /*is_write=*/true, io_bytes)) {
+        mutex_unlock(&dev->keys_lock);
+        return HFSSS_ERR_BUSY;
+    }
+
     int rc = sssim_write(&dev->sssim, lba, count, data);
     mutex_unlock(&dev->keys_lock);
     return rc;
+}
+
+int nvme_uspace_dev_set_qos_policy(struct nvme_uspace_dev *dev,
+                                   u32 nsid,
+                                   const struct ns_qos_policy *policy)
+{
+    if (!dev || !dev->initialized || !policy) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (nsid == 0 || nsid > QOS_MAX_NAMESPACES) {
+        return HFSSS_ERR_INVAL;
+    }
+    struct ns_qos_ctx *qctx = &dev->qos_by_ns[nsid - 1];
+    if (!qctx->initialized) {
+        return HFSSS_ERR_NOENT;
+    }
+    /* qos_set_policy rebuilds the token buckets with current time
+     * so a hot-reconfig takes effect on the very next acquire —
+     * no need to stop or drain traffic. keys_lock isn't taken
+     * because qos state is independent of the Opal key table. */
+    return qos_set_policy(qctx, policy);
+}
+
+int nvme_uspace_dev_set_sla_rollback(struct nvme_uspace_dev *dev,
+                                     u32 nsid,
+                                     u32 target_us,
+                                     u32 trigger_count,
+                                     sla_rollback_fn cb,
+                                     void *cb_ctx)
+{
+    if (!dev || !dev->initialized) return HFSSS_ERR_INVAL;
+    if (nsid == 0 || nsid > QOS_MAX_NAMESPACES) return HFSSS_ERR_INVAL;
+
+    struct ns_latency_monitor *mon = &dev->lat_by_ns[nsid - 1];
+    struct nvme_sla_slot      *slot = &dev->sla_by_ns[nsid - 1];
+
+    /* Update the target_us on the underlying monitor so
+     * lat_monitor_check_sla knows what to compare against. */
+    mon->target_us = target_us;
+
+    slot->cb            = cb;
+    slot->cb_ctx        = cb_ctx;
+    slot->trigger_count = trigger_count;
+    slot->fire_count    = 0;
+    return HFSSS_OK;
+}
+
+bool nvme_uspace_dev_check_sla(struct nvme_uspace_dev *dev, u32 nsid)
+{
+    if (!dev || !dev->initialized) return false;
+    if (nsid == 0 || nsid > QOS_MAX_NAMESPACES) return false;
+
+    struct ns_latency_monitor *mon  = &dev->lat_by_ns[nsid - 1];
+    struct nvme_sla_slot      *slot = &dev->sla_by_ns[nsid - 1];
+
+    /* check_sla bumps consecutive_violations on breach and clears
+     * it otherwise — we just need to fold the trigger-count
+     * threshold on top. */
+    bool breached = lat_monitor_check_sla(mon);
+    if (!breached || slot->trigger_count == 0) {
+        return false;
+    }
+    if (mon->consecutive_violations < slot->trigger_count) {
+        return false;
+    }
+    if (slot->cb) {
+        u64 p99_us = lat_monitor_percentile(mon, 990);
+        slot->cb(nsid, p99_us, slot->cb_ctx);
+    }
+    slot->fire_count++;
+    /* Reset consecutive_violations so the next N breaches are
+     * treated as a fresh window; otherwise a single burst would
+     * fire the callback every check. */
+    mon->consecutive_violations = 0;
+    return true;
+}
+
+void nvme_uspace_dev_record_latency(struct nvme_uspace_dev *dev,
+                                    u32 nsid, u64 latency_ns)
+{
+    if (!dev || !dev->initialized) return;
+    if (nsid == 0 || nsid > QOS_MAX_NAMESPACES) return;
+    lat_monitor_record(&dev->lat_by_ns[nsid - 1], latency_ns);
 }
 
 int nvme_uspace_flush(struct nvme_uspace_dev *dev, u32 nsid)
@@ -1223,8 +1339,17 @@ int nvme_uspace_dispatch_io_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_entr
         /* REQ-161: a locked namespace surfaces as SC=0x16 (OP_DENIED)
          * rather than the generic internal-device-error. All other
          * backend failures still map to INTERNAL_DEVICE_ERROR. */
-        u8 sc = (result == HFSSS_ERR_AUTH) ? NVME_SC_OP_DENIED
-                                           : NVME_SC_INTERNAL_DEVICE_ERROR;
+        u8 sc;
+        if (result == HFSSS_ERR_AUTH) {
+            sc = NVME_SC_OP_DENIED;
+        } else if (result == HFSSS_ERR_BUSY) {
+            /* REQ-148 / REQ-149: token bucket exhausted. NVMe §4.4
+             * Namespace Not Ready (0x81) is the closest retryable
+             * code — hosts treat it as "try again later". */
+            sc = NVME_SC_NAMESPACE_NOT_READY;
+        } else {
+            sc = NVME_SC_INTERNAL_DEVICE_ERROR;
+        }
         u16 status_field = NVME_BUILD_STATUS(sc, NVME_STATUS_TYPE_GENERIC);
         cpl->status = status_field;
         /* Append the failure to the Error Information Log ring so host

@@ -39,13 +39,13 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | System Reliability | 4 | 3 | 0 | 1 | 0 | 75.0% | ↑ REQ-088 P99.9 latency anomaly detector |
 | **Core Subtotal** | **138** | **105** | **13** | **20** | **0** | **76.1%** (85.5% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
-| Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% (100% partial) | ↑ DWRR + partial wiring |
+| Enterprise: QoS Determinism | 7 | 6 | 1 | 0 | 0 | 85.7% (100% partial) | ↑ DWRR + per-NS IOPS/BW caps + SLA rollback + hot-reconfig |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
 | Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100% | ↑ AES-XTS sim, keys, crypto erase, sanitize action modes, secure-boot-verify, NOR-backed dual-copy UPLP-safe key table, TCG-Opal lock/unlock |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
-| **Enterprise Subtotal** | **40** | **35** | **5** | **0** | **0** | **87.5%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **140** | **18** | **20** | **0** | **78.7%** (88.8% partial) | ↑ from 38.8% |
+| **Enterprise Subtotal** | **40** | **39** | **1** | **0** | **0** | **97.5%** (100% partial) | ↑ from 0% |
+| **Grand Total** | **178** | **144** | **14** | **20** | **0** | **80.9%** (88.8% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -259,10 +259,10 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | ID | Requirement Description | Status | Notes |
 |----|------------------------|--------|-------|
 | REQ-147 | DWRR multi-queue scheduler | ✅ | `src/controller/dwrr_scheduler.c` with per-NS queue create/delete + weighted dispatch; `tests/test_qos.c` |
-| REQ-148 | Per-namespace IOPS limits (1K-2M) | ⚠️ | QoS token-bucket tier in `flow_control.c` (REQ-035/113); explicit per-NS rate caps in the 1K–2M range not enforced |
-| REQ-149 | Per-namespace bandwidth limits (50MB/s-14GB/s) | ⚠️ | Same bucket framework; BW-unit tuning not tied to per-NS cap |
-| REQ-150 | Latency SLA enforcement (P99) | ⚠️ | Latency monitor in `src/controller/latency_monitor.c` + deterministic window in `det_window.c`; strict SLA rollback not wired |
-| REQ-151 | QoS policy hot-reconfiguration | ⚠️ | Static at init via config; runtime `config.set` path designed (LLD_18) not fully wired |
+| REQ-148 | Per-namespace IOPS limits (1K-2M) | ✅ | Per-NS `ns_qos_ctx` table embedded in `struct nvme_uspace_dev`; `nvme_uspace_read/write` refill + acquire tokens on every LBA-bearing command, returning `HFSSS_ERR_BUSY` on exhaustion. Dispatcher maps to CQE `SC=NAMESPACE_NOT_READY` so hosts treat it as retryable. Setter `nvme_uspace_dev_set_qos_policy` accepts the full 1K..2M IOPS range. Covered by `tests/test_nvme_uspace.c::test_qos_per_ns_iops_cap_engages` (throttle observation on the read path + CQE status + boundary accept). |
+| REQ-149 | Per-namespace bandwidth limits (50MB/s-14GB/s) | ✅ | Same acquire-tokens path — the BW bucket consumes `count * lba_size` bytes per request. Setter accepts the full 50 MB/s..14 GB/s span (50..14000 MB/s). Covered by `tests/test_nvme_uspace.c::test_qos_per_ns_bw_cap_engages` (100K reads against a 50 MB/s cap drive the bucket into throttle; spec lower + upper bounds accepted cleanly). |
+| REQ-150 | Latency SLA enforcement (P99) | ✅ | `nvme_uspace_dev_set_sla_rollback(nsid, target_us, trigger_count, cb, ctx)` arms a P99 SLA target + rollback callback; `nvme_uspace_dev_check_sla` folds `lat_monitor_check_sla`'s breach detection on top of the trigger count and fires the callback on sustained breaches, then resets consecutive_violations so each window is evaluated independently. Covered by `tests/test_nvme_uspace.c::test_qos_sla_rollback` (healthy P99 silent, 3-in-a-row breaches fire exactly once, disabled trigger stays silent, second window re-arms). |
+| REQ-151 | QoS policy hot-reconfiguration | ✅ | `nvme_uspace_dev_set_qos_policy` rebuilds the token buckets in place and the next `qos_acquire_tokens` call sees the new caps without stopping traffic or draining the I/O path. Works for cap changes AND for `enforced` flag flips. Covered by `tests/test_nvme_uspace.c::test_qos_hot_reconfigure_live` (tight -> unenforced mid-traffic stops throttling immediately; subsequent reconfigure to 2M IOPS still passes all commands). |
 | REQ-152 | GC/WL background priority yield | ✅ | GC bandwidth cap (REQ-036) + QoS-aware dispatcher yields foreground reads |
 | REQ-153 | Deterministic latency window (duty cycle) | ⚠️ | `det_window.c` provides windowed metrics; duty-cycle enforcement partial |
 
@@ -375,9 +375,9 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 Current position: **core + enterprise features largely landed; polish and gap-closure in progress.**
 
 Near-term priorities:
-1. Broaden **QoS coverage** — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).
-2. Address remaining perf items (REQ-122 scalability / REQ-123 resource) with multi-threaded reference measurements.
-3. Wire **real producers** for `system_monitor` (REQ-087) into the NBD / vhost / exporter mains — defaults are POSIX-backed but callers still need to attach real thread-count sources.
+1. Address remaining perf items (REQ-122 scalability / REQ-123 resource) with multi-threaded reference measurements.
+2. Wire **real producers** for `system_monitor` (REQ-087) and the QoS hot-reconfig entry point into the NBD / vhost / exporter mains — hooks exist, callers still need to attach real sensors + config surfaces.
+3. Core gaps: REQ-010 PRP/SGL full, REQ-025 cmd dispatch FSM, REQ-042 multi-plane concurrency, REQ-044 per-channel thread, REQ-096 Format NVM OP%.
 
 Mid-term:
 4. Broaden QoS coverage — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).
