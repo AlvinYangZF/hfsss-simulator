@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include "pcie/nvme_uspace.h"
 #include "pcie/nvme.h"
 #include "pcie/smart_monitor.h"
@@ -1247,6 +1249,94 @@ static int test_smart_reflects_live_state_after_notify(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Keys lock stress: spawn a reader thread hammering nvme_uspace_read
+ * while the main thread flips LOCK / UNLOCK via SECURITY_SEND. The
+ * dev->keys_lock must serialize the two paths — without it the I/O
+ * path could observe a half-written key_state and produce spurious
+ * ERR_AUTH or spurious success. We only assert "no crash / end state
+ * coherent"; a deeper race diagnosis is left to TSAN. */
+struct keys_race_args {
+    struct nvme_uspace_dev *dev;
+    atomic_bool stop;
+    u64 reads_total;
+    u64 reads_auth;
+};
+
+static void *keys_race_reader(void *arg)
+{
+    struct keys_race_args *a = (struct keys_race_args *)arg;
+    u8 buf[4096];
+    while (!atomic_load(&a->stop)) {
+        int rc = nvme_uspace_read(a->dev, 1, 0, 1, buf);
+        a->reads_total++;
+        if (rc == HFSSS_ERR_AUTH) a->reads_auth++;
+    }
+    return NULL;
+}
+
+static int test_keys_lock_concurrent_lock_and_read(void)
+{
+    printf("\n=== Keys lock: concurrent LOCK/UNLOCK + reads stay coherent ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    nvme_uspace_config_small(&cfg);
+    int ret = nvme_uspace_dev_init(&dev, &cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "keys-race: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    struct keys_race_args args = { .dev = &dev };
+    atomic_store(&args.stop, false);
+    pthread_t t;
+    int rc = pthread_create(&t, NULL, keys_race_reader, &args);
+    TEST_ASSERT(rc == 0, "keys-race: reader thread spawned");
+
+    u8 frame[OPAL_CMD_FRAME_LEN];
+    u8 auth[SEC_KEY_LEN];
+    opal_derive_auth(dev.opal_mk, 1, auth);
+    struct nvme_sq_entry sq;
+    struct nvme_cq_entry cpl;
+
+    /* 1000 iterations of LOCK -> yield -> UNLOCK. The yield between
+     * the two dispatches gives the reader thread a scheduling
+     * window to observe the intermediate locked state; without it,
+     * tight back-to-back dispatches on a fast machine can finish
+     * faster than the reader ever runs one iteration, collapsing
+     * the race the test is supposed to exercise. */
+    struct timespec short_sleep = { .tv_sec = 0, .tv_nsec = 1000 }; /* 1us */
+    for (int i = 0; i < 1000; i++) {
+        memset(&sq, 0, sizeof(sq));
+        memset(&cpl, 0, sizeof(cpl));
+        sq.opcode = NVME_ADMIN_SECURITY_SEND;
+        build_opal_frame(frame, OPAL_CMD_LOCK, 1, NULL);
+        nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, frame, sizeof(frame));
+
+        nanosleep(&short_sleep, NULL);
+
+        memset(&cpl, 0, sizeof(cpl));
+        build_opal_frame(frame, OPAL_CMD_UNLOCK, 1, auth);
+        nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, frame, sizeof(frame));
+    }
+
+    atomic_store(&args.stop, true);
+    pthread_join(t, NULL);
+
+    TEST_ASSERT(args.reads_total > 0,
+                "keys-race: reader made progress");
+    /* At least one read must have seen the locked state, proving
+     * the I/O path and admin path actually ran concurrently (not
+     * just serialized back-to-back). A count of zero would mean
+     * the timing collapsed and the test isn't exercising the race. */
+    TEST_ASSERT(args.reads_auth > 0,
+                "keys-race: reader observed at least one locked state");
+    TEST_ASSERT(opal_is_locked(&dev.keys, 1) == false,
+                "keys-race: final state is unlocked (ended with UNLOCK)");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* ------------------------------------------------------------------
  * REQ-178: SMART monitor runtime producer. Tests use synchronous
  * smart_monitor_poll_once() to avoid thread-timing flakiness. A
@@ -1566,6 +1656,7 @@ int main(void)
     test_smart_monitor_degraded_at_start();
     test_smart_monitor_autowired_into_dev();
     test_smart_monitor_thread_lifecycle();
+    test_keys_lock_concurrent_lock_and_read();
 
     print_separator();
     printf("Test Summary\n");

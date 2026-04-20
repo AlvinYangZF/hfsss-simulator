@@ -72,8 +72,11 @@ int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config 
     ret = mutex_init(&dev->error_log_lock);
     if (ret != HFSSS_OK) goto fail_lock;
 
-    ret = mutex_init(&dev->telemetry_lock);
+    ret = mutex_init(&dev->keys_lock);
     if (ret != HFSSS_OK) goto fail_error_log_lock;
+
+    ret = mutex_init(&dev->telemetry_lock);
+    if (ret != HFSSS_OK) goto fail_keys_lock;
 
     ret = telemetry_init(&dev->telemetry);
     if (ret != HFSSS_OK) goto fail_telemetry_lock;
@@ -146,6 +149,8 @@ fail_telemetry:
     telemetry_cleanup(&dev->telemetry);
 fail_telemetry_lock:
     mutex_cleanup(&dev->telemetry_lock);
+fail_keys_lock:
+    mutex_cleanup(&dev->keys_lock);
 fail_error_log_lock:
     mutex_cleanup(&dev->error_log_lock);
 fail_lock:
@@ -180,6 +185,7 @@ void nvme_uspace_dev_cleanup(struct nvme_uspace_dev *dev)
     hal_aer_cleanup(&dev->aer);
     telemetry_cleanup(&dev->telemetry);
     mutex_cleanup(&dev->telemetry_lock);
+    mutex_cleanup(&dev->keys_lock);
     mutex_cleanup(&dev->error_log_lock);
     mutex_cleanup(&dev->lock);
 
@@ -616,8 +622,13 @@ int nvme_uspace_read(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count, 
     }
 
     /* REQ-161: refuse I/O while the namespace is Opal-locked. The
-     * dispatcher maps HFSSS_ERR_AUTH to NVMe SC=0x16 (OP_DENIED). */
-    if (opal_is_locked(&dev->keys, nsid)) {
+     * dispatcher maps HFSSS_ERR_AUTH to NVMe SC=0x16 (OP_DENIED).
+     * keys_lock guards against concurrent SECURITY_SEND dispatch
+     * racing a host read. */
+    mutex_lock(&dev->keys_lock, 0);
+    bool locked = opal_is_locked(&dev->keys, nsid);
+    mutex_unlock(&dev->keys_lock);
+    if (locked) {
         return HFSSS_ERR_AUTH;
     }
 
@@ -640,7 +651,10 @@ int nvme_uspace_write(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count,
     }
 
     /* REQ-161: refuse I/O while the namespace is Opal-locked. */
-    if (opal_is_locked(&dev->keys, nsid)) {
+    mutex_lock(&dev->keys_lock, 0);
+    bool locked = opal_is_locked(&dev->keys, nsid);
+    mutex_unlock(&dev->keys_lock);
+    if (locked) {
         return HFSSS_ERR_AUTH;
     }
 
@@ -1457,7 +1471,11 @@ int nvme_uspace_dispatch_admin_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_e
                     | ((u32)p[3] << 16) | ((u32)p[4] << 24);
         const u8 *auth = &p[5];
 
-        int opal_rc;
+        int opal_rc = HFSSS_OK;
+        /* Serialize LOCK/UNLOCK against concurrent I/O-path
+         * opal_is_locked() probes so a host can't observe a torn
+         * key_state between the two callers. */
+        mutex_lock(&dev->keys_lock, 0);
         switch (opal_op) {
         case OPAL_CMD_LOCK:
             opal_rc = opal_lock_ns(&dev->keys, opal_ns);
@@ -1471,6 +1489,7 @@ int nvme_uspace_dispatch_admin_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_e
                                             NVME_STATUS_TYPE_GENERIC);
             break;
         }
+        mutex_unlock(&dev->keys_lock);
         if (cpl->status != 0) {
             break;  /* already marked INVALID_FIELD above */
         }
@@ -1506,7 +1525,9 @@ int nvme_uspace_dispatch_admin_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_e
                                             NVME_STATUS_TYPE_GENERIC);
             break;
         }
+        mutex_lock(&dev->keys_lock, 0);
         pm[5] = opal_is_locked(&dev->keys, opal_ns) ? 1 : 0;
+        mutex_unlock(&dev->keys_lock);
         break;
     }
 
