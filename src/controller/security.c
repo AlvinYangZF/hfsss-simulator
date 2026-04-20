@@ -354,25 +354,6 @@ int crypto_erase_ns(struct key_table *kt, u32 nsid,
  * Secure Boot Verification
  * ---------------------------------------------------------------- */
 
-bool secure_boot_verify(const u8 *image, u32 size,
-                        const struct fw_signature *sig)
-{
-    u32 computed_crc;
-
-    if (!image || size == 0 || !sig) {
-        return false;
-    }
-
-    /* Verify signature magic */
-    if (sig->magic != FW_SIG_MAGIC) {
-        return false;
-    }
-
-    /* Verify CRC32 of firmware image */
-    computed_crc = hfsss_crc32(image, size);
-    if (computed_crc != sig->image_crc32) {
-        return false;
-    }
-
-    return true;
-}
+/* secure_boot_verify() moved to src/common/boot.c so the boot sequence
+ * can invoke it without the controller layer being linked. See
+ * include/common/boot.h. */

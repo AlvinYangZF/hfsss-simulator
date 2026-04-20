@@ -57,6 +57,13 @@ int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config 
         return ret;
     }
 
+    /* Initialize Error Log ring lock (REQ-115/158) */
+    ret = mutex_init(&dev->error_log_lock);
+    if (ret != HFSSS_OK) {
+        mutex_cleanup(&dev->lock);
+        return ret;
+    }
+
     /* Initialize NVMe controller */
     ret = nvme_ctrl_init(&dev->ctrl);
     if (ret != HFSSS_OK) {
@@ -118,6 +125,7 @@ void nvme_uspace_dev_cleanup(struct nvme_uspace_dev *dev)
 
     nvme_queue_mgr_cleanup(&dev->qmgr);
     nvme_ctrl_cleanup(&dev->ctrl);
+    mutex_cleanup(&dev->error_log_lock);
     mutex_cleanup(&dev->lock);
 
     memset(dev, 0, sizeof(*dev));
@@ -432,22 +440,59 @@ int nvme_uspace_format_nvm(struct nvme_uspace_dev *dev, u32 nsid)
     return sssim_flush(&dev->sssim);
 }
 
-/* Sanitize: same semantics as format_nvm for simulation purposes. */
+/* Sanitize: dispatch on Sanitize Action (SANACT) per NVMe spec §5.22.
+ *  - EXIT_FAILURE   (0x01): no-op (no simulated failure-mode to clear)
+ *  - BLOCK_ERASE    (0x02): trim every LBA then flush
+ *  - OVERWRITE      (0x03): fill-zero pass across all LBAs then flush
+ *  - CRYPTO_ERASE   (0x04): destroy user data by dropping the mapping
+ *                           (simulated crypto erase), then flush
+ *  - anything else : HFSSS_ERR_INVAL -- caller translates to INVALID_FIELD
+ */
 int nvme_uspace_sanitize(struct nvme_uspace_dev *dev, u32 sanact)
 {
     if (!dev || !dev->initialized) {
         return HFSSS_ERR_INVAL;
     }
-    /* sanact values 1=block-erase, 2=overwrite, 3=crypto-erase are all
-     * treated identically: trim all LBAs + flush. */
-    (void)sanact;
 
-    u64 total_lbas = dev->sssim.config.total_lbas;
-    int ret = sssim_trim(&dev->sssim, 0, (u32)total_lbas);
-    if (ret != HFSSS_OK) {
-        return ret;
+    switch (sanact) {
+    case NVME_SANACT_EXIT_FAILURE:
+        return HFSSS_OK;
+    case NVME_SANACT_BLOCK_ERASE:
+    case NVME_SANACT_CRYPTO_ERASE: {
+        u64 total_lbas = dev->sssim.config.total_lbas;
+        int ret = sssim_trim(&dev->sssim, 0, (u32)total_lbas);
+        if (ret != HFSSS_OK) {
+            return ret;
+        }
+        return sssim_flush(&dev->sssim);
     }
-    return sssim_flush(&dev->sssim);
+    case NVME_SANACT_OVERWRITE: {
+        /* Overwrite every LBA with zeros. Simulator collapses this to a
+         * trim plus a single zero-fill pass so the host observes all-
+         * zero reads after completion. */
+        u64 total_lbas = dev->sssim.config.total_lbas;
+        u32 lba_size = dev->sssim.config.lba_size;
+        int ret = sssim_trim(&dev->sssim, 0, (u32)total_lbas);
+        if (ret != HFSSS_OK) {
+            return ret;
+        }
+        u8 *zbuf = calloc(1, lba_size);
+        if (!zbuf) {
+            return HFSSS_ERR_NOMEM;
+        }
+        for (u64 lba = 0; lba < total_lbas; lba++) {
+            ret = sssim_write(&dev->sssim, lba, 1, zbuf);
+            if (ret != HFSSS_OK) {
+                free(zbuf);
+                return ret;
+            }
+        }
+        free(zbuf);
+        return sssim_flush(&dev->sssim);
+    }
+    default:
+        return HFSSS_ERR_INVAL;
+    }
 }
 
 /* Stage firmware image bytes into dev->fw_staging_buf at the given offset. */
@@ -495,7 +540,52 @@ int nvme_uspace_fw_commit(struct nvme_uspace_dev *dev, u32 slot, u32 action)
     return HFSSS_OK;
 }
 
-/* Get Log Page: only LID=2 (SMART/Health) is implemented. */
+/* Append an entry to the NVMe Error Information Log ring (REQ-115/158). */
+void nvme_uspace_report_error(struct nvme_uspace_dev *dev,
+                              u16 sq_id, u16 cmd_id, u16 status_field,
+                              u64 lba, u32 nsid)
+{
+    if (!dev) {
+        return;
+    }
+    mutex_lock(&dev->error_log_lock, 0);
+    u32 slot = dev->error_log_head % NVME_ERROR_LOG_ENTRIES;
+    struct nvme_error_log_entry *e = &dev->error_log[slot];
+    memset(e, 0, sizeof(*e));
+    dev->error_log_count++;
+    e->error_count   = dev->error_log_count;
+    e->sq_id         = sq_id;
+    e->cmd_id        = cmd_id;
+    e->status_field  = status_field;
+    e->lba           = lba;
+    e->nsid          = nsid;
+    dev->error_log_head = (dev->error_log_head + 1) % NVME_ERROR_LOG_ENTRIES;
+    mutex_unlock(&dev->error_log_lock);
+}
+
+/* Copy up to num_entries Error Log Page entries into caller-supplied buffer.
+ * Entries are copied newest-first per NVMe spec §5.14.1.1. Returns the
+ * number of entries actually written. */
+static u32 error_log_copy_recent(struct nvme_uspace_dev *dev,
+                                  struct nvme_error_log_entry *out,
+                                  u32 num_entries)
+{
+    mutex_lock(&dev->error_log_lock, 0);
+    u32 available = dev->error_log_count < NVME_ERROR_LOG_ENTRIES
+        ? (u32)dev->error_log_count
+        : NVME_ERROR_LOG_ENTRIES;
+    u32 to_copy = available < num_entries ? available : num_entries;
+    /* Newest-first: walk backwards from head-1. */
+    for (u32 i = 0; i < to_copy; i++) {
+        u32 idx = (dev->error_log_head + NVME_ERROR_LOG_ENTRIES - 1 - i)
+                  % NVME_ERROR_LOG_ENTRIES;
+        out[i] = dev->error_log[idx];
+    }
+    mutex_unlock(&dev->error_log_lock);
+    return to_copy;
+}
+
+/* Get Log Page: LID=1 (Error Info) + LID=2 (SMART/Health). */
 int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void *buf, u32 len)
 {
     if (!dev || !dev->initialized || !buf) {
@@ -503,7 +593,19 @@ int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void
     }
     (void)nsid;
 
-    if (lid != 2) {
+    if (lid == NVME_LID_ERROR_INFO) {
+        u32 max_entries = len / (u32)sizeof(struct nvme_error_log_entry);
+        if (max_entries == 0) {
+            return HFSSS_ERR_INVAL;
+        }
+        memset(buf, 0, len);
+        error_log_copy_recent(dev,
+                              (struct nvme_error_log_entry *)buf,
+                              max_entries);
+        return HFSSS_OK;
+    }
+
+    if (lid != NVME_LID_SMART) {
         return HFSSS_ERR_NOTSUPP;
     }
 
@@ -527,7 +629,11 @@ int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void
     log.power_on_hours = 0;
     log.unsafe_shutdowns = 0;
     log.media_errors = 0;
-    log.num_err_log_entries = 0;
+    /* Keep SMART num_err_log_entries in sync with the Error Information
+     * Log ring counter so the two host-visible log pages agree. */
+    mutex_lock(&dev->error_log_lock, 0);
+    log.num_err_log_entries = dev->error_log_count;
+    mutex_unlock(&dev->error_log_lock);
 
     u32 copy_len = len < (u32)sizeof(log) ? len : (u32)sizeof(log);
     memset(buf, 0, len);
@@ -671,7 +777,23 @@ int nvme_uspace_dispatch_io_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_entr
     }
 
     if (result != HFSSS_OK) {
-        cpl->status = NVME_BUILD_STATUS(NVME_SC_INTERNAL_DEVICE_ERROR, NVME_STATUS_TYPE_GENERIC);
+        u16 status_field = NVME_BUILD_STATUS(NVME_SC_INTERNAL_DEVICE_ERROR,
+                                             NVME_STATUS_TYPE_GENERIC);
+        cpl->status = status_field;
+        /* Append the failure to the Error Information Log ring so host
+         * Get Log Page (LID=0x01) surfaces it (REQ-115 / REQ-158). Only
+         * LBA-bearing I/O opcodes carry a meaningful slba/nsid. */
+        if (cmd->opcode == NVME_NVM_READ ||
+            cmd->opcode == NVME_NVM_WRITE ||
+            cmd->opcode == NVME_NVM_WRITE_ZEROES ||
+            cmd->opcode == NVME_NVM_DATASET_MANAGEMENT) {
+            nvme_uspace_report_error(dev, 0 /* sq_id unknown at this layer */,
+                                     cmd->command_id, status_field,
+                                     slba, nsid);
+        } else {
+            nvme_uspace_report_error(dev, 0, cmd->command_id, status_field,
+                                     0, nsid);
+        }
     }
 
     return HFSSS_OK;

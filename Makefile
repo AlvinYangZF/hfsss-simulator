@@ -487,9 +487,9 @@ $(TEST_FOUNDATION): $(TEST_DIR)/test_foundation.c $(LIBHFSSS_FTL) $(LIBHFSSS_HAL
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common $(LDFLAGS)
 
-$(TEST_T10PI): $(TEST_DIR)/test_t10_pi.c $(LIBHFSSS_FTL) $(LIBHFSSS_COMMON)
+$(TEST_T10PI): $(TEST_DIR)/test_t10_pi.c $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_CTRL) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
-	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-common $(LDFLAGS)
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-controller -lhfsss-common $(LDFLAGS)
 
 $(TEST_IO_QUEUE): $(TEST_DIR)/test_io_queue.c $(LIBHFSSS_FTL) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"

@@ -96,6 +96,26 @@ struct boot_log_entry {
     char     msg[BOOT_LOG_MSG_LEN];
 };
 
+/* ------------------------------------------------------------------
+ * Firmware signature / secure boot chain verification (REQ-164)
+ *
+ * `secure_boot_verify()` is defined here in common — its dependencies
+ * are just hfsss_crc32 + fixed-width types. Controller/security re-exports
+ * these symbols via `controller/security.h` so the security module's
+ * callers don't have to change their include lists.
+ * ------------------------------------------------------------------ */
+#define FW_SIG_MAGIC 0x46575347U  /* "FWSG" */
+
+struct fw_signature {
+    uint32_t magic;
+    uint32_t fw_version;
+    uint32_t image_crc32;
+    uint32_t reserved;
+};
+
+bool secure_boot_verify(const uint8_t *image, uint32_t size,
+                        const struct fw_signature *sig);
+
 struct boot_ctx {
     enum boot_phase      current_phase;
     enum boot_type       boot_type;
@@ -109,6 +129,22 @@ struct boot_ctx {
     struct boot_log_entry log[BOOT_LOG_ENTRY_MAX];
     uint32_t             log_count;
     pthread_mutex_t      lock;
+    /* Secure boot attestation inputs (REQ-164). When NULL at the moment
+     * boot_select_firmware_slot() runs, the selector derives a signature
+     * from the active NOR slot (slot bytes with crc32 field zeroed,
+     * stamped with FW_SIG_MAGIC) and points these fields at the shadow
+     * copy below. A caller who attaches an explicit image via
+     * boot_attach_fw_image() overrides the derived default. Either way,
+     * phase1_post() always runs secure_boot_verify() and aborts on
+     * mismatch. */
+    const uint8_t              *fw_image;
+    uint32_t                    fw_image_size;
+    const struct fw_signature  *fw_sig;
+    /* Shadow copies used when deriving the signature from the active
+     * slot. Only valid after boot_select_firmware_slot() has populated
+     * them; fw_image / fw_sig point into these buffers. */
+    struct nor_firmware_slot   _derived_fw_image;
+    struct fw_signature        _derived_fw_sig;
 };
 
 /* ------------------------------------------------------------------
@@ -136,6 +172,13 @@ enum boot_type boot_get_type(const struct boot_ctx *ctx);
 int  boot_select_firmware_slot(struct boot_ctx *ctx);
 int  boot_swap_firmware_slot(struct boot_ctx *ctx);
 bool boot_slot_valid(const struct nor_firmware_slot *slot);
+
+/* Secure boot attestation input (REQ-164).
+ * Attach a firmware image + signature pair so POST runs
+ * secure_boot_verify() and aborts the boot sequence on mismatch. */
+void boot_attach_fw_image(struct boot_ctx *ctx,
+                          const uint8_t *image, uint32_t size,
+                          const struct fw_signature *sig);
 
 /* SysInfo helpers */
 void boot_sysinfo_init(struct sysinfo_partition *si);

@@ -34,6 +34,15 @@ struct nvme_uspace_dev {
 
     /* Per-FID feature storage (set_features/get_features) */
     u32 features[256];
+
+    /* NVMe Error Information Log Page ring (REQ-115 / REQ-158).
+     * `head` is the next write position; `count` is the total entries
+     * ever appended (exposed as SMART num_err_log_entries). Entries
+     * older than NVME_ERROR_LOG_ENTRIES are overwritten. */
+    struct nvme_error_log_entry error_log[NVME_ERROR_LOG_ENTRIES];
+    u32  error_log_head;
+    u64  error_log_count;
+    struct mutex error_log_lock;
 };
 
 /* User-space NVMe Configuration */
@@ -71,6 +80,14 @@ int nvme_uspace_sanitize(struct nvme_uspace_dev *dev, u32 sanact);
 int nvme_uspace_fw_download(struct nvme_uspace_dev *dev, u32 offset, const void *data, u32 len);
 int nvme_uspace_fw_commit(struct nvme_uspace_dev *dev, u32 slot, u32 action);
 int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void *buf, u32 len);
+
+/* Append one entry to the NVMe Error Information Log ring (REQ-115/158).
+ * Call sites: read retry exhausted → UCE, write verify failure,
+ * internal device error, etc. Fills error_count from the device
+ * monotonic counter, stamps the caller-supplied fields. */
+void nvme_uspace_report_error(struct nvme_uspace_dev *dev,
+                              u16 sq_id, u16 cmd_id, u16 status_field,
+                              u64 lba, u32 nsid);
 int nvme_uspace_get_features(struct nvme_uspace_dev *dev, u8 fid, u32 *value);
 int nvme_uspace_set_features(struct nvme_uspace_dev *dev, u8 fid, u32 value);
 

@@ -377,6 +377,133 @@ static void test_null_safety(void) {
 }
 
 /* ------------------------------------------------------------------
+ * Secure boot chain verification (REQ-164)
+ * ------------------------------------------------------------------ */
+static void test_secure_boot_accept_valid_image(void) {
+    separator();
+    printf("Test: POST accepts valid firmware image (REQ-164)\n");
+    separator();
+
+    struct boot_ctx ctx;
+    boot_ctx_init(&ctx);
+
+    uint8_t image[128];
+    for (size_t i = 0; i < sizeof(image); i++) {
+        image[i] = (uint8_t)(i * 3 + 7);
+    }
+    struct fw_signature sig = {0};
+    sig.magic = FW_SIG_MAGIC;
+    sig.fw_version = 1;
+    sig.image_crc32 = hfsss_crc32(image, sizeof(image));
+
+    boot_attach_fw_image(&ctx, image, sizeof(image), &sig);
+
+    int ret = boot_run(&ctx);
+    TEST_ASSERT(ret == HFSSS_OK, "boot_run completes with valid image");
+    TEST_ASSERT(ctx.initialized, "boot reaches READY with valid image");
+
+    boot_ctx_cleanup(&ctx);
+}
+
+static void test_secure_boot_reject_tampered_image(void) {
+    separator();
+    printf("Test: POST aborts on tampered firmware image (REQ-164)\n");
+    separator();
+
+    struct boot_ctx ctx;
+    boot_ctx_init(&ctx);
+
+    uint8_t image[128];
+    for (size_t i = 0; i < sizeof(image); i++) {
+        image[i] = (uint8_t)(i * 3 + 7);
+    }
+    struct fw_signature sig = {0};
+    sig.magic = FW_SIG_MAGIC;
+    sig.fw_version = 1;
+    sig.image_crc32 = hfsss_crc32(image, sizeof(image));
+
+    /* Corrupt one byte after the signature is captured */
+    image[42] ^= 0xFF;
+
+    boot_attach_fw_image(&ctx, image, sizeof(image), &sig);
+
+    int ret = boot_run(&ctx);
+    TEST_ASSERT(ret == HFSSS_ERR_AUTH,
+                "boot_run returns ERR_AUTH on tampered image");
+    TEST_ASSERT(!ctx.initialized,
+                "boot does NOT reach READY after tampered image");
+
+    boot_ctx_cleanup(&ctx);
+}
+
+static void test_secure_boot_reject_bad_magic(void) {
+    separator();
+    printf("Test: POST aborts on wrong signature magic (REQ-164)\n");
+    separator();
+
+    struct boot_ctx ctx;
+    boot_ctx_init(&ctx);
+
+    uint8_t image[64];
+    memset(image, 0xAA, sizeof(image));
+    struct fw_signature sig = {0};
+    sig.magic = 0xDEADBEEFU;  /* NOT FW_SIG_MAGIC */
+    sig.image_crc32 = hfsss_crc32(image, sizeof(image));
+
+    boot_attach_fw_image(&ctx, image, sizeof(image), &sig);
+
+    int ret = boot_run(&ctx);
+    TEST_ASSERT(ret == HFSSS_ERR_AUTH,
+                "boot_run returns ERR_AUTH on wrong signature magic");
+
+    boot_ctx_cleanup(&ctx);
+}
+
+static void test_secure_boot_default_verifies_slot(void) {
+    separator();
+    printf("Test: default POST derives fw signature from active slot (REQ-164)\n");
+    separator();
+
+    struct boot_ctx ctx;
+    boot_ctx_init(&ctx);
+    /* Do NOT pre-attach a firmware image. The default boot path must
+     * derive a signature from the active NOR slot and still run
+     * secure_boot_verify() — verification must pass against the freshly
+     * provisioned slot. */
+    int ret = boot_run(&ctx);
+    TEST_ASSERT(ret == HFSSS_OK,
+                "default boot passes secure-boot verify on fresh slot");
+    TEST_ASSERT(ctx.initialized, "boot reaches READY after default verify");
+    TEST_ASSERT(ctx.fw_image != NULL,
+                "fw_image auto-populated from active slot");
+    TEST_ASSERT(ctx.fw_sig != NULL && ctx.fw_sig->magic == FW_SIG_MAGIC,
+                "fw_sig auto-stamped with FW_SIG_MAGIC");
+
+    boot_ctx_cleanup(&ctx);
+}
+
+static void test_secure_boot_tampered_slot_fails(void) {
+    separator();
+    printf("Test: POST aborts when active slot is tampered (REQ-164)\n");
+    separator();
+
+    struct boot_ctx ctx;
+    boot_ctx_init(&ctx);
+    /* Flip a field in the active slot without refreshing its crc32.
+     * The derived signature now disagrees with the image bytes, so
+     * POST must abort the boot sequence. */
+    ctx.slots[0].version = 999;
+
+    int ret = boot_run(&ctx);
+    TEST_ASSERT(ret == HFSSS_ERR_AUTH,
+                "tampered active slot aborts POST with HFSSS_ERR_AUTH");
+    TEST_ASSERT(!ctx.initialized,
+                "boot does NOT reach READY after slot tamper");
+
+    boot_ctx_cleanup(&ctx);
+}
+
+/* ------------------------------------------------------------------
  * main
  * ------------------------------------------------------------------ */
 int main(void) {
@@ -398,6 +525,11 @@ int main(void) {
     test_wal_recovery();
     test_sysinfo_helpers();
     test_null_safety();
+    test_secure_boot_accept_valid_image();
+    test_secure_boot_reject_tampered_image();
+    test_secure_boot_reject_bad_magic();
+    test_secure_boot_default_verifies_slot();
+    test_secure_boot_tampered_slot_fails();
 
     separator();
     printf("Test Summary\n");

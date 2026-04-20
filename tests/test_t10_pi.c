@@ -3,6 +3,8 @@
 #include <string.h>
 #include "common/common.h"
 #include "ftl/t10_pi.h"
+#include "hal/hal.h"
+#include "media/media.h"
 
 /* Test counters */
 static int total_tests = 0;
@@ -87,32 +89,111 @@ static void test_pi_type1_ref_tag(void)
     printf("\n");
 }
 
+/* End-to-end PI-through-GC-migration test (REQ-157).
+ *
+ * Verifies that when a live page is migrated between blocks (the core GC
+ * operation), its spare-area T10 PI tuple survives the read/program
+ * round-trip through the HAL. If the HAL or media layer ever drops the
+ * spare during a GC-style copy, `pi_verify` at the destination will fail
+ * on guard/ref_tag mismatch and the invariant is lost. */
 static void test_pi_gc_preservation(void)
 {
-    u8 data[4096];
-    struct t10_pi_tuple pi_src, pi_dst;
+    u8 page_buf[4096];
+    u8 spare_buf[64];
+    struct t10_pi_tuple pi_generated, pi_read_back;
+    struct media_ctx media_ctx;
+    struct media_config media_config;
+    struct hal_ctx hal_ctx;
+    struct hal_nand_dev nand_dev;
+    struct hal_nor_dev nor_dev;
+    struct hal_pci_ctx pci_ctx;
+    struct hal_power_ctx power_ctx;
+    const u64 kLba = 500;
     int ret;
-    int i;
 
     print_separator();
-    printf("Test: T10 PI Preservation During GC\n");
+    printf("Test: T10 PI Preservation Through GC-style Page Migration (REQ-157)\n");
     print_separator();
 
-    for (i = 0; i < 4096; i++) {
-        data[i] = (u8)((i * 7 + 3) & 0xFF);
+    memset(&media_config, 0, sizeof(media_config));
+    media_config.channel_count     = 1;
+    media_config.chips_per_channel = 1;
+    media_config.dies_per_chip     = 1;
+    media_config.planes_per_die    = 1;
+    media_config.blocks_per_plane  = 4;
+    media_config.pages_per_block   = 4;
+    media_config.page_size         = 4096;
+    media_config.spare_size        = 64;
+    media_config.nand_type         = NAND_TYPE_TLC;
+
+    ret = media_init(&media_ctx, &media_config);
+    TEST_ASSERT(ret == HFSSS_OK, "media_init for GC-PI test");
+
+    ret = hal_nand_dev_init(&nand_dev, 1, 1, 1, 1, 4, 4, 4096, 64, &media_ctx);
+    TEST_ASSERT(ret == HFSSS_OK, "hal_nand_dev_init for GC-PI test");
+
+    ret = hal_nor_dev_init(&nor_dev, 1024 * 1024, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "hal_nor_dev_init for GC-PI test");
+    ret = hal_pci_init(&pci_ctx);
+    TEST_ASSERT(ret == HFSSS_OK, "hal_pci_init for GC-PI test");
+    ret = hal_power_init(&power_ctx);
+    TEST_ASSERT(ret == HFSSS_OK, "hal_power_init for GC-PI test");
+    ret = hal_init_full(&hal_ctx, &nand_dev, &nor_dev, &pci_ctx, &power_ctx);
+    TEST_ASSERT(ret == HFSSS_OK, "hal_init_full for GC-PI test");
+
+    /* 1. Build a page with Type-1 PI and stash the tuple in the spare. */
+    for (int i = 0; i < 4096; i++) {
+        page_buf[i] = (u8)((i * 7 + 3) & 0xFF);
     }
-
-    /* Generate PI for source page */
-    ret = pi_generate(&pi_src, data, 4096, 500, PI_TYPE_1);
+    ret = pi_generate(&pi_generated, page_buf, 4096, kLba, PI_TYPE_1);
     TEST_ASSERT(ret == HFSSS_OK, "generate PI for source page");
 
-    /* Simulate GC: copy PI metadata without regeneration */
-    memcpy(&pi_dst, &pi_src, sizeof(struct t10_pi_tuple));
+    memset(spare_buf, 0xFF, sizeof(spare_buf));
+    memcpy(spare_buf, &pi_generated, sizeof(pi_generated));
 
-    /* Verify copied PI against original data */
-    ret = pi_verify(&pi_dst, data, 4096, 500, PI_TYPE_1);
+    /* 2. Program the source page + spare into block 0, page 0. */
+    ret = hal_nand_program_sync(&hal_ctx, 0, 0, 0, 0, 0, 0,
+                                page_buf, spare_buf);
+    TEST_ASSERT(ret == HFSSS_OK, "program source page + PI spare");
+
+    /* 3. GC read: fetch the live page + spare. */
+    u8 gc_page[4096];
+    u8 gc_spare[64];
+    memset(gc_spare, 0, sizeof(gc_spare));
+    ret = hal_nand_read_sync(&hal_ctx, 0, 0, 0, 0, 0, 0,
+                             gc_page, gc_spare);
+    TEST_ASSERT(ret == HFSSS_OK, "GC read of source page + spare");
+    TEST_ASSERT(memcmp(gc_page, page_buf, 4096) == 0,
+                "data round-trips through HAL read/program");
+    TEST_ASSERT(memcmp(gc_spare, spare_buf, sizeof(pi_generated)) == 0,
+                "spare round-trips through HAL read/program");
+
+    /* 4. GC program: migrate those exact bytes into a different block. */
+    ret = hal_nand_program_sync(&hal_ctx, 0, 0, 0, 0, /*block=*/2, /*page=*/0,
+                                gc_page, gc_spare);
+    TEST_ASSERT(ret == HFSSS_OK, "GC program to destination block");
+
+    /* 5. Read from the destination and reconstruct the PI tuple. */
+    u8 dst_page[4096];
+    u8 dst_spare[64];
+    memset(dst_spare, 0, sizeof(dst_spare));
+    ret = hal_nand_read_sync(&hal_ctx, 0, 0, 0, 0, 2, 0,
+                             dst_page, dst_spare);
+    TEST_ASSERT(ret == HFSSS_OK, "read destination page after GC migrate");
+
+    memcpy(&pi_read_back, dst_spare, sizeof(pi_read_back));
+
+    /* 6. The Type-1 PI tuple must still validate against the LBA. */
+    ret = pi_verify(&pi_read_back, dst_page, 4096, kLba, PI_TYPE_1);
     TEST_ASSERT(ret == HFSSS_OK,
-                "PI preserved across GC migration (copy + verify)");
+                "pi_verify passes on migrated page (PI survived GC copy)");
+
+    hal_cleanup(&hal_ctx);
+    hal_nand_dev_cleanup(&nand_dev);
+    hal_nor_dev_cleanup(&nor_dev);
+    hal_pci_cleanup(&pci_ctx);
+    hal_power_cleanup(&power_ctx);
+    media_cleanup(&media_ctx);
 
     printf("\n");
 }
