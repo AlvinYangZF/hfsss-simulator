@@ -161,7 +161,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-082 | Out-of-Band Management - Interface Type | ✅ | JSON-RPC over Unix socket in `src/common/oob.c`; `tests/test_oob.c` |
 | REQ-083 | Out-of-Band Management - OOB Management Functions | ✅ | OOB command handlers (device_info / health / stats / reset_counters) in `oob.c` |
 | REQ-084 | Out-of-Band Management - SMART Information | ✅ | SMART_INFO handler in `oob.c` (P/E counts, spare, temp, throttle); consumed by `hfsss-ctrl` |
-| REQ-085 | Inter-Core Communication - Communication Mechanism | ❌ | SPSC ring buffer not implemented; message queue used instead (LLD_12 designed) |
+| REQ-085 | Inter-Core Communication - Communication Mechanism | ✅ | Lock-free single-producer single-consumer ring buffer in `include/common/spsc_ring.h` + `src/common/spsc_ring.c`. Power-of-two capacity with masked indices, `atomic_uint` head/tail using release-store on publish and acquire-load on cross-side read, wait-free `tryput` / `tryget` returning `NOSPC` / `AGAIN` on boundary conditions. Covered by `tests/test_common.c::test_spsc_ring_basic` (FIFO + capacity + wrap-around) and `test_spsc_ring_contention` (100K items shipped producer→consumer across two threads, no drops or reorders). |
 | REQ-086 | System Stability Monitoring - Watchdog | ✅ | Basic watchdog implemented (Phase 2) |
 | REQ-087 | System Stability Monitoring - System Resource Monitoring | ❌ | Periodic CPU/memory/thread-pool sampling not implemented; watchdog covers hang-detection only |
 | REQ-088 | System Stability Monitoring - Performance Anomaly Detection/Thermal Emulation | ⚠️ | Thermal model implemented (`src/common/thermal.c`, see REQ-171..173); P99.9 latency anomaly alert not yet wired |
