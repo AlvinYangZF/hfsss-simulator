@@ -104,6 +104,25 @@ int key_table_load(struct key_table *kt, struct nor_dev *nor);
 int crypto_erase_ns(struct key_table *kt, u32 nsid,
                     const u8 mk[SEC_KEY_LEN]);
 
+/* ----------------------------------------------------------------
+ * TCG Opal SSC basic lock/unlock (REQ-161)
+ *
+ * Uses the existing key_state machine:
+ *   ACTIVE    -> SUSPENDED  on opal_lock_ns
+ *   SUSPENDED -> ACTIVE     on opal_unlock_ns (with correct auth)
+ *
+ * Authentication tokens are derived from the master key and NSID.
+ * A wrong token aborts unlock with HFSSS_ERR_AUTH and leaves the
+ * namespace locked — matching TCG Opal SSC §5.3 PIN policy.
+ * ---------------------------------------------------------------- */
+void opal_derive_auth(const u8 mk[SEC_KEY_LEN], u32 nsid,
+                      u8 auth_out[SEC_KEY_LEN]);
+
+int  opal_lock_ns  (struct key_table *kt, u32 nsid);
+int  opal_unlock_ns(struct key_table *kt, const u8 mk[SEC_KEY_LEN],
+                    u32 nsid, const u8 auth[SEC_KEY_LEN]);
+bool opal_is_locked(const struct key_table *kt, u32 nsid);
+
 /* Secure boot verification lives in common/boot.h. */
 
 #endif /* __HFSSS_SECURITY_H */
