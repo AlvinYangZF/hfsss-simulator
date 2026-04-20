@@ -48,6 +48,7 @@ enum nor_partition_id {
     NOR_PART_BBT,
     NOR_PART_EVENT_LOG,
     NOR_PART_SYSINFO,
+    NOR_PART_KEYS,        /* REQ-165: dual-copy key table with UPLP-safe update */
     NOR_PART_COUNT
 };
 

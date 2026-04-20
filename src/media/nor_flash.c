@@ -34,6 +34,9 @@ static const struct nor_partition NOR_PARTS[NOR_PART_COUNT] = {
     [NOR_PART_SYSINFO]    = { NOR_PART_SYSINFO,    "sysinfo",
                                164u * 1024u * 1024u,
                                4u * 1024u * 1024u, false },
+    [NOR_PART_KEYS]       = { NOR_PART_KEYS,       "keys",
+                               168u * 1024u * 1024u,
+                               4u * 1024u * 1024u, false },
 };
 
 /* ------------------------------------------------------------------

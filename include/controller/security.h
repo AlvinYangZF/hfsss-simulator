@@ -69,14 +69,67 @@ int  sec_dek_unwrap(const u8 kek[SEC_KEY_LEN],
                     const u8 wrapped[SEC_WRAPPED_LEN],
                     u8 dek_out[SEC_KEY_LEN]);
 
-/* Key table management */
+/* Key table management (REQ-165).
+ *
+ * Persistence is NOR-backed with dual-copy + UPLP-safe update:
+ * each save stamps a monotonic generation number and writes to
+ * slot B first, then slot A. A crash between the two writes leaves
+ * one slot holding the new generation and the other holding the
+ * previous generation — `key_table_load` picks whichever slot has
+ * the highest generation with a valid CRC.
+ *
+ * The canonical save/load API takes `struct nor_dev *` directly;
+ * there is no file-backed path. Callers that want to persist a
+ * key table outside of NOR must serialize the struct themselves.
+ *
+ * Requires NOR_PART_KEYS to be sized to at least two 64 KB sectors.
+ */
+#define SEC_NOR_KEYS_MAGIC       0x4E4B4559U  /* "NKEY" */
+#define SEC_NOR_KEYS_SLOT_A_REL  0U
+#define SEC_NOR_KEYS_SLOT_B_REL  (64U * 1024U)  /* second NOR sector */
+
+struct key_table_nor_slot {
+    u32              slot_magic;
+    u32              generation;
+    struct key_table body;
+    u32              slot_crc32;  /* CRC over everything above */
+};
+
+struct nor_dev;
 int key_table_init(struct key_table *kt);
-int key_table_save(const struct key_table *kt, const char *filepath);
-int key_table_load(struct key_table *kt, const char *filepath);
+int key_table_save(const struct key_table *kt, struct nor_dev *nor);
+int key_table_load(struct key_table *kt, struct nor_dev *nor);
+
+/* Seed `nsid` into the first empty slot as KEY_ACTIVE so the
+ * Opal admin path (SECURITY_SEND/RECV) can target it without
+ * host-side enrollment. Without this the Opal LOCK command is
+ * unreachable at runtime because key_table_init leaves every
+ * slot KEY_EMPTY. Returns HFSSS_ERR_EXIST if the nsid is already
+ * registered (in any non-EMPTY state), HFSSS_ERR_NOMEM if full. */
+int key_table_register_ns(struct key_table *kt, u32 nsid);
 
 /* Crypto erase */
 int crypto_erase_ns(struct key_table *kt, u32 nsid,
                     const u8 mk[SEC_KEY_LEN]);
+
+/* ----------------------------------------------------------------
+ * TCG Opal SSC basic lock/unlock (REQ-161)
+ *
+ * Uses the existing key_state machine:
+ *   ACTIVE    -> SUSPENDED  on opal_lock_ns
+ *   SUSPENDED -> ACTIVE     on opal_unlock_ns (with correct auth)
+ *
+ * Authentication tokens are derived from the master key and NSID.
+ * A wrong token aborts unlock with HFSSS_ERR_AUTH and leaves the
+ * namespace locked — matching TCG Opal SSC §5.3 PIN policy.
+ * ---------------------------------------------------------------- */
+void opal_derive_auth(const u8 mk[SEC_KEY_LEN], u32 nsid,
+                      u8 auth_out[SEC_KEY_LEN]);
+
+int  opal_lock_ns  (struct key_table *kt, u32 nsid);
+int  opal_unlock_ns(struct key_table *kt, const u8 mk[SEC_KEY_LEN],
+                    u32 nsid, const u8 auth[SEC_KEY_LEN]);
+bool opal_is_locked(const struct key_table *kt, u32 nsid);
 
 /* Secure boot verification lives in common/boot.h. */
 

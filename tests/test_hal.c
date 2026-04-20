@@ -5,6 +5,8 @@
 #include "common/log.h"
 #include "media/media.h"
 #include "hal/hal.h"
+#include "hal/hal_aer.h"
+#include "hal/hal_pcie_link.h"
 
 #define TEST_PASS 0
 #define TEST_FAIL 1
@@ -329,6 +331,377 @@ static int test_hal(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* ==================== REQ-063 AER Tests ==================== */
+
+/* Scenario A: AER submitted first, event posted later -> event
+ * consumes outstanding CID, caller gets the completion on post. */
+static int test_aer_submit_then_event(void)
+{
+    printf("\n=== AER: submit-then-event (REQ-063) ===\n");
+    struct hal_aer_ctx aer;
+    TEST_ASSERT(hal_aer_init(&aer) == HFSSS_OK, "aer: init");
+
+    bool immediate = true;  /* start true so we know it gets overwritten */
+    struct nvme_aer_completion c;
+    int rc = hal_aer_submit_request(&aer, 0xA001, &immediate, &c);
+    TEST_ASSERT(rc == HFSSS_OK, "aer: submit returns OK");
+    TEST_ASSERT(immediate == false,
+                "aer: submit before any event is not immediate");
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == 1,
+                "aer: outstanding_count == 1 after submit");
+    TEST_ASSERT(hal_aer_pending_count(&aer) == 0,
+                "aer: no pending events yet");
+
+    bool delivered = false;
+    rc = hal_aer_post_event(&aer, NVME_AER_TYPE_SMART_HEALTH,
+                            NVME_AEI_SMART_TEMPERATURE_THRESHOLD, 0x02,
+                            &delivered, &c);
+    TEST_ASSERT(rc == HFSSS_OK, "aer: post returns OK");
+    TEST_ASSERT(delivered == true,
+                "aer: post delivers to waiting AER (immediate completion)");
+    TEST_ASSERT(c.cid == 0xA001,
+                "aer: completion carries the submitted CID");
+    /* DW0 encoding: type<<0 | info<<8 | log<<16 */
+    u32 expected_dw0 = ((u32)NVME_AER_TYPE_SMART_HEALTH) |
+                       ((u32)NVME_AEI_SMART_TEMPERATURE_THRESHOLD << 8) |
+                       ((u32)0x02 << 16);
+    TEST_ASSERT(c.cqe.cdw0 == expected_dw0,
+                "aer: CQE DW0 packs type/info/log per NVMe spec");
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == 0,
+                "aer: outstanding drained by matching event");
+
+    hal_aer_cleanup(&aer);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Scenario B: Event posted first, AER submitted later -> pending ring
+ * holds event, next submit completes immediately. */
+static int test_aer_event_then_submit(void)
+{
+    printf("\n=== AER: event-then-submit (REQ-063) ===\n");
+    struct hal_aer_ctx aer;
+    hal_aer_init(&aer);
+
+    bool delivered = true;  /* start true to verify override */
+    struct nvme_aer_completion c;
+    int rc = hal_aer_post_event(&aer, NVME_AER_TYPE_ERROR,
+                                NVME_AEI_SMART_NVM_SUBSYS_RELIABILITY, 0x01,
+                                &delivered, &c);
+    TEST_ASSERT(rc == HFSSS_OK, "aer: post OK with no outstanding AER");
+    TEST_ASSERT(delivered == false,
+                "aer: post not delivered -> event buffered in ring");
+    TEST_ASSERT(hal_aer_pending_count(&aer) == 1,
+                "aer: pending_count == 1 after buffered event");
+
+    bool immediate = false;
+    rc = hal_aer_submit_request(&aer, 0xB002, &immediate, &c);
+    TEST_ASSERT(rc == HFSSS_OK, "aer: submit OK after buffered event");
+    TEST_ASSERT(immediate == true,
+                "aer: submit completes immediately when pending non-empty");
+    TEST_ASSERT(c.cid == 0xB002,
+                "aer: immediate completion carries caller CID");
+    TEST_ASSERT((c.cqe.cdw0 & 0x7) == NVME_AER_TYPE_ERROR,
+                "aer: CQE type bits match posted event");
+    TEST_ASSERT(hal_aer_pending_count(&aer) == 0,
+                "aer: pending drained by matching submit");
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == 0,
+                "aer: outstanding empty after immediate completion");
+
+    hal_aer_cleanup(&aer);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Submit 16 AERs -> all queued. 17th returns NOSPC. */
+static int test_aer_outstanding_overflow(void)
+{
+    printf("\n=== AER: outstanding overflow (REQ-063) ===\n");
+    struct hal_aer_ctx aer;
+    hal_aer_init(&aer);
+
+    struct nvme_aer_completion c;
+    bool immediate;
+    for (u32 i = 0; i < AER_REQUEST_MAX; i++) {
+        int rc = hal_aer_submit_request(&aer, (u16)(0x1000 + i),
+                                        &immediate, &c);
+        TEST_ASSERT(rc == HFSSS_OK && !immediate,
+                    "aer: submit #N queued OK while under limit");
+    }
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == AER_REQUEST_MAX,
+                "aer: outstanding_count reaches AER_REQUEST_MAX");
+
+    int rc = hal_aer_submit_request(&aer, 0xFFFE, &immediate, &c);
+    TEST_ASSERT(rc == HFSSS_ERR_NOSPC,
+                "aer: 17th submit returns NOSPC");
+
+    hal_aer_cleanup(&aer);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Controller reset drains outstanding AERs with SC=COMMAND ABORTED. */
+static int test_aer_abort_on_reset(void)
+{
+    printf("\n=== AER: abort_pending on reset (REQ-063) ===\n");
+    struct hal_aer_ctx aer;
+    hal_aer_init(&aer);
+
+    bool immediate;
+    struct nvme_aer_completion ignore;
+    hal_aer_submit_request(&aer, 0x2001, &immediate, &ignore);
+    hal_aer_submit_request(&aer, 0x2002, &immediate, &ignore);
+    hal_aer_submit_request(&aer, 0x2003, &immediate, &ignore);
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == 3,
+                "aer: 3 AERs outstanding before abort");
+
+    struct nvme_aer_completion aborts[4];
+    u32 n = hal_aer_abort_pending(&aer, aborts, 4);
+    TEST_ASSERT(n == 3, "aer: abort returns count of aborted AERs");
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == 0,
+                "aer: outstanding empty after abort");
+    /* Completions should carry SC=CMD_ABORT_REQUESTED. */
+    u16 expected = NVME_BUILD_STATUS(NVME_SC_CMD_ABORT_REQUESTED,
+                                     NVME_STATUS_TYPE_GENERIC);
+    TEST_ASSERT(aborts[0].cqe.status == expected,
+                "aer: abort CQE carries SC=0x07 (CMD_ABORT_REQUESTED)");
+    TEST_ASSERT(aborts[0].cid == 0x2001,
+                "aer: abort preserves FIFO order (first-in first aborted)");
+    TEST_ASSERT(aborts[1].cid == 0x2002,
+                "aer: abort second CID matches second submit");
+    TEST_ASSERT(aborts[2].cid == 0x2003,
+                "aer: abort third CID matches third submit");
+
+    hal_aer_cleanup(&aer);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* DW0 encoding golden vector. */
+static int test_aer_dw0_encoding(void)
+{
+    printf("\n=== AER: DW0 encoding (REQ-063) ===\n");
+    u32 dw0 = hal_aer_dw0_encode(NVME_AER_TYPE_SMART_HEALTH,
+                                 NVME_AEI_SMART_SPARE_BELOW_THRESHOLD,
+                                 0x02 /* SMART log */);
+    TEST_ASSERT((dw0 & 0x7) == NVME_AER_TYPE_SMART_HEALTH,
+                "aer: DW0 bits[2:0] = type");
+    TEST_ASSERT(((dw0 >> 8) & 0xFF) == NVME_AEI_SMART_SPARE_BELOW_THRESHOLD,
+                "aer: DW0 bits[15:8] = info");
+    TEST_ASSERT(((dw0 >> 16) & 0xFF) == 0x02,
+                "aer: DW0 bits[23:16] = log page id");
+    TEST_ASSERT((dw0 >> 24) == 0,
+                "aer: DW0 bits[31:24] remain zero (reserved)");
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* ==================== REQ-064 PCIe Link State Tests ==================== */
+
+/* HA-008 / HA-009: L0 -> L0s -> L0 and L0 -> L1 -> L0 are legal. */
+static int test_pcie_link_basic_state_machine(void)
+{
+    printf("\n=== PCIe link: basic L0/L0s/L1 transitions (REQ-064) ===\n");
+    struct pcie_link_ctx link;
+    TEST_ASSERT(pcie_link_init(&link) == HFSSS_OK, "pcie: init");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: starts in L0");
+
+    TEST_ASSERT(pcie_link_enter_l0s(&link) == HFSSS_OK, "pcie: L0->L0s");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0S,
+                "pcie: now in L0s");
+    TEST_ASSERT(pcie_link_exit_l0s(&link) == HFSSS_OK, "pcie: L0s->L0");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: back in L0 after L0s exit");
+
+    TEST_ASSERT(pcie_link_enter_l1(&link) == HFSSS_OK, "pcie: L0->L1");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L1,
+                "pcie: now in L1");
+    TEST_ASSERT(pcie_link_transition(&link, PCIE_LINK_L2) == HFSSS_OK,
+                "pcie: L1->L2 legal");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L2, "pcie: in L2");
+    TEST_ASSERT(pcie_link_transition(&link, PCIE_LINK_L0) == HFSSS_OK,
+                "pcie: L2->L0 recovery legal");
+    TEST_ASSERT(pcie_link_transition_count(&link) == 5,
+                "pcie: transition_count matches edges taken");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* HA-010: L0s -> L2 is illegal; L1 -> L0s is illegal. */
+static int test_pcie_link_illegal_transitions_rejected(void)
+{
+    printf("\n=== PCIe link: illegal edges rejected (REQ-064) ===\n");
+    struct pcie_link_ctx link;
+    pcie_link_init(&link);
+
+    /* L0 -> L0s, then attempt L0s -> L2 (illegal). */
+    pcie_link_enter_l0s(&link);
+    int rc = pcie_link_transition(&link, PCIE_LINK_L2);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL, "pcie: L0s->L2 returns INVAL");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0S,
+                "pcie: state unchanged after rejected edge");
+
+    /* Return to L0, then L0->L1, then try L1->L0s (illegal). */
+    pcie_link_exit_l0s(&link);
+    pcie_link_enter_l1(&link);
+    rc = pcie_link_transition(&link, PCIE_LINK_L0S);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL, "pcie: L1->L0s returns INVAL");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L1,
+                "pcie: state still L1 after rejected edge");
+    TEST_ASSERT(pcie_link_rejected_count(&link) == 2,
+                "pcie: rejected_transitions counter matches attempts");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* HA-011: hot reset legal from any L* state, lands in L0. */
+static int test_pcie_link_hot_reset_from_any_state(void)
+{
+    printf("\n=== PCIe link: hot reset from L0/L0s/L1/L2 (REQ-064) ===\n");
+    struct pcie_link_ctx link;
+    pcie_link_init(&link);
+
+    /* From L0 */
+    TEST_ASSERT(pcie_hot_reset(&link) == HFSSS_OK,
+                "pcie: hot_reset from L0 OK");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: state L0 after hot_reset from L0");
+
+    /* From L0s */
+    pcie_link_enter_l0s(&link);
+    TEST_ASSERT(pcie_hot_reset(&link) == HFSSS_OK,
+                "pcie: hot_reset from L0s OK");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: state L0 after hot_reset from L0s");
+
+    /* From L1 */
+    pcie_link_enter_l1(&link);
+    TEST_ASSERT(pcie_hot_reset(&link) == HFSSS_OK,
+                "pcie: hot_reset from L1 OK");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: state L0 after hot_reset from L1");
+
+    /* From L2 */
+    pcie_link_enter_l1(&link);
+    pcie_link_transition(&link, PCIE_LINK_L2);
+    TEST_ASSERT(pcie_hot_reset(&link) == HFSSS_OK,
+                "pcie: hot_reset from L2 OK");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: state L0 after hot_reset from L2");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* HA-012: FLR only legal from L0. Attempting from L1 is rejected. */
+static int test_pcie_link_flr_only_from_l0(void)
+{
+    printf("\n=== PCIe link: FLR only from L0 (REQ-064) ===\n");
+    struct pcie_link_ctx link;
+    pcie_link_init(&link);
+
+    TEST_ASSERT(pcie_flr(&link) == HFSSS_OK,
+                "pcie: FLR from L0 OK");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: state L0 after FLR (lands back in L0)");
+    TEST_ASSERT(link.flr_in_progress == false,
+                "pcie: flr_in_progress cleared after FLR returns");
+
+    /* FLR from L1 must be rejected — host must raise link first. */
+    pcie_link_enter_l1(&link);
+    int rc = pcie_flr(&link);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL,
+                "pcie: FLR from L1 rejected with INVAL");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L1,
+                "pcie: state still L1 after rejected FLR");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* ASPM policy setter accepts the four spec values, rejects out-of-range. */
+static int test_pcie_link_aspm_policy(void)
+{
+    printf("\n=== PCIe link: ASPM policy setter (REQ-064) ===\n");
+    struct pcie_link_ctx link;
+    pcie_link_init(&link);
+
+    TEST_ASSERT(link.aspm_policy == PCIE_ASPM_L0S_L1,
+                "pcie: default ASPM is L0s+L1");
+    TEST_ASSERT(pcie_link_set_aspm_policy(&link, PCIE_ASPM_DISABLED) == HFSSS_OK,
+                "pcie: set ASPM DISABLED OK");
+    TEST_ASSERT(link.aspm_policy == PCIE_ASPM_DISABLED,
+                "pcie: aspm_policy reflects setter");
+    TEST_ASSERT(pcie_link_set_aspm_policy(&link, PCIE_ASPM_L0S) == HFSSS_OK,
+                "pcie: set ASPM L0s OK");
+    TEST_ASSERT(pcie_link_set_aspm_policy(&link, PCIE_ASPM_L1) == HFSSS_OK,
+                "pcie: set ASPM L1 OK");
+    TEST_ASSERT(pcie_link_set_aspm_policy(&link, 99) == HFSSS_ERR_INVAL,
+                "pcie: out-of-range ASPM rejected");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Fix-4: ASPM policy must actually gate L0s / L1 entry. The earlier
+ * implementation stored the enum but never consulted it — enter_l0s
+ * worked even under PCIE_ASPM_DISABLED. */
+static int test_pcie_link_aspm_policy_gates_entry(void)
+{
+    printf("\n=== PCIe link: ASPM policy gates L0s/L1 entry (Fix-4) ===\n");
+    struct pcie_link_ctx link;
+    pcie_link_init(&link);
+
+    /* DISABLED blocks both. */
+    pcie_link_set_aspm_policy(&link, PCIE_ASPM_DISABLED);
+    int rc = pcie_link_enter_l0s(&link);
+    TEST_ASSERT(rc == HFSSS_ERR_AUTH,
+                "aspm: L0s refused under DISABLED");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "aspm: state still L0 after refused L0s");
+    rc = pcie_link_enter_l1(&link);
+    TEST_ASSERT(rc == HFSSS_ERR_AUTH,
+                "aspm: L1 refused under DISABLED");
+    TEST_ASSERT(pcie_link_rejected_count(&link) == 2,
+                "aspm: both refusals counted");
+
+    /* ASPM_L0S permits L0s but blocks L1. */
+    pcie_link_set_aspm_policy(&link, PCIE_ASPM_L0S);
+    rc = pcie_link_enter_l0s(&link);
+    TEST_ASSERT(rc == HFSSS_OK,
+                "aspm: L0s OK under ASPM_L0S policy");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0S,
+                "aspm: actually entered L0s");
+    pcie_link_exit_l0s(&link);
+
+    rc = pcie_link_enter_l1(&link);
+    TEST_ASSERT(rc == HFSSS_ERR_AUTH,
+                "aspm: L1 refused under ASPM_L0S policy");
+
+    /* ASPM_L1 permits L1 but blocks L0s. */
+    pcie_link_set_aspm_policy(&link, PCIE_ASPM_L1);
+    rc = pcie_link_enter_l0s(&link);
+    TEST_ASSERT(rc == HFSSS_ERR_AUTH,
+                "aspm: L0s refused under ASPM_L1 policy");
+    rc = pcie_link_enter_l1(&link);
+    TEST_ASSERT(rc == HFSSS_OK,
+                "aspm: L1 OK under ASPM_L1 policy");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L1,
+                "aspm: actually entered L1");
+    pcie_link_exit_l1(&link);
+
+    /* ASPM_L0S_L1 permits both (default). */
+    pcie_link_set_aspm_policy(&link, PCIE_ASPM_L0S_L1);
+    rc = pcie_link_enter_l0s(&link);
+    TEST_ASSERT(rc == HFSSS_OK,
+                "aspm: L0s OK under ASPM_L0S_L1 (default)");
+    pcie_link_exit_l0s(&link);
+    rc = pcie_link_enter_l1(&link);
+    TEST_ASSERT(rc == HFSSS_OK,
+                "aspm: L1 OK under ASPM_L0S_L1");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -345,6 +718,17 @@ int main(void)
     test_hal_power();
     test_hal_pci();
     test_hal();
+    test_aer_submit_then_event();
+    test_aer_event_then_submit();
+    test_aer_outstanding_overflow();
+    test_aer_abort_on_reset();
+    test_aer_dw0_encoding();
+    test_pcie_link_basic_state_machine();
+    test_pcie_link_illegal_transitions_rejected();
+    test_pcie_link_hot_reset_from_any_state();
+    test_pcie_link_flr_only_from_l0();
+    test_pcie_link_aspm_policy();
+    test_pcie_link_aspm_policy_gates_entry();
 
     printf("\n========================================\n");
     printf("Test Summary\n");

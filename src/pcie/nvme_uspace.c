@@ -51,58 +51,80 @@ int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config 
         config = &default_cfg;
     }
 
-    /* Initialize lock */
+    /* Single-exit init: on failure we `goto fail_<last-successful-stage>`,
+     * which unwinds every prior step in strict reverse order. Earlier
+     * reviewer flagged that newly added state (telemetry/aer) leaked
+     * on mid-init errors; this pattern keeps the cleanup set in lockstep
+     * with what's been constructed, no matter where we abort. */
+
     ret = mutex_init(&dev->lock);
     if (ret != HFSSS_OK) {
         return ret;
     }
 
-    /* Initialize Error Log ring lock (REQ-115/158) */
     ret = mutex_init(&dev->error_log_lock);
-    if (ret != HFSSS_OK) {
-        mutex_cleanup(&dev->lock);
-        return ret;
-    }
+    if (ret != HFSSS_OK) goto fail_lock;
 
-    /* Initialize NVMe controller */
+    ret = mutex_init(&dev->telemetry_lock);
+    if (ret != HFSSS_OK) goto fail_error_log_lock;
+
+    ret = telemetry_init(&dev->telemetry);
+    if (ret != HFSSS_OK) goto fail_telemetry_lock;
+
+    ret = hal_aer_init(&dev->aer);
+    if (ret != HFSSS_OK) goto fail_telemetry;
+
+    /* Device-wide Opal key table (REQ-161). key_table_init is
+     * infallible so no rollback is needed beyond the later failure
+     * legs that already wind this back down. Register the default
+     * namespace so SECURITY_SEND/LOCK on nsid=1 (the only namespace
+     * Identify Controller advertises here, NN=1) reaches a live
+     * entry instead of being rejected as INVALID_FIELD. */
+    key_table_init(&dev->keys);
+    (void)key_table_register_ns(&dev->keys, 1);
+
+    /* SMART live state defaults (REQ-174/178 consistency). */
+    dev->thermal_level    = 0;
+    dev->avail_spare_pct  = 100;
+    dev->percent_used_pct = 0;
+
     ret = nvme_ctrl_init(&dev->ctrl);
-    if (ret != HFSSS_OK) {
-        mutex_cleanup(&dev->lock);
-        return ret;
-    }
+    if (ret != HFSSS_OK) goto fail_aer;
 
-    /* Initialize queue manager */
     ret = nvme_queue_mgr_init(&dev->qmgr, dev);
-    if (ret != HFSSS_OK) {
-        nvme_ctrl_cleanup(&dev->ctrl);
-        mutex_cleanup(&dev->lock);
-        return ret;
-    }
+    if (ret != HFSSS_OK) goto fail_ctrl;
 
-    /* Initialize SSD simulator */
     ret = sssim_init(&dev->sssim, &config->sssim_cfg);
-    if (ret != HFSSS_OK) {
-        nvme_queue_mgr_cleanup(&dev->qmgr);
-        nvme_ctrl_cleanup(&dev->ctrl);
-        mutex_cleanup(&dev->lock);
-        return ret;
-    }
+    if (ret != HFSSS_OK) goto fail_qmgr;
 
-    /* Allocate data buffer */
     dev->data_buffer_size = config->data_buffer_size;
-    dev->data_buffer = malloc(config->data_buffer_size);
+    dev->data_buffer      = malloc(config->data_buffer_size);
     if (!dev->data_buffer) {
-        sssim_cleanup(&dev->sssim);
-        nvme_queue_mgr_cleanup(&dev->qmgr);
-        nvme_ctrl_cleanup(&dev->ctrl);
-        mutex_cleanup(&dev->lock);
-        return HFSSS_ERR_NOMEM;
+        ret = HFSSS_ERR_NOMEM;
+        goto fail_sssim;
     }
 
     dev->initialized = true;
-    dev->running = false;
-
+    dev->running     = false;
     return HFSSS_OK;
+
+fail_sssim:
+    sssim_cleanup(&dev->sssim);
+fail_qmgr:
+    nvme_queue_mgr_cleanup(&dev->qmgr);
+fail_ctrl:
+    nvme_ctrl_cleanup(&dev->ctrl);
+fail_aer:
+    hal_aer_cleanup(&dev->aer);
+fail_telemetry:
+    telemetry_cleanup(&dev->telemetry);
+fail_telemetry_lock:
+    mutex_cleanup(&dev->telemetry_lock);
+fail_error_log_lock:
+    mutex_cleanup(&dev->error_log_lock);
+fail_lock:
+    mutex_cleanup(&dev->lock);
+    return ret;
 }
 
 void nvme_uspace_dev_cleanup(struct nvme_uspace_dev *dev)
@@ -125,10 +147,176 @@ void nvme_uspace_dev_cleanup(struct nvme_uspace_dev *dev)
 
     nvme_queue_mgr_cleanup(&dev->qmgr);
     nvme_ctrl_cleanup(&dev->ctrl);
+    hal_aer_cleanup(&dev->aer);
+    telemetry_cleanup(&dev->telemetry);
+    mutex_cleanup(&dev->telemetry_lock);
     mutex_cleanup(&dev->error_log_lock);
     mutex_cleanup(&dev->lock);
 
     memset(dev, 0, sizeof(*dev));
+}
+
+int nvme_uspace_aer_post_event(struct nvme_uspace_dev *dev,
+                               enum nvme_async_event_type type,
+                               enum nvme_async_event_info info,
+                               u8 log_page_id,
+                               bool *out_delivered,
+                               u16 *out_cid,
+                               struct nvme_cq_entry *out_cqe)
+{
+    if (!dev || !dev->initialized || !out_delivered) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nvme_aer_completion comp;
+    int rc = hal_aer_post_event(&dev->aer, type, info, log_page_id,
+                                out_delivered, &comp);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+    if (*out_delivered) {
+        if (out_cid) {
+            *out_cid = comp.cid;
+        }
+        if (out_cqe) {
+            *out_cqe = comp.cqe;
+        }
+    }
+    return HFSSS_OK;
+}
+
+/* Record a telemetry event under dev->telemetry_lock so the Log Page
+ * 07h/08h dispatch (REQ-174/175/176) sees the payload consistently. */
+static void aer_record_telemetry(struct nvme_uspace_dev *dev,
+                                 enum tel_event_type type, u8 severity,
+                                 const void *payload, u32 payload_len)
+{
+    mutex_lock(&dev->telemetry_lock, 0);
+    telemetry_record(&dev->telemetry, type, severity, payload, payload_len);
+    mutex_unlock(&dev->telemetry_lock);
+}
+
+int nvme_uspace_aer_notify_thermal(struct nvme_uspace_dev *dev,
+                                   u8 thermal_level,
+                                   bool *out_delivered,
+                                   u16 *out_cid,
+                                   struct nvme_cq_entry *out_cqe)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Map thermal level to telemetry severity. */
+    u8 severity = 0;
+    if (thermal_level >= 4) {        /* SHUTDOWN */
+        severity = 3;
+    } else if (thermal_level >= 3) { /* HEAVY */
+        severity = 2;
+    } else if (thermal_level >= 1) { /* LIGHT / MODERATE */
+        severity = 1;
+    }
+    aer_record_telemetry(dev, TEL_EVENT_THERMAL, severity,
+                         &thermal_level, sizeof(thermal_level));
+
+    /* Keep SMART live state in sync (REQ-178 / Fix-3) so a host that
+     * reads LID=0x02 after the AER sees the elevated temperature. */
+    mutex_lock(&dev->lock, 0);
+    dev->thermal_level = thermal_level;
+    mutex_unlock(&dev->lock);
+
+    bool local_delivered = false;
+    u16  local_cid       = 0;
+    struct nvme_cq_entry local_cqe;
+    memset(&local_cqe, 0, sizeof(local_cqe));
+    int rc = nvme_uspace_aer_post_event(dev,
+                                        NVME_AER_TYPE_SMART_HEALTH,
+                                        NVME_AEI_SMART_TEMPERATURE_THRESHOLD,
+                                        NVME_LID_SMART,
+                                        &local_delivered, &local_cid,
+                                        &local_cqe);
+    if (out_delivered) *out_delivered = local_delivered;
+    if (out_cid && local_delivered) *out_cid = local_cid;
+    if (out_cqe && local_delivered) *out_cqe = local_cqe;
+    return rc;
+}
+
+int nvme_uspace_aer_notify_wear(struct nvme_uspace_dev *dev,
+                                u8 remaining_life_pct,
+                                bool *out_delivered,
+                                u16 *out_cid,
+                                struct nvme_cq_entry *out_cqe)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Severity climbs as life drops. 3=critical (<5%), 2=warn, 1=info. */
+    u8 severity = 0;
+    if (remaining_life_pct < 5) {
+        severity = 3;
+    } else if (remaining_life_pct < 10) {
+        severity = 2;
+    } else if (remaining_life_pct < 25) {
+        severity = 1;
+    }
+    aer_record_telemetry(dev, TEL_EVENT_WEAR, severity,
+                         &remaining_life_pct, sizeof(remaining_life_pct));
+
+    /* percent_used = 100 - remaining_life_pct, clamped at 100. */
+    u8 used = (remaining_life_pct > 100) ? 0 : (u8)(100 - remaining_life_pct);
+    mutex_lock(&dev->lock, 0);
+    dev->percent_used_pct = used;
+    mutex_unlock(&dev->lock);
+
+    bool local_delivered = false;
+    u16  local_cid       = 0;
+    struct nvme_cq_entry local_cqe;
+    memset(&local_cqe, 0, sizeof(local_cqe));
+    int rc = nvme_uspace_aer_post_event(dev,
+                                        NVME_AER_TYPE_SMART_HEALTH,
+                                        NVME_AEI_SMART_NVM_SUBSYS_RELIABILITY,
+                                        NVME_LID_SMART,
+                                        &local_delivered, &local_cid,
+                                        &local_cqe);
+    if (out_delivered) *out_delivered = local_delivered;
+    if (out_cid && local_delivered) *out_cid = local_cid;
+    if (out_cqe && local_delivered) *out_cqe = local_cqe;
+    return rc;
+}
+
+int nvme_uspace_aer_notify_spare(struct nvme_uspace_dev *dev,
+                                 u8 spare_pct,
+                                 bool *out_delivered,
+                                 u16 *out_cid,
+                                 struct nvme_cq_entry *out_cqe)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    u8 severity = (spare_pct < 10) ? 2 : 1;
+    aer_record_telemetry(dev, TEL_EVENT_SPARE, severity,
+                         &spare_pct, sizeof(spare_pct));
+
+    u8 clamped = (spare_pct > 100) ? 100 : spare_pct;
+    mutex_lock(&dev->lock, 0);
+    dev->avail_spare_pct = clamped;
+    mutex_unlock(&dev->lock);
+
+    bool local_delivered = false;
+    u16  local_cid       = 0;
+    struct nvme_cq_entry local_cqe;
+    memset(&local_cqe, 0, sizeof(local_cqe));
+    int rc = nvme_uspace_aer_post_event(dev,
+                                        NVME_AER_TYPE_SMART_HEALTH,
+                                        NVME_AEI_SMART_SPARE_BELOW_THRESHOLD,
+                                        NVME_LID_SMART,
+                                        &local_delivered, &local_cid,
+                                        &local_cqe);
+    if (out_delivered) *out_delivered = local_delivered;
+    if (out_cid && local_delivered) *out_cid = local_cid;
+    if (out_cqe && local_delivered) *out_cqe = local_cqe;
+    return rc;
 }
 
 int nvme_uspace_dev_start(struct nvme_uspace_dev *dev)
@@ -361,6 +549,12 @@ int nvme_uspace_read(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count, 
         return HFSSS_ERR_INVAL;
     }
 
+    /* REQ-161: refuse I/O while the namespace is Opal-locked. The
+     * dispatcher maps HFSSS_ERR_AUTH to NVMe SC=0x16 (OP_DENIED). */
+    if (opal_is_locked(&dev->keys, nsid)) {
+        return HFSSS_ERR_AUTH;
+    }
+
     return sssim_read(&dev->sssim, lba, count, data);
 }
 
@@ -377,6 +571,11 @@ int nvme_uspace_write(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count,
     /* Check LBA range */
     if (lba + count > dev->sssim.config.total_lbas) {
         return HFSSS_ERR_INVAL;
+    }
+
+    /* REQ-161: refuse I/O while the namespace is Opal-locked. */
+    if (opal_is_locked(&dev->keys, nsid)) {
+        return HFSSS_ERR_AUTH;
     }
 
     return sssim_write(&dev->sssim, lba, count, data);
@@ -585,7 +784,121 @@ static u32 error_log_copy_recent(struct nvme_uspace_dev *dev,
     return to_copy;
 }
 
-/* Get Log Page: LID=1 (Error Info) + LID=2 (SMART/Health). */
+/* Serialize the telemetry ring into a caller-supplied buffer using the
+ * NVMe Telemetry Log Page layout: a 512-byte header followed by Data
+ * Area 1 carrying struct tel_event records in most-recent-first order.
+ * `host_initiated` selects LID 0x07 (host) vs LID 0x08 (controller)
+ * semantics for the generation-number and data-available fields. */
+static int telemetry_fill_log_page(struct nvme_uspace_dev *dev,
+                                   bool host_initiated,
+                                   void *buf, u32 len)
+{
+    const u32 header_size = (u32)sizeof(struct nvme_telemetry_log_header);
+    if (len < header_size) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    memset(buf, 0, len);
+    struct nvme_telemetry_log_header *hdr =
+        (struct nvme_telemetry_log_header *)buf;
+    hdr->log_identifier = host_initiated
+                          ? NVME_LID_TELEMETRY_HOST
+                          : NVME_LID_TELEMETRY_CTRL;
+    hdr->ieee_oui[0] = 0x48; /* 'H' */
+    hdr->ieee_oui[1] = 0x46; /* 'F' */
+    hdr->ieee_oui[2] = 0x53; /* 'S' */
+
+    mutex_lock(&dev->telemetry_lock, 0);
+
+    /* Generation-number policy differs between the two pages:
+     *  - Host-initiated (0x07): every Get Log Page call starts a new
+     *    snapshot, so the generation number advances unconditionally.
+     *  - Controller-initiated (0x08): the controller only increments
+     *    when genuinely new events have been appended since the last
+     *    read, so back-to-back polls don't appear to churn. */
+    if (host_initiated) {
+        dev->telemetry_host_gen++;
+        hdr->host_gen_number = dev->telemetry_host_gen;
+    } else {
+        u64 total_now = dev->telemetry.total_events;
+        if (total_now > dev->last_ctrl_gen_total_events) {
+            dev->telemetry_ctrl_gen++;
+            dev->last_ctrl_gen_total_events = total_now;
+        }
+        hdr->ctrl_gen_number = dev->telemetry_ctrl_gen;
+        hdr->ctrl_data_available = (dev->telemetry.count > 0) ? 1 : 0;
+    }
+
+    /* Fill Data Area 1 with the most recent events that fit. */
+    u8 *area1 = (u8 *)buf + header_size;
+    u32 area1_cap = len - header_size;
+    u32 max_events = area1_cap / (u32)sizeof(struct tel_event);
+    u32 actual = 0;
+    if (max_events > 0) {
+        telemetry_get_recent(&dev->telemetry,
+                             (struct tel_event *)area1, max_events,
+                             &actual);
+    }
+
+    /* data_area_1_last_block is in 512-byte units from the log start. */
+    if (actual > 0) {
+        u32 area1_bytes = actual * (u32)sizeof(struct tel_event);
+        u32 total_bytes = header_size + area1_bytes;
+        hdr->data_area_1_last_block = (u16)((total_bytes - 1) / 512);
+    } else {
+        hdr->data_area_1_last_block = 0;
+    }
+
+    mutex_unlock(&dev->telemetry_lock);
+    return HFSSS_OK;
+}
+
+/* Populate a vendor-specific counter snapshot from the telemetry ring.
+ * Used by hfsss-ctrl and the test harness to read device state without
+ * parsing the per-event Data Area of the standard Telemetry Log pages. */
+static int telemetry_fill_vendor_counters(struct nvme_uspace_dev *dev,
+                                          void *buf, u32 len)
+{
+    if (len < (u32)sizeof(struct nvme_vendor_log_counters)) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nvme_vendor_log_counters snap;
+    memset(&snap, 0, sizeof(snap));
+    snap.magic   = NVME_VENDOR_LOG_MAGIC;
+    snap.version = 1;
+
+    mutex_lock(&dev->telemetry_lock, 0);
+    snap.total_events   = dev->telemetry.total_events;
+    snap.events_in_ring = dev->telemetry.count;
+    snap.ring_head      = dev->telemetry.head;
+
+    /* Walk the live ring to produce per-type counts. Must go over
+     * `count` entries starting at the oldest slot, not the whole
+     * TEL_MAX_EVENTS array (stale slots could contain bogus type
+     * values from previous wraps — though telemetry_record zeroes
+     * slots before use, defending in depth is cheap here). */
+    u32 count = dev->telemetry.count;
+    u32 start = (count < TEL_MAX_EVENTS)
+                ? 0
+                : dev->telemetry.head; /* full ring → oldest at head */
+    for (u32 i = 0; i < count; i++) {
+        u32 idx = (start + i) % TEL_MAX_EVENTS;
+        u32 t = dev->telemetry.events[idx].type;
+        if (t < NVME_VENDOR_LOG_EVENT_TYPES) {
+            snap.events_by_type[t]++;
+        }
+    }
+    mutex_unlock(&dev->telemetry_lock);
+
+    memcpy(buf, &snap, sizeof(snap));
+    return HFSSS_OK;
+}
+
+/* Get Log Page: LID=0x01 (Error Info), 0x02 (SMART/Health),
+ * 0x07 (Host-Initiated Telemetry, REQ-174),
+ * 0x08 (Controller-Initiated Telemetry, REQ-175),
+ * 0xC0 (Vendor-Specific Counters, REQ-176). */
 int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void *buf, u32 len)
 {
     if (!dev || !dev->initialized || !buf) {
@@ -605,6 +918,18 @@ int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void
         return HFSSS_OK;
     }
 
+    if (lid == NVME_LID_TELEMETRY_HOST) {
+        return telemetry_fill_log_page(dev, true, buf, len);
+    }
+
+    if (lid == NVME_LID_TELEMETRY_CTRL) {
+        return telemetry_fill_log_page(dev, false, buf, len);
+    }
+
+    if (lid == NVME_LID_VENDOR_COUNTERS) {
+        return telemetry_fill_vendor_counters(dev, buf, len);
+    }
+
     if (lid != NVME_LID_SMART) {
         return HFSSS_ERR_NOTSUPP;
     }
@@ -615,11 +940,41 @@ int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void
     smart_log_t log;
     memset(&log, 0, sizeof(log));
 
-    log.critical_warning = 0;
-    log.temperature = 0x015E; /* 350 K */
-    log.avail_spare = 100;
+    /* Snapshot live thermal / spare / wear state under dev->lock so
+     * SMART (REQ-174) matches what the most recent AER notifier told
+     * the host to look for. Review of PR #91 flagged the previous
+     * hard-coded payload as inconsistent with the AER story. */
+    mutex_lock(&dev->lock, 0);
+    u8 live_thermal  = dev->thermal_level;
+    u8 live_spare    = dev->avail_spare_pct;
+    u8 live_used_pct = dev->percent_used_pct;
+    mutex_unlock(&dev->lock);
+
+    /* Map thermal level to Kelvin. Level 0=nominal 27°C/300K;
+     * each further level roughly +5°C up to SHUTDOWN=363K. */
+    static const uint16_t thermal_to_kelvin[5] = {
+        300,  /* NONE     */
+        348,  /* LIGHT    (>=75C) */
+        353,  /* MODERATE (>=80C) */
+        358,  /* HEAVY    (>=85C) */
+        363,  /* SHUTDOWN (>=90C) */
+    };
+    uint16_t temp_k = (live_thermal < 5) ? thermal_to_kelvin[live_thermal]
+                                         : thermal_to_kelvin[4];
+
+    /* Build critical_warning per NVMe §5.14.1.2: bit 0=spare below
+     * threshold, bit 1=temperature above threshold, bit 2=NVM
+     * subsystem reliability degraded (tied to percent_used>=90). */
+    uint8_t crit = 0;
+    if (live_spare < 10)   crit |= (1u << 0);
+    if (live_thermal >= 1) crit |= (1u << 1);
+    if (live_used_pct >= 90) crit |= (1u << 2);
+
+    log.critical_warning = crit;
+    log.temperature = temp_k;
+    log.avail_spare = live_spare;
     log.avail_spare_thresh = 10;
-    log.percent_used = 0;
+    log.percent_used = live_used_pct;
     log.data_units_read = stats.read_count;
     log.data_units_written = stats.write_count;
     log.host_read_cmds = stats.read_count;
@@ -777,8 +1132,12 @@ int nvme_uspace_dispatch_io_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_entr
     }
 
     if (result != HFSSS_OK) {
-        u16 status_field = NVME_BUILD_STATUS(NVME_SC_INTERNAL_DEVICE_ERROR,
-                                             NVME_STATUS_TYPE_GENERIC);
+        /* REQ-161: a locked namespace surfaces as SC=0x16 (OP_DENIED)
+         * rather than the generic internal-device-error. All other
+         * backend failures still map to INTERNAL_DEVICE_ERROR. */
+        u8 sc = (result == HFSSS_ERR_AUTH) ? NVME_SC_OP_DENIED
+                                           : NVME_SC_INTERNAL_DEVICE_ERROR;
+        u16 status_field = NVME_BUILD_STATUS(sc, NVME_STATUS_TYPE_GENERIC);
         cpl->status = status_field;
         /* Append the failure to the Error Information Log ring so host
          * Get Log Page (LID=0x01) surfaces it (REQ-115 / REQ-158). Only
@@ -989,7 +1348,102 @@ int nvme_uspace_dispatch_admin_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_e
         break;
     }
 
-    case NVME_ADMIN_ASYNC_EVENT:
+    case NVME_ADMIN_ASYNC_EVENT: {
+        /* Route through the AER framework (REQ-063). If the host's
+         * outstanding queue still has room, the CID is parked there
+         * and no completion is produced now — real NVMe would leave
+         * the CQE pending. We signal that to the caller by leaving
+         * cpl->cdw0 zero and returning a success status; the AER
+         * framework will stamp the real DW0 when a matching event
+         * arrives via nvme_uspace_aer_post_event(). If an event was
+         * already waiting in the pending ring, the submit completes
+         * immediately — fill cpl with the returned CQE now. */
+        bool immediate = false;
+        struct nvme_aer_completion comp;
+        int aer_rc = hal_aer_submit_request(&dev->aer, cmd->command_id,
+                                            &immediate, &comp);
+        if (aer_rc == HFSSS_ERR_NOSPC) {
+            /* NVMe spec §5.2: Asynchronous Event Request Limit
+             * Exceeded = SCT=Command Specific, SC=0x05. */
+            cpl->status = NVME_BUILD_STATUS(0x05,
+                                            NVME_STATUS_TYPE_CMD_SPEC);
+        } else if (immediate) {
+            cpl->cdw0   = comp.cqe.cdw0;
+            cpl->status = comp.cqe.status;
+        }
+        break;
+    }
+
+    case NVME_ADMIN_SECURITY_SEND: {
+        /* REQ-161: Opal SSC lock / unlock over NVMe Security Send.
+         * Data buffer is an OPAL_CMD_FRAME_LEN-byte frame (opcode,
+         * nsid, auth). Lock returns SC=OP_DENIED if the NS isn't
+         * currently ACTIVE; unlock with a wrong auth returns the
+         * same. Everything else maps to INVALID_FIELD. */
+        if (!data || data_len < OPAL_CMD_FRAME_LEN) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            break;
+        }
+        const u8 *p = (const u8 *)data;
+        u8  opal_op = p[0];
+        u32 opal_ns = ((u32)p[1])       | ((u32)p[2] << 8)
+                    | ((u32)p[3] << 16) | ((u32)p[4] << 24);
+        const u8 *auth = &p[5];
+
+        int opal_rc;
+        switch (opal_op) {
+        case OPAL_CMD_LOCK:
+            opal_rc = opal_lock_ns(&dev->keys, opal_ns);
+            break;
+        case OPAL_CMD_UNLOCK:
+            opal_rc = opal_unlock_ns(&dev->keys, dev->opal_mk,
+                                     opal_ns, auth);
+            break;
+        default:
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            break;
+        }
+        if (cpl->status != 0) {
+            break;  /* already marked INVALID_FIELD above */
+        }
+        if (opal_rc == HFSSS_ERR_AUTH) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_OP_DENIED,
+                                            NVME_STATUS_TYPE_GENERIC);
+        } else if (opal_rc == HFSSS_ERR_NOENT ||
+                   opal_rc == HFSSS_ERR_INVAL) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+        } else if (opal_rc != HFSSS_OK) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INTERNAL_DEVICE_ERROR,
+                                            NVME_STATUS_TYPE_GENERIC);
+        }
+        break;
+    }
+
+    case NVME_ADMIN_SECURITY_RECV: {
+        /* REQ-161: Security Receive. Currently supports
+         * OPAL_CMD_STATUS which writes 1/0 at data[5] indicating
+         * whether the namespace is locked. */
+        if (!data || data_len < 6) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            break;
+        }
+        u8  *pm      = (u8 *)data;
+        u8   opal_op = pm[0];
+        u32  opal_ns = ((u32)pm[1])       | ((u32)pm[2] << 8)
+                     | ((u32)pm[3] << 16) | ((u32)pm[4] << 24);
+        if (opal_op != OPAL_CMD_STATUS) {
+            cpl->status = NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                            NVME_STATUS_TYPE_GENERIC);
+            break;
+        }
+        pm[5] = opal_is_locked(&dev->keys, opal_ns) ? 1 : 0;
+        break;
+    }
+
     case NVME_ADMIN_KEEP_ALIVE:
         /* Accepted but no real action needed */
         break;
