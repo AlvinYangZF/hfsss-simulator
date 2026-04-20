@@ -254,8 +254,9 @@ int nvme_uspace_aer_notify_thermal(struct nvme_uspace_dev *dev,
     aer_record_telemetry(dev, TEL_EVENT_THERMAL, severity,
                          &thermal_level, sizeof(thermal_level));
 
-    /* Keep SMART live state in sync (REQ-178 / Fix-3) so a host that
-     * reads LID=0x02 after the AER sees the elevated temperature. */
+    /* Keep SMART live state in sync (REQ-178) so a host that reads
+     * LID=0x02 after the AER sees the elevated temperature rather
+     * than a hardcoded nominal value. */
     mutex_lock(&dev->lock, 0);
     dev->thermal_level = thermal_level;
     mutex_unlock(&dev->lock);
@@ -623,16 +624,18 @@ int nvme_uspace_read(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count, 
 
     /* REQ-161: refuse I/O while the namespace is Opal-locked. The
      * dispatcher maps HFSSS_ERR_AUTH to NVMe SC=0x16 (OP_DENIED).
-     * keys_lock guards against concurrent SECURITY_SEND dispatch
-     * racing a host read. */
+     * Hold keys_lock across the authorization check AND the data
+     * access so a SECURITY_SEND LOCK can't interleave between the
+     * is_locked check and the read, which would let I/O complete
+     * after the host believes the namespace is locked. */
     mutex_lock(&dev->keys_lock, 0);
-    bool locked = opal_is_locked(&dev->keys, nsid);
-    mutex_unlock(&dev->keys_lock);
-    if (locked) {
+    if (opal_is_locked(&dev->keys, nsid)) {
+        mutex_unlock(&dev->keys_lock);
         return HFSSS_ERR_AUTH;
     }
-
-    return sssim_read(&dev->sssim, lba, count, data);
+    int rc = sssim_read(&dev->sssim, lba, count, data);
+    mutex_unlock(&dev->keys_lock);
+    return rc;
 }
 
 int nvme_uspace_write(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count, const void *data)
@@ -650,15 +653,17 @@ int nvme_uspace_write(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count,
         return HFSSS_ERR_INVAL;
     }
 
-    /* REQ-161: refuse I/O while the namespace is Opal-locked. */
+    /* REQ-161: refuse I/O while the namespace is Opal-locked. See
+     * the read-path note for why the lock spans the full data
+     * access, not just the is_locked probe. */
     mutex_lock(&dev->keys_lock, 0);
-    bool locked = opal_is_locked(&dev->keys, nsid);
-    mutex_unlock(&dev->keys_lock);
-    if (locked) {
+    if (opal_is_locked(&dev->keys, nsid)) {
+        mutex_unlock(&dev->keys_lock);
         return HFSSS_ERR_AUTH;
     }
-
-    return sssim_write(&dev->sssim, lba, count, data);
+    int rc = sssim_write(&dev->sssim, lba, count, data);
+    mutex_unlock(&dev->keys_lock);
+    return rc;
 }
 
 int nvme_uspace_flush(struct nvme_uspace_dev *dev, u32 nsid)
@@ -1022,8 +1027,8 @@ int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void
 
     /* Snapshot live thermal / spare / wear state under dev->lock so
      * SMART (REQ-174) matches what the most recent AER notifier told
-     * the host to look for. Review of PR #91 flagged the previous
-     * hard-coded payload as inconsistent with the AER story. */
+     * the host to look for; a hard-coded payload here would contradict
+     * the preceding async event. */
     mutex_lock(&dev->lock, 0);
     u8 live_thermal  = dev->thermal_level;
     u8 live_spare    = dev->avail_spare_pct;
@@ -1135,18 +1140,21 @@ int nvme_uspace_dispatch_io_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_entr
         return HFSSS_ERR_INVAL;
     }
 
-    /* Step 1: Validate opcode through NVMe command processing layer */
+    /* Validate opcode through the NVMe command processing layer
+     * first so an invalid opcode is rejected with the correct CQE
+     * status before any side effects. */
     int rc = nvme_ctrl_process_io_cmd(&dev->ctrl, cmd, cpl);
     if (rc != HFSSS_OK) {
         return rc;
     }
 
-    /* If process_io_cmd rejected the opcode, return immediately */
+    /* If process_io_cmd rejected the opcode, the CQE already carries
+     * the right status; return early without touching the FTL. */
     if (cpl->status != 0) {
         return HFSSS_OK;
     }
 
-    /* Step 2: Extract command parameters and dispatch to uspace */
+    /* Extract command parameters and dispatch to the uspace handler. */
     u32 nsid = cmd->nsid;
     u64 slba = ((u64)cmd->cdw11 << 32) | cmd->cdw10;
     u32 nlb = (cmd->cdw12 & 0xFFFF) + 1;
@@ -1249,18 +1257,19 @@ int nvme_uspace_dispatch_admin_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_e
         return HFSSS_ERR_INVAL;
     }
 
-    /* Step 1: Validate opcode through NVMe command processing layer */
+    /* Validate opcode through the NVMe command processing layer
+     * first so an invalid opcode is rejected with the correct CQE
+     * status before any side effects. */
     int rc = nvme_ctrl_process_admin_cmd(&dev->ctrl, cmd, cpl);
     if (rc != HFSSS_OK) {
         return rc;
     }
 
-    /* If process_admin_cmd rejected the opcode, return immediately */
     if (cpl->status != 0) {
         return HFSSS_OK;
     }
 
-    /* Step 2: Dispatch to the appropriate admin handler */
+    /* Dispatch to the appropriate admin handler. */
     int result = HFSSS_OK;
 
     switch (cmd->opcode) {

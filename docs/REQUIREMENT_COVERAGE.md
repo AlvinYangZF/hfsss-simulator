@@ -202,8 +202,8 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 
 | ID | Requirement Description | Status | Notes |
 |----|------------------------|--------|-------|
-| REQ-116 | IOPS Performance - Random Read IOPS | ✅ | `perf_validation_run_all` builds a `REQ-116` row (target >= 600K IOPS at 4KB/QD=32) via `run_iops(BENCH_RAND_READ, …)`. The regression gate in `tests/test_perf_validation.c::test_validation_run_all` asserts the row is present and `passed==true`, and a separate `report.failed == 0` invariant ensures any single-REQ regression fails CI instead of quietly reporting "warning". |
-| REQ-117 | IOPS Performance - Random Write IOPS | ✅ | Same shape as REQ-116 — `REQ-117` row for random write (4KB/QD=32, target >= 150K IOPS) is asserted passed in the run_all report. |
+| REQ-116 | IOPS Performance - Random Read IOPS | ✅ | `perf_validation_run_all` builds a `REQ-116` row (PRD-aligned target >= 1M IOPS at 4KB/QD=32) via `run_iops(BENCH_RAND_READ, …)`. The regression gate in `tests/test_perf_validation.c::test_validation_run_all` asserts the row is present, `passed==true`, and `target == 1000000.0`; a separate `report.failed == 0` invariant ensures any single-REQ regression fails CI instead of quietly reporting "warning". |
+| REQ-117 | IOPS Performance - Random Write IOPS | ✅ | Same shape as REQ-116 — `REQ-117` row for random write (4KB/QD=32, PRD target >= 300K IOPS) asserted passed in the run_all report with a pinned target value. |
 | REQ-118 | IOPS Performance - Mixed Read/Write IOPS | ✅ | `REQ-118` row for mixed 70/30 workload at 4KB/QD=32 (total >= 250K IOPS) asserted passed in the report. |
 | REQ-119 | Bandwidth Performance - Sequential Read/Write | ✅ | Two rows (`REQ-119-RD` >= 6500 MB/s, `REQ-119-WR` >= 3500 MB/s) at 128KB block size — both asserted passed in the report. |
 | REQ-120 | Latency Performance - Random Read/Write Latency | ✅ | Three rows at QD=1: `REQ-120-P50` <= 100 µs, `REQ-120-P99` <= 150 µs, `REQ-120-P999` <= 500 µs. Each asserted passed in the report; histogram invariants (sum == total_ops, ordering P50 <= P99 <= P99.9) covered by Test 9. |

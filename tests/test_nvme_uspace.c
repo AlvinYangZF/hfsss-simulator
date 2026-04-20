@@ -1129,15 +1129,14 @@ static int test_opal_security_recv_reports_lock_state(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
-/* PR #92 review Fix-1: the default namespace (nsid=1, matching
- * Identify Controller's NN=1) must be auto-registered into
- * dev->keys at init. Before this fix SECURITY_SEND/LOCK on nsid=1
- * returned SC=INVALID_FIELD because key_table_init left all slots
- * KEY_EMPTY — only test helpers that patched dev->keys directly
- * could exercise the rest of the Opal flow. */
+/* The default namespace (nsid=1, matching Identify Controller's
+ * NN=1) must be auto-registered into dev->keys at init. Otherwise
+ * SECURITY_SEND/LOCK on nsid=1 returns SC=INVALID_FIELD because
+ * key_table_init leaves every slot KEY_EMPTY, making Opal
+ * unreachable without a test helper that patches dev->keys. */
 static int test_opal_default_ns_registered_at_init(void)
 {
-    printf("\n=== Opal: default ns registered at init (PR #92 Fix-1) ===\n");
+    printf("\n=== Opal: default ns auto-registered at init ===\n");
 
     struct nvme_uspace_dev dev;
     struct nvme_uspace_config config;
@@ -1175,13 +1174,14 @@ static int test_opal_default_ns_registered_at_init(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
-/* Fix-3: SMART (LID=0x02) must reflect the live thermal / spare /
- * percent_used state set by the AER notifier bridges. Before this
- * fix the payload was hard-coded so a host that polled SMART after
- * a TEMPERATURE_THRESHOLD AER saw a healthy-looking report. */
+/* SMART (LID=0x02) must reflect the live thermal / spare /
+ * percent_used state set by the AER notifier bridges. A hard-coded
+ * payload would contradict the async event that told the host to
+ * poll — the host would see a healthy-looking SMART right after a
+ * TEMPERATURE_THRESHOLD AER. */
 static int test_smart_reflects_live_state_after_notify(void)
 {
-    printf("\n=== SMART reflects live state after notify (Fix-3) ===\n");
+    printf("\n=== SMART reflects live state after notify ===\n");
 
     struct nvme_uspace_dev dev;
     struct nvme_uspace_config config;
@@ -1250,16 +1250,19 @@ static int test_smart_reflects_live_state_after_notify(void)
 }
 
 /* Keys lock stress: spawn a reader thread hammering nvme_uspace_read
- * while the main thread flips LOCK / UNLOCK via SECURITY_SEND. The
- * dev->keys_lock must serialize the two paths — without it the I/O
- * path could observe a half-written key_state and produce spurious
- * ERR_AUTH or spurious success. We only assert "no crash / end state
- * coherent"; a deeper race diagnosis is left to TSAN. */
+ * AND a STATUS-poller thread hammering SECURITY_RECV STATUS while the
+ * main thread flips LOCK / UNLOCK via SECURITY_SEND. The dev->keys_lock
+ * must serialize all three paths. Without it the reader could see
+ * stale "unlocked" and still complete I/O after the host believes
+ * the namespace is locked; or the STATUS byte could tear between the
+ * opal_is_locked probe and memory store. */
 struct keys_race_args {
     struct nvme_uspace_dev *dev;
     atomic_bool stop;
     u64 reads_total;
     u64 reads_auth;
+    u64 status_polls;
+    u64 status_locked;
 };
 
 static void *keys_race_reader(void *arg)
@@ -1274,22 +1277,63 @@ static void *keys_race_reader(void *arg)
     return NULL;
 }
 
+static void *keys_race_status_poller(void *arg)
+{
+    struct keys_race_args *a = (struct keys_race_args *)arg;
+    u8 frame[OPAL_CMD_FRAME_LEN];
+    struct nvme_sq_entry sq;
+    struct nvme_cq_entry cpl;
+    while (!atomic_load(&a->stop)) {
+        memset(&sq, 0, sizeof(sq));
+        memset(&cpl, 0, sizeof(cpl));
+        sq.opcode = NVME_ADMIN_SECURITY_RECV;
+        build_opal_frame(frame, OPAL_CMD_STATUS, 1, NULL);
+        int dr = nvme_uspace_dispatch_admin_cmd(a->dev, &sq, &cpl,
+                                                frame, sizeof(frame));
+        /* Any dispatch glitch here would indicate keys_lock didn't
+         * cover the STATUS path. Bail out without mutating counters
+         * so the main test surfaces the stuck counter. */
+        if (dr != HFSSS_OK || cpl.status != 0) {
+            continue;
+        }
+        a->status_polls++;
+        if (frame[5] == 1) a->status_locked++;
+    }
+    return NULL;
+}
+
 static int test_keys_lock_concurrent_lock_and_read(void)
 {
-    printf("\n=== Keys lock: concurrent LOCK/UNLOCK + reads stay coherent ===\n");
+    printf("\n=== Keys lock: concurrent LOCK/UNLOCK + read + STATUS stay coherent ===\n");
 
     struct nvme_uspace_dev dev;
     struct nvme_uspace_config cfg;
     nvme_uspace_config_small(&cfg);
     int ret = nvme_uspace_dev_init(&dev, &cfg);
     TEST_ASSERT(ret == HFSSS_OK, "keys-race: dev_init");
+    if (ret != HFSSS_OK) {
+        /* Hard guard — without a device the threads would segfault. */
+        return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+    }
     nvme_uspace_dev_start(&dev);
 
     struct keys_race_args args = { .dev = &dev };
     atomic_store(&args.stop, false);
-    pthread_t t;
-    int rc = pthread_create(&t, NULL, keys_race_reader, &args);
-    TEST_ASSERT(rc == 0, "keys-race: reader thread spawned");
+
+    pthread_t reader_t;
+    int rc_r = pthread_create(&reader_t, NULL, keys_race_reader, &args);
+    TEST_ASSERT(rc_r == 0, "keys-race: reader thread spawned");
+    pthread_t status_t;
+    int rc_s = pthread_create(&status_t, NULL, keys_race_status_poller, &args);
+    TEST_ASSERT(rc_s == 0, "keys-race: status poller thread spawned");
+    if (rc_r != 0 || rc_s != 0) {
+        atomic_store(&args.stop, true);
+        if (rc_r == 0) pthread_join(reader_t, NULL);
+        if (rc_s == 0) pthread_join(status_t, NULL);
+        nvme_uspace_dev_stop(&dev);
+        nvme_uspace_dev_cleanup(&dev);
+        return TEST_FAIL;
+    }
 
     u8 frame[OPAL_CMD_FRAME_LEN];
     u8 auth[SEC_KEY_LEN];
@@ -1297,38 +1341,45 @@ static int test_keys_lock_concurrent_lock_and_read(void)
     struct nvme_sq_entry sq;
     struct nvme_cq_entry cpl;
 
-    /* 1000 iterations of LOCK -> yield -> UNLOCK. The yield between
-     * the two dispatches gives the reader thread a scheduling
-     * window to observe the intermediate locked state; without it,
-     * tight back-to-back dispatches on a fast machine can finish
-     * faster than the reader ever runs one iteration, collapsing
-     * the race the test is supposed to exercise. */
+    /* 1000 iterations of LOCK -> short sleep -> UNLOCK. Every
+     * dispatch is status-checked — a non-zero cpl.status would
+     * indicate the admin path hit an error under contention. */
+    u32 send_ok = 0;
     struct timespec short_sleep = { .tv_sec = 0, .tv_nsec = 1000 }; /* 1us */
     for (int i = 0; i < 1000; i++) {
         memset(&sq, 0, sizeof(sq));
         memset(&cpl, 0, sizeof(cpl));
         sq.opcode = NVME_ADMIN_SECURITY_SEND;
         build_opal_frame(frame, OPAL_CMD_LOCK, 1, NULL);
-        nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, frame, sizeof(frame));
+        int dr1 = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl,
+                                                 frame, sizeof(frame));
+        if (dr1 == HFSSS_OK && cpl.status == 0) send_ok++;
 
         nanosleep(&short_sleep, NULL);
 
         memset(&cpl, 0, sizeof(cpl));
         build_opal_frame(frame, OPAL_CMD_UNLOCK, 1, auth);
-        nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, frame, sizeof(frame));
+        int dr2 = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl,
+                                                 frame, sizeof(frame));
+        if (dr2 == HFSSS_OK && cpl.status == 0) send_ok++;
     }
 
     atomic_store(&args.stop, true);
-    pthread_join(t, NULL);
+    pthread_join(reader_t, NULL);
+    pthread_join(status_t, NULL);
 
+    /* Every LOCK + every UNLOCK must have completed cleanly under
+     * the lock. send_ok counts 2 completions per iteration. */
+    TEST_ASSERT(send_ok == 2000,
+                "keys-race: every SECURITY_SEND dispatch succeeded");
     TEST_ASSERT(args.reads_total > 0,
                 "keys-race: reader made progress");
-    /* At least one read must have seen the locked state, proving
-     * the I/O path and admin path actually ran concurrently (not
-     * just serialized back-to-back). A count of zero would mean
-     * the timing collapsed and the test isn't exercising the race. */
     TEST_ASSERT(args.reads_auth > 0,
                 "keys-race: reader observed at least one locked state");
+    TEST_ASSERT(args.status_polls > 0,
+                "keys-race: status poller made progress");
+    TEST_ASSERT(args.status_locked > 0,
+                "keys-race: status poller observed at least one locked state");
     TEST_ASSERT(opal_is_locked(&dev.keys, 1) == false,
                 "keys-race: final state is unlocked (ended with UNLOCK)");
 
@@ -1450,13 +1501,13 @@ static int test_smart_monitor_poll_fires_aer_on_threshold_cross(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
-/* PR #93 review Fix-6: a device that enumerates already-degraded
- * must fire AERs on the very first poll, not stay silent until a
- * later change. Previously `have_baseline` suppressed the first
- * event even when the baseline itself was already critical. */
+/* A device that enumerates already-degraded must fire AERs on the
+ * very first poll, not stay silent until a later change. A
+ * have_baseline latch that skipped the first event would mask a
+ * critical boot-time state from the host. */
 static int test_smart_monitor_degraded_at_start(void)
 {
-    printf("\n=== SMART monitor: degraded-at-start fires AER on first poll (Fix-6) ===\n");
+    printf("\n=== SMART monitor: degraded-at-start fires AER on first poll ===\n");
 
     struct nvme_uspace_dev dev;
     struct nvme_uspace_config cfg;
@@ -1509,14 +1560,14 @@ static int test_smart_monitor_degraded_at_start(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
-/* PR #93 review Fix-5: the embedded smart_monitor must be
- * auto-wired into nvme_uspace_dev lifecycle — started by
- * nvme_uspace_dev_start, stopped by nvme_uspace_dev_stop.
- * Callers plug in real data sources via
- * nvme_uspace_dev_set_smart_source without restarting. */
+/* The embedded smart_monitor must be auto-wired into the
+ * nvme_uspace_dev lifecycle — started by nvme_uspace_dev_start,
+ * stopped by nvme_uspace_dev_stop — so callers can plug in real
+ * data sources via nvme_uspace_dev_set_smart_source without
+ * restarting the device. */
 static int test_smart_monitor_autowired_into_dev(void)
 {
-    printf("\n=== SMART monitor: auto-wired into nvme_uspace_dev (Fix-5) ===\n");
+    printf("\n=== SMART monitor: auto-wired into nvme_uspace_dev ===\n");
 
     struct nvme_uspace_dev dev;
     struct nvme_uspace_config cfg;
