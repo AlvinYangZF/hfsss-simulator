@@ -98,8 +98,34 @@ int pcie_link_transition(struct pcie_link_ctx *ctx,
     return HFSSS_OK;
 }
 
+/* True iff `policy` authorizes the L0s low-power substate. */
+static bool aspm_allows_l0s(enum pcie_aspm_policy policy)
+{
+    return policy == PCIE_ASPM_L0S || policy == PCIE_ASPM_L0S_L1;
+}
+
+/* True iff `policy` authorizes the L1 low-power substate. */
+static bool aspm_allows_l1(enum pcie_aspm_policy policy)
+{
+    return policy == PCIE_ASPM_L1 || policy == PCIE_ASPM_L0S_L1;
+}
+
 int pcie_link_enter_l0s(struct pcie_link_ctx *ctx)
 {
+    if (!ctx || !ctx->initialized) return HFSSS_ERR_INVAL;
+
+    /* ASPM gate: if the current policy doesn't enable L0s, refuse
+     * the entry even though the state-machine edge itself is legal.
+     * Reviewer flagged that a naked pcie_link_transition() left the
+     * aspm_policy bookkeeping unenforced. */
+    pthread_mutex_lock(&ctx->lock);
+    if (!aspm_allows_l0s(ctx->aspm_policy)) {
+        ctx->rejected_transitions++;
+        pthread_mutex_unlock(&ctx->lock);
+        return HFSSS_ERR_AUTH;
+    }
+    pthread_mutex_unlock(&ctx->lock);
+
     return pcie_link_transition(ctx, PCIE_LINK_L0S);
 }
 
@@ -118,6 +144,16 @@ int pcie_link_exit_l0s(struct pcie_link_ctx *ctx)
 
 int pcie_link_enter_l1(struct pcie_link_ctx *ctx)
 {
+    if (!ctx || !ctx->initialized) return HFSSS_ERR_INVAL;
+
+    pthread_mutex_lock(&ctx->lock);
+    if (!aspm_allows_l1(ctx->aspm_policy)) {
+        ctx->rejected_transitions++;
+        pthread_mutex_unlock(&ctx->lock);
+        return HFSSS_ERR_AUTH;
+    }
+    pthread_mutex_unlock(&ctx->lock);
+
     return pcie_link_transition(ctx, PCIE_LINK_L1);
 }
 

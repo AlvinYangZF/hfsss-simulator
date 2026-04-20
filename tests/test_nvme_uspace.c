@@ -898,6 +898,306 @@ static int test_aer_notify_spare_delivers_spare_event(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Helper: seed nsid=1 as ACTIVE in dev->keys so Opal lock has
+ * something to transition from. Tests operate against nsid=1 since
+ * that's the only NSID the I/O path currently accepts. */
+static void seed_opal_ns_active(struct nvme_uspace_dev *dev, u32 nsid)
+{
+    dev->keys.entries[0].nsid  = nsid;
+    dev->keys.entries[0].state = KEY_ACTIVE;
+    dev->keys.crc32 = hfsss_crc32(&dev->keys,
+                                  offsetof(struct key_table, crc32));
+}
+
+/* Build a Security Send / Receive frame: [opcode|nsid(LE)|auth]. */
+static void build_opal_frame(u8 *out, u8 opcode, u32 nsid, const u8 *auth)
+{
+    memset(out, 0, OPAL_CMD_FRAME_LEN);
+    out[0] = opcode;
+    out[1] = (u8)(nsid & 0xFF);
+    out[2] = (u8)((nsid >> 8) & 0xFF);
+    out[3] = (u8)((nsid >> 16) & 0xFF);
+    out[4] = (u8)((nsid >> 24) & 0xFF);
+    if (auth) {
+        memcpy(out + 5, auth, SEC_KEY_LEN);
+    }
+}
+
+/* REQ-161: SECURITY_SEND LOCK flips the NS to locked and the I/O
+ * path refuses subsequent reads/writes with SC=OP_DENIED. */
+static int test_opal_security_send_lock_blocks_io(void)
+{
+    printf("\n=== Opal: SECURITY_SEND lock blocks I/O (REQ-161) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "opal-io: dev_init");
+    nvme_uspace_dev_start(&dev);
+    seed_opal_ns_active(&dev, 1);
+
+    /* Baseline: unlocked write succeeds. */
+    u8 wbuf[4096];
+    memset(wbuf, 0xC5, sizeof(wbuf));
+    ret = nvme_uspace_write(&dev, 1, 0, 1, wbuf);
+    TEST_ASSERT(ret == HFSSS_OK, "opal-io: baseline write OK while unlocked");
+
+    /* SECURITY_SEND LOCK. */
+    u8 frame[OPAL_CMD_FRAME_LEN];
+    build_opal_frame(frame, OPAL_CMD_LOCK, 1, NULL);
+    struct nvme_sq_entry sq; struct nvme_cq_entry cpl;
+    memset(&sq, 0, sizeof(sq)); memset(&cpl, 0, sizeof(cpl));
+    sq.opcode     = NVME_ADMIN_SECURITY_SEND;
+    sq.command_id = 0x0001;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl,
+                                         frame, sizeof(frame));
+    TEST_ASSERT(ret == HFSSS_OK, "opal-io: SECURITY_SEND dispatch OK");
+    TEST_ASSERT(cpl.status == 0, "opal-io: LOCK completes with SC=SUCCESS");
+    TEST_ASSERT(opal_is_locked(&dev.keys, 1) == true,
+                "opal-io: namespace now locked");
+
+    /* Both read and write must fail with HFSSS_ERR_AUTH at the API
+     * layer (maps to SC=0x16 at the CQE layer). */
+    u8 rbuf[4096]; memset(rbuf, 0, sizeof(rbuf));
+    ret = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
+    TEST_ASSERT(ret == HFSSS_ERR_AUTH,
+                "opal-io: read returns ERR_AUTH on locked NS");
+    ret = nvme_uspace_write(&dev, 1, 0, 1, wbuf);
+    TEST_ASSERT(ret == HFSSS_ERR_AUTH,
+                "opal-io: write returns ERR_AUTH on locked NS");
+
+    /* Dispatch a READ and check the CQE carries SC=0x16 (OP_DENIED). */
+    struct nvme_sq_entry rdsq; struct nvme_cq_entry rdcpl;
+    memset(&rdsq, 0, sizeof(rdsq)); memset(&rdcpl, 0, sizeof(rdcpl));
+    rdsq.opcode     = NVME_NVM_READ;
+    rdsq.nsid       = 1;
+    rdsq.command_id = 0xABCD;
+    rdsq.cdw10      = 0; rdsq.cdw11 = 0; rdsq.cdw12 = 0;
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &rdsq, &rdcpl,
+                                      rbuf, sizeof(rbuf));
+    TEST_ASSERT(ret == HFSSS_OK, "opal-io: dispatch_io returns OK envelope");
+    u16 expected_sc = NVME_BUILD_STATUS(NVME_SC_OP_DENIED,
+                                        NVME_STATUS_TYPE_GENERIC);
+    TEST_ASSERT(rdcpl.status == expected_sc,
+                "opal-io: CQE carries SC=0x16 (OP_DENIED) on locked read");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-161: SECURITY_SEND UNLOCK with correct auth restores I/O. */
+static int test_opal_security_send_unlock_restores_io(void)
+{
+    printf("\n=== Opal: SECURITY_SEND unlock restores I/O (REQ-161) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "opal-unlock: dev_init");
+    nvme_uspace_dev_start(&dev);
+    seed_opal_ns_active(&dev, 1);
+
+    /* Lock first. */
+    u8 frame[OPAL_CMD_FRAME_LEN];
+    build_opal_frame(frame, OPAL_CMD_LOCK, 1, NULL);
+    struct nvme_sq_entry sq; struct nvme_cq_entry cpl;
+    memset(&sq, 0, sizeof(sq)); memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_SECURITY_SEND;
+    nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, frame, sizeof(frame));
+    TEST_ASSERT(opal_is_locked(&dev.keys, 1) == true,
+                "opal-unlock: baseline locked");
+
+    /* Derive the correct auth from the device MK (all zeros). */
+    u8 correct_auth[SEC_KEY_LEN];
+    opal_derive_auth(dev.opal_mk, 1, correct_auth);
+
+    build_opal_frame(frame, OPAL_CMD_UNLOCK, 1, correct_auth);
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl,
+                                         frame, sizeof(frame));
+    TEST_ASSERT(ret == HFSSS_OK, "opal-unlock: dispatch OK");
+    TEST_ASSERT(cpl.status == 0,
+                "opal-unlock: UNLOCK with correct auth returns SUCCESS");
+    TEST_ASSERT(opal_is_locked(&dev.keys, 1) == false,
+                "opal-unlock: namespace now unlocked");
+
+    /* Read / write recover. */
+    u8 wbuf[4096]; memset(wbuf, 0x66, sizeof(wbuf));
+    u8 rbuf[4096]; memset(rbuf, 0, sizeof(rbuf));
+    ret = nvme_uspace_write(&dev, 1, 0, 1, wbuf);
+    TEST_ASSERT(ret == HFSSS_OK, "opal-unlock: write recovers after unlock");
+    ret = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
+    TEST_ASSERT(ret == HFSSS_OK, "opal-unlock: read recovers after unlock");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-161: UNLOCK with the wrong auth returns SC=OP_DENIED and the
+ * namespace stays locked. */
+static int test_opal_security_send_wrong_auth_keeps_locked(void)
+{
+    printf("\n=== Opal: wrong-auth unlock rejected (REQ-161) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "opal-wrong: dev_init");
+    nvme_uspace_dev_start(&dev);
+    seed_opal_ns_active(&dev, 1);
+
+    u8 frame[OPAL_CMD_FRAME_LEN];
+    build_opal_frame(frame, OPAL_CMD_LOCK, 1, NULL);
+    struct nvme_sq_entry sq; struct nvme_cq_entry cpl;
+    memset(&sq, 0, sizeof(sq)); memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_SECURITY_SEND;
+    nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, frame, sizeof(frame));
+
+    u8 wrong_auth[SEC_KEY_LEN];
+    memset(wrong_auth, 0xFF, sizeof(wrong_auth));
+    build_opal_frame(frame, OPAL_CMD_UNLOCK, 1, wrong_auth);
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl,
+                                         frame, sizeof(frame));
+    TEST_ASSERT(ret == HFSSS_OK, "opal-wrong: dispatch OK");
+    u16 expected_sc = NVME_BUILD_STATUS(NVME_SC_OP_DENIED,
+                                        NVME_STATUS_TYPE_GENERIC);
+    TEST_ASSERT(cpl.status == expected_sc,
+                "opal-wrong: wrong-auth returns SC=OP_DENIED");
+    TEST_ASSERT(opal_is_locked(&dev.keys, 1) == true,
+                "opal-wrong: NS still locked after rejection");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-161: SECURITY_RECV STATUS reflects current lock state. */
+static int test_opal_security_recv_reports_lock_state(void)
+{
+    printf("\n=== Opal: SECURITY_RECV STATUS reports lock (REQ-161) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "opal-recv: dev_init");
+    nvme_uspace_dev_start(&dev);
+    seed_opal_ns_active(&dev, 1);
+
+    u8 frame[OPAL_CMD_FRAME_LEN];
+    struct nvme_sq_entry sq; struct nvme_cq_entry cpl;
+
+    /* Initial: unlocked. */
+    build_opal_frame(frame, OPAL_CMD_STATUS, 1, NULL);
+    memset(&sq, 0, sizeof(sq)); memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_SECURITY_RECV;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl,
+                                         frame, sizeof(frame));
+    TEST_ASSERT(ret == HFSSS_OK, "opal-recv: STATUS dispatch OK");
+    TEST_ASSERT(cpl.status == 0, "opal-recv: STATUS SUCCESS");
+    TEST_ASSERT(frame[5] == 0, "opal-recv: STATUS byte=0 when unlocked");
+
+    /* Lock then re-query. */
+    u8 lock_frame[OPAL_CMD_FRAME_LEN];
+    build_opal_frame(lock_frame, OPAL_CMD_LOCK, 1, NULL);
+    struct nvme_sq_entry lsq; struct nvme_cq_entry lcpl;
+    memset(&lsq, 0, sizeof(lsq)); memset(&lcpl, 0, sizeof(lcpl));
+    lsq.opcode = NVME_ADMIN_SECURITY_SEND;
+    nvme_uspace_dispatch_admin_cmd(&dev, &lsq, &lcpl,
+                                   lock_frame, sizeof(lock_frame));
+
+    build_opal_frame(frame, OPAL_CMD_STATUS, 1, NULL);
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl,
+                                         frame, sizeof(frame));
+    TEST_ASSERT(ret == HFSSS_OK, "opal-recv: second STATUS dispatch OK");
+    TEST_ASSERT(frame[5] == 1, "opal-recv: STATUS byte=1 when locked");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Fix-3: SMART (LID=0x02) must reflect the live thermal / spare /
+ * percent_used state set by the AER notifier bridges. Before this
+ * fix the payload was hard-coded so a host that polled SMART after
+ * a TEMPERATURE_THRESHOLD AER saw a healthy-looking report. */
+static int test_smart_reflects_live_state_after_notify(void)
+{
+    printf("\n=== SMART reflects live state after notify (Fix-3) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "smart-live: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    /* Baseline SMART. */
+    struct smart_log_mirror smart;
+    memset(&smart, 0, sizeof(smart));
+    ret = nvme_uspace_get_log_page(&dev, 1, NVME_LID_SMART,
+                                   &smart, sizeof(smart));
+    TEST_ASSERT(ret == HFSSS_OK, "smart-live: baseline get_log_page OK");
+    TEST_ASSERT(smart.temperature == 300,
+                "smart-live: baseline temperature=300 K (nominal)");
+    TEST_ASSERT(smart.avail_spare == 100,
+                "smart-live: baseline avail_spare=100%");
+    TEST_ASSERT(smart.percent_used == 0,
+                "smart-live: baseline percent_used=0%");
+    TEST_ASSERT(smart.critical_warning == 0,
+                "smart-live: baseline critical_warning clear");
+
+    /* Drive a HEAVY thermal notify -> SMART temperature + critical bit
+     * flip to the elevated mapping. */
+    bool delivered;
+    ret = nvme_uspace_aer_notify_thermal(&dev, 3 /* HEAVY */,
+                                         &delivered, NULL, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "smart-live: notify_thermal(HEAVY) OK");
+    memset(&smart, 0, sizeof(smart));
+    nvme_uspace_get_log_page(&dev, 1, NVME_LID_SMART,
+                             &smart, sizeof(smart));
+    TEST_ASSERT(smart.temperature == 358,
+                "smart-live: temperature raised to HEAVY (85C = 358 K)");
+    TEST_ASSERT((smart.critical_warning & 0x02) != 0,
+                "smart-live: critical_warning bit1 (temp threshold) set");
+
+    /* Drive a wear notify at 4% remaining -> percent_used=96 and
+     * reliability-degraded bit set. */
+    ret = nvme_uspace_aer_notify_wear(&dev, 4,
+                                      &delivered, NULL, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "smart-live: notify_wear(4%) OK");
+    memset(&smart, 0, sizeof(smart));
+    nvme_uspace_get_log_page(&dev, 1, NVME_LID_SMART,
+                             &smart, sizeof(smart));
+    TEST_ASSERT(smart.percent_used == 96,
+                "smart-live: percent_used = 100 - remaining_life_pct");
+    TEST_ASSERT((smart.critical_warning & 0x04) != 0,
+                "smart-live: critical_warning bit2 (reliability) set");
+
+    /* Drive a spare notify at 5% -> avail_spare=5 and spare-below bit. */
+    ret = nvme_uspace_aer_notify_spare(&dev, 5,
+                                       &delivered, NULL, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "smart-live: notify_spare(5%) OK");
+    memset(&smart, 0, sizeof(smart));
+    nvme_uspace_get_log_page(&dev, 1, NVME_LID_SMART,
+                             &smart, sizeof(smart));
+    TEST_ASSERT(smart.avail_spare == 5,
+                "smart-live: avail_spare matches notified value");
+    TEST_ASSERT((smart.critical_warning & 0x01) != 0,
+                "smart-live: critical_warning bit0 (spare) set");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     print_separator();
@@ -917,6 +1217,11 @@ int main(void)
     test_aer_notify_thermal_delivers_temperature_event();
     test_aer_notify_wear_delivers_reliability_event();
     test_aer_notify_spare_delivers_spare_event();
+    test_opal_security_send_lock_blocks_io();
+    test_opal_security_send_unlock_restores_io();
+    test_opal_security_send_wrong_auth_keeps_locked();
+    test_opal_security_recv_reports_lock_state();
+    test_smart_reflects_live_state_after_notify();
 
     print_separator();
     printf("Test Summary\n");

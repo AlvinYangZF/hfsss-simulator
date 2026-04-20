@@ -5,7 +5,19 @@
 #include "pcie/queue.h"
 #include "sssim.h"
 #include "common/telemetry.h"
+#include "controller/security.h"
 #include "hal/hal_aer.h"
+
+/* Simulator Opal command frame layout used on Security Send / Recv
+ * data buffers (REQ-161). 37 bytes total:
+ *   byte 0:   opcode    (OPAL_CMD_*)
+ *   bytes 1-4: nsid     (little-endian)
+ *   bytes 5-36: auth    (SEC_KEY_LEN = 32 bytes; unused by LOCK/STATUS)
+ * Security Recv writes the status byte at offset 5 when opcode=STATUS. */
+#define OPAL_CMD_LOCK      0x01
+#define OPAL_CMD_UNLOCK    0x02
+#define OPAL_CMD_STATUS    0x03
+#define OPAL_CMD_FRAME_LEN 37
 
 /* User-space NVMe Device Context */
 struct nvme_uspace_dev {
@@ -63,6 +75,24 @@ struct nvme_uspace_dev {
      * Request CIDs and pending events produced by subsystems like
      * thermal / wear / spare. */
     struct hal_aer_ctx   aer;
+
+    /* Device-wide key table (REQ-161). Security Send / Recv dispatch
+     * mutates this via opal_lock_ns / opal_unlock_ns, and the I/O
+     * path consults opal_is_locked before accepting read / write.
+     * The all-zero `opal_mk` is the device-side master key used by
+     * opal_unlock_ns when verifying a host-supplied auth token; the
+     * simulator keeps it deterministic so tests can derive a matching
+     * auth with `opal_derive_auth(opal_mk, nsid, ...)`. */
+    struct key_table     keys;
+    u8                   opal_mk[SEC_KEY_LEN];
+
+    /* SMART live state (REQ-174/REQ-178 consistency). The AER notifier
+     * bridges update these fields so Get Log Page LID=0x02 reflects the
+     * same state a preceding async event told the host to inspect.
+     * Defaults: level=0 (nominal), spare=100%, used=0%. */
+    u8                   thermal_level;       /* 0..4 per common/thermal.h */
+    u8                   avail_spare_pct;     /* 0..100 */
+    u8                   percent_used_pct;    /* 0..100 */
 };
 
 /* User-space NVMe Configuration */

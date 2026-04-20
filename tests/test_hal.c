@@ -641,6 +641,67 @@ static int test_pcie_link_aspm_policy(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Fix-4: ASPM policy must actually gate L0s / L1 entry. The earlier
+ * implementation stored the enum but never consulted it — enter_l0s
+ * worked even under PCIE_ASPM_DISABLED. */
+static int test_pcie_link_aspm_policy_gates_entry(void)
+{
+    printf("\n=== PCIe link: ASPM policy gates L0s/L1 entry (Fix-4) ===\n");
+    struct pcie_link_ctx link;
+    pcie_link_init(&link);
+
+    /* DISABLED blocks both. */
+    pcie_link_set_aspm_policy(&link, PCIE_ASPM_DISABLED);
+    int rc = pcie_link_enter_l0s(&link);
+    TEST_ASSERT(rc == HFSSS_ERR_AUTH,
+                "aspm: L0s refused under DISABLED");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "aspm: state still L0 after refused L0s");
+    rc = pcie_link_enter_l1(&link);
+    TEST_ASSERT(rc == HFSSS_ERR_AUTH,
+                "aspm: L1 refused under DISABLED");
+    TEST_ASSERT(pcie_link_rejected_count(&link) == 2,
+                "aspm: both refusals counted");
+
+    /* ASPM_L0S permits L0s but blocks L1. */
+    pcie_link_set_aspm_policy(&link, PCIE_ASPM_L0S);
+    rc = pcie_link_enter_l0s(&link);
+    TEST_ASSERT(rc == HFSSS_OK,
+                "aspm: L0s OK under ASPM_L0S policy");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0S,
+                "aspm: actually entered L0s");
+    pcie_link_exit_l0s(&link);
+
+    rc = pcie_link_enter_l1(&link);
+    TEST_ASSERT(rc == HFSSS_ERR_AUTH,
+                "aspm: L1 refused under ASPM_L0S policy");
+
+    /* ASPM_L1 permits L1 but blocks L0s. */
+    pcie_link_set_aspm_policy(&link, PCIE_ASPM_L1);
+    rc = pcie_link_enter_l0s(&link);
+    TEST_ASSERT(rc == HFSSS_ERR_AUTH,
+                "aspm: L0s refused under ASPM_L1 policy");
+    rc = pcie_link_enter_l1(&link);
+    TEST_ASSERT(rc == HFSSS_OK,
+                "aspm: L1 OK under ASPM_L1 policy");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L1,
+                "aspm: actually entered L1");
+    pcie_link_exit_l1(&link);
+
+    /* ASPM_L0S_L1 permits both (default). */
+    pcie_link_set_aspm_policy(&link, PCIE_ASPM_L0S_L1);
+    rc = pcie_link_enter_l0s(&link);
+    TEST_ASSERT(rc == HFSSS_OK,
+                "aspm: L0s OK under ASPM_L0S_L1 (default)");
+    pcie_link_exit_l0s(&link);
+    rc = pcie_link_enter_l1(&link);
+    TEST_ASSERT(rc == HFSSS_OK,
+                "aspm: L1 OK under ASPM_L0S_L1");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -667,6 +728,7 @@ int main(void)
     test_pcie_link_hot_reset_from_any_state();
     test_pcie_link_flr_only_from_l0();
     test_pcie_link_aspm_policy();
+    test_pcie_link_aspm_policy_gates_entry();
 
     printf("\n========================================\n");
     printf("Test Summary\n");
