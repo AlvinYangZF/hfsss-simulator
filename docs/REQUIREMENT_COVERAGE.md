@@ -30,14 +30,14 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | PCIe/NVMe Device Emulation | 22 | 12 | 2 | 8 | 0 | 54.5% | ↑ +1 (REQ-018 Trim) |
 | Controller Thread | 15 | 12 | 1 | 2 | 0 | 80.0% | -- |
 | Media Threads | 20 | 15 | 4 | 1 | 0 | 75.0% | ↑ +4 (NOR full) |
-| HAL | 12 | 10 | 0 | 1 | 1 | 83.3% | ↑ REQ-063 AER pending/event queues landed (LLD_13 §5.1) |
+| HAL | 12 | 11 | 0 | 1 | 0 | 91.7% | ↑ REQ-063 AER + REQ-064 PCIe link state machine (LLD_13 §5.1/§5.2) |
 | Common Services | 24 | 18 | 2 | 4 | 0 | 75.0% | ↑ +9 (boot/power/OOB/SMART/trace) |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 2 | 0 | 86.4% | ↑ +6 (cmd state machine, retries, flow ctl, wear monitor, Error Log Page) |
 | Performance Requirements | 8 | 0 | 5 | 3 | 0 | 0% (62.5% partial) | ↑ framework landed, targets not enforced |
 | Product Interfaces | 8 | 4 | 3 | 1 | 0 | 50.0% | ↑ +4 (/proc, hfsss-ctrl, YAML, persistence) |
 | Fault Injection | 3 | 2 | 1 | 0 | 0 | 66.7% (100% partial) | ↑ registry + power hook + NAND read/program/erase fault gates landed |
 | System Reliability | 4 | 2 | 1 | 1 | 0 | 50.0% | -- |
-| **Core Subtotal** | **138** | **94** | **20** | **23** | **1** | **68.1%** (82.6% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **95** | **20** | **22** | **1** | **68.8%** (82.6% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% (100% partial) | ↑ DWRR + partial wiring |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER (temp/wear/spare) |
 | **Enterprise Subtotal** | **40** | **34** | **6** | **0** | **0** | **85.0%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **128** | **26** | **23** | **1** | **71.9%** (86.5% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **129** | **26** | **22** | **1** | **72.5%** (86.5% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -135,7 +135,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-061 | NOR Driver Module - Driver Internal Implementation | ✅ | Implemented (Phase 2) |
 | REQ-062 | NVMe/PCIe Module Management - Command Completion Submission | ✅ | Command completion submission implemented (Phase 2) |
 | REQ-063 | NVMe/PCIe Module Management - Async Event Management | ✅ | `struct hal_aer_ctx` (pending event ring + outstanding CID queue) in `src/hal/hal_aer.c`; embedded in `nvme_uspace_dev`. Admin dispatch (`NVME_ADMIN_ASYNC_EVENT`) routes through `hal_aer_submit_request`; controller-side callers post events via `nvme_uspace_aer_post_event()`. DW0 encoding per NVMe spec §5.2, AER LIMIT EXCEEDED returned with SCT=CMD_SPEC/SC=0x05 when the outstanding queue overflows. Covered by unit tests in `test_hal.c` and admin-path integration tests in `test_nvme_uspace.c`. |
-| REQ-064 | NVMe/PCIe Module Management - PCIe Link State Management | ❌ | Not implemented; **LLD_13 designed** (L0/L0s/L1/L2/RESET/FLR 6-state machine) |
+| REQ-064 | NVMe/PCIe Module Management - PCIe Link State Management | ✅ | `struct pcie_link_ctx` in `src/hal/hal_pcie_link.c` implements the LLD_13 §6.2 six-state machine (L0 / L0s / L1 / L2 / RESET / FLR) backed by an adjacency matrix. Hot reset is legal from any L* state; FLR is only legal from L0. ASPM policy setter accepts DISABLED / L0s / L1 / L0s+L1. Tests in `test_hal.c::test_pcie_link_*` cover legal transitions, rejected edges (L0s->L2, L1->L0s, FLR from L1), hot reset from each L* state, and the ASPM policy setter. |
 | REQ-065 | NVMe/PCIe Module Management - Namespace Management Interface | ✅ | Namespace management implemented (Phase 2) |
 | REQ-066 | Power Management IC Driver - NVMe Power State Emulation | ✅ | Power state management implemented (Phase 2) |
 | REQ-067 | Power Management IC Driver - Functional Requirements | ✅ | Implemented (Phase 2) |
@@ -343,7 +343,7 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 
 1. **Phase 7 kernel module** (REQ-006/009/013/014/019/020/021/022/023/124/064) — intentional deferral; user-space simulator cannot provide kernel-side DMA, MSI-X, IOMMU, or `/dev/nvmeXnY` directly.
 2. **Performance target enforcement** (REQ-116..123) — benchmark framework exists in `src/perf/perf_validation.c`, but IOPS/BW/latency pass/fail thresholds and the final `perf_validation_run_all` report are not asserted.
-3. **PCIe link-state machine** (REQ-064) — the L0/L0s/L1/L2/RESET/FLR state machine from LLD_13 remains pending; AER (REQ-063) now lands so this is purely the PCIe side.
+3. **Deep QoS features** (REQ-148..151, 153) — per-NS IOPS/BW caps, strict P99 SLA rollback, and hot-reconfiguration are partial against the LLD_18 target.
 4. **Deep QoS features beyond DWRR** (REQ-148..151, 153) — per-NS IOPS/BW caps, strict P99 SLA rollback, and hot-reconfiguration are partial against the LLD_18 target.
 5. **RAID-like data protection** (REQ-114) — die-level XOR parity and dual-copy L2P not implemented; BBT dual mirror exists via NOR partitions.
 6. **IPC ring + resource sampling** (REQ-085, 087) — SPSC ring and periodic CPU/memory/thread-pool sampling not implemented; watchdog covers hang detection only.
@@ -361,7 +361,7 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 | LLD_10_PERFORMANCE_VALIDATION.md | REQ-116..122 | Framework landed; target enforcement pending |
 | LLD_11_FTL_RELIABILITY.md | REQ-110..115, REQ-154..158 | Implemented except RAID-XOR (REQ-114) |
 | LLD_12_REALTIME_SERVICES.md | REQ-074, REQ-085..088, REQ-171..178 | Implemented except IPC ring + resource sampling + P99 anomaly alert |
-| LLD_13_HAL_ADVANCED.md | REQ-063, REQ-064, REQ-069 | Stubbed; full AER + PCIe link state pending |
+| LLD_13_HAL_ADVANCED.md | REQ-063, REQ-064, REQ-069 | AER + PCIe link state implemented; REQ-069 PCI config management stub remains |
 | LLD_14_NOR_FLASH.md | REQ-053..056 | Implemented |
 | LLD_15_PERSISTENCE_FORMAT.md | REQ-131 | Checkpoint + WAL formats landed; LLD-level spec doc not published |
 | LLD_17_POWER_LOSS_PROTECTION.md | REQ-139..146 | Implemented |
@@ -375,7 +375,7 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 Current position: **core + enterprise features largely landed; polish and gap-closure in progress.**
 
 Near-term priorities:
-1. Close **REQ-064 PCIe link-state** per LLD_13, then push HAL past 83% (AER now ✅, PCIe state machine still ⚠️).
+1. Close **REQ-069 PCI config management** (remaining HAL stub), which would push HAL to 100%.
 2. Enforce **perf targets** (REQ-116..120) in `perf_validation_run_all`, converting the 5 ⚠️ rows to ✅.
 3. Flip the remaining **Security** requirement — TCG Opal command parsing (REQ-161).
 

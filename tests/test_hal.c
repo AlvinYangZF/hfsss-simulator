@@ -6,6 +6,7 @@
 #include "media/media.h"
 #include "hal/hal.h"
 #include "hal/hal_aer.h"
+#include "hal/hal_pcie_link.h"
 
 #define TEST_PASS 0
 #define TEST_FAIL 1
@@ -490,6 +491,156 @@ static int test_aer_dw0_encoding(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* ==================== REQ-064 PCIe Link State Tests ==================== */
+
+/* HA-008 / HA-009: L0 -> L0s -> L0 and L0 -> L1 -> L0 are legal. */
+static int test_pcie_link_basic_state_machine(void)
+{
+    printf("\n=== PCIe link: basic L0/L0s/L1 transitions (REQ-064) ===\n");
+    struct pcie_link_ctx link;
+    TEST_ASSERT(pcie_link_init(&link) == HFSSS_OK, "pcie: init");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: starts in L0");
+
+    TEST_ASSERT(pcie_link_enter_l0s(&link) == HFSSS_OK, "pcie: L0->L0s");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0S,
+                "pcie: now in L0s");
+    TEST_ASSERT(pcie_link_exit_l0s(&link) == HFSSS_OK, "pcie: L0s->L0");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: back in L0 after L0s exit");
+
+    TEST_ASSERT(pcie_link_enter_l1(&link) == HFSSS_OK, "pcie: L0->L1");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L1,
+                "pcie: now in L1");
+    TEST_ASSERT(pcie_link_transition(&link, PCIE_LINK_L2) == HFSSS_OK,
+                "pcie: L1->L2 legal");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L2, "pcie: in L2");
+    TEST_ASSERT(pcie_link_transition(&link, PCIE_LINK_L0) == HFSSS_OK,
+                "pcie: L2->L0 recovery legal");
+    TEST_ASSERT(pcie_link_transition_count(&link) == 5,
+                "pcie: transition_count matches edges taken");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* HA-010: L0s -> L2 is illegal; L1 -> L0s is illegal. */
+static int test_pcie_link_illegal_transitions_rejected(void)
+{
+    printf("\n=== PCIe link: illegal edges rejected (REQ-064) ===\n");
+    struct pcie_link_ctx link;
+    pcie_link_init(&link);
+
+    /* L0 -> L0s, then attempt L0s -> L2 (illegal). */
+    pcie_link_enter_l0s(&link);
+    int rc = pcie_link_transition(&link, PCIE_LINK_L2);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL, "pcie: L0s->L2 returns INVAL");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0S,
+                "pcie: state unchanged after rejected edge");
+
+    /* Return to L0, then L0->L1, then try L1->L0s (illegal). */
+    pcie_link_exit_l0s(&link);
+    pcie_link_enter_l1(&link);
+    rc = pcie_link_transition(&link, PCIE_LINK_L0S);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL, "pcie: L1->L0s returns INVAL");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L1,
+                "pcie: state still L1 after rejected edge");
+    TEST_ASSERT(pcie_link_rejected_count(&link) == 2,
+                "pcie: rejected_transitions counter matches attempts");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* HA-011: hot reset legal from any L* state, lands in L0. */
+static int test_pcie_link_hot_reset_from_any_state(void)
+{
+    printf("\n=== PCIe link: hot reset from L0/L0s/L1/L2 (REQ-064) ===\n");
+    struct pcie_link_ctx link;
+    pcie_link_init(&link);
+
+    /* From L0 */
+    TEST_ASSERT(pcie_hot_reset(&link) == HFSSS_OK,
+                "pcie: hot_reset from L0 OK");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: state L0 after hot_reset from L0");
+
+    /* From L0s */
+    pcie_link_enter_l0s(&link);
+    TEST_ASSERT(pcie_hot_reset(&link) == HFSSS_OK,
+                "pcie: hot_reset from L0s OK");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: state L0 after hot_reset from L0s");
+
+    /* From L1 */
+    pcie_link_enter_l1(&link);
+    TEST_ASSERT(pcie_hot_reset(&link) == HFSSS_OK,
+                "pcie: hot_reset from L1 OK");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: state L0 after hot_reset from L1");
+
+    /* From L2 */
+    pcie_link_enter_l1(&link);
+    pcie_link_transition(&link, PCIE_LINK_L2);
+    TEST_ASSERT(pcie_hot_reset(&link) == HFSSS_OK,
+                "pcie: hot_reset from L2 OK");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: state L0 after hot_reset from L2");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* HA-012: FLR only legal from L0. Attempting from L1 is rejected. */
+static int test_pcie_link_flr_only_from_l0(void)
+{
+    printf("\n=== PCIe link: FLR only from L0 (REQ-064) ===\n");
+    struct pcie_link_ctx link;
+    pcie_link_init(&link);
+
+    TEST_ASSERT(pcie_flr(&link) == HFSSS_OK,
+                "pcie: FLR from L0 OK");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L0,
+                "pcie: state L0 after FLR (lands back in L0)");
+    TEST_ASSERT(link.flr_in_progress == false,
+                "pcie: flr_in_progress cleared after FLR returns");
+
+    /* FLR from L1 must be rejected — host must raise link first. */
+    pcie_link_enter_l1(&link);
+    int rc = pcie_flr(&link);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL,
+                "pcie: FLR from L1 rejected with INVAL");
+    TEST_ASSERT(pcie_link_get_state(&link) == PCIE_LINK_L1,
+                "pcie: state still L1 after rejected FLR");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* ASPM policy setter accepts the four spec values, rejects out-of-range. */
+static int test_pcie_link_aspm_policy(void)
+{
+    printf("\n=== PCIe link: ASPM policy setter (REQ-064) ===\n");
+    struct pcie_link_ctx link;
+    pcie_link_init(&link);
+
+    TEST_ASSERT(link.aspm_policy == PCIE_ASPM_L0S_L1,
+                "pcie: default ASPM is L0s+L1");
+    TEST_ASSERT(pcie_link_set_aspm_policy(&link, PCIE_ASPM_DISABLED) == HFSSS_OK,
+                "pcie: set ASPM DISABLED OK");
+    TEST_ASSERT(link.aspm_policy == PCIE_ASPM_DISABLED,
+                "pcie: aspm_policy reflects setter");
+    TEST_ASSERT(pcie_link_set_aspm_policy(&link, PCIE_ASPM_L0S) == HFSSS_OK,
+                "pcie: set ASPM L0s OK");
+    TEST_ASSERT(pcie_link_set_aspm_policy(&link, PCIE_ASPM_L1) == HFSSS_OK,
+                "pcie: set ASPM L1 OK");
+    TEST_ASSERT(pcie_link_set_aspm_policy(&link, 99) == HFSSS_ERR_INVAL,
+                "pcie: out-of-range ASPM rejected");
+
+    pcie_link_cleanup(&link);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -511,6 +662,11 @@ int main(void)
     test_aer_outstanding_overflow();
     test_aer_abort_on_reset();
     test_aer_dw0_encoding();
+    test_pcie_link_basic_state_machine();
+    test_pcie_link_illegal_transitions_rejected();
+    test_pcie_link_hot_reset_from_any_state();
+    test_pcie_link_flr_only_from_l0();
+    test_pcie_link_aspm_policy();
 
     printf("\n========================================\n");
     printf("Test Summary\n");
