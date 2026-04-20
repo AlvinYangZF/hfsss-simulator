@@ -240,67 +240,11 @@ int key_table_init(struct key_table *kt)
     return HFSSS_OK;
 }
 
-int key_table_save(const struct key_table *kt, const char *filepath)
-{
-    FILE *fp;
-
-    if (!kt || !filepath) {
-        return HFSSS_ERR_INVAL;
-    }
-
-    fp = fopen(filepath, "wb");
-    if (!fp) {
-        return HFSSS_ERR_IO;
-    }
-
-    if (fwrite(kt, sizeof(*kt), 1, fp) != 1) {
-        fclose(fp);
-        return HFSSS_ERR_IO;
-    }
-
-    fclose(fp);
-    return HFSSS_OK;
-}
-
-int key_table_load(struct key_table *kt, const char *filepath)
-{
-    FILE *fp;
-    u32 computed_crc;
-
-    if (!kt || !filepath) {
-        return HFSSS_ERR_INVAL;
-    }
-
-    fp = fopen(filepath, "rb");
-    if (!fp) {
-        return HFSSS_ERR_IO;
-    }
-
-    if (fread(kt, sizeof(*kt), 1, fp) != 1) {
-        fclose(fp);
-        return HFSSS_ERR_IO;
-    }
-
-    fclose(fp);
-
-    /* Verify magic */
-    if (kt->magic != SEC_KEY_MAGIC) {
-        return HFSSS_ERR_CRYPTO;
-    }
-
-    /* Verify CRC32 */
-    computed_crc = hfsss_crc32(kt, offsetof(struct key_table, crc32));
-    if (computed_crc != kt->crc32) {
-        return HFSSS_ERR_CRYPTO;
-    }
-
-    return HFSSS_OK;
-}
-
 /* ----------------------------------------------------------------
  * NOR-backed Key Table (REQ-165)
  *
- * Layout inside NOR_PART_KEYS:
+ * The persistent store for the key table lives in NOR_PART_KEYS;
+ * there is no file-backed fallback. Layout inside NOR_PART_KEYS:
  *   [ 0,       64KB) — slot A
  *   [64KB,   128KB) — slot B
  * Each slot holds a `struct key_table_nor_slot` whose outer CRC
@@ -369,7 +313,7 @@ static int key_slot_write(struct nor_dev *nor, u32 rel_offset,
                                slot, sizeof(*slot));
 }
 
-int key_table_save_nor(const struct key_table *kt, struct nor_dev *nor)
+int key_table_save(const struct key_table *kt, struct nor_dev *nor)
 {
     if (!kt || !nor) {
         return HFSSS_ERR_INVAL;
@@ -406,7 +350,7 @@ int key_table_save_nor(const struct key_table *kt, struct nor_dev *nor)
     return HFSSS_OK;
 }
 
-int key_table_load_nor(struct key_table *kt, struct nor_dev *nor)
+int key_table_load(struct key_table *kt, struct nor_dev *nor)
 {
     if (!kt || !nor) {
         return HFSSS_ERR_INVAL;

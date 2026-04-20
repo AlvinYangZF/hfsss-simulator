@@ -51,83 +51,66 @@ int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config 
         config = &default_cfg;
     }
 
-    /* Initialize lock */
+    /* Single-exit init: on failure we `goto fail_<last-successful-stage>`,
+     * which unwinds every prior step in strict reverse order. Earlier
+     * reviewer flagged that newly added state (telemetry/aer) leaked
+     * on mid-init errors; this pattern keeps the cleanup set in lockstep
+     * with what's been constructed, no matter where we abort. */
+
     ret = mutex_init(&dev->lock);
     if (ret != HFSSS_OK) {
         return ret;
     }
 
-    /* Initialize Error Log ring lock (REQ-115/158) */
     ret = mutex_init(&dev->error_log_lock);
-    if (ret != HFSSS_OK) {
-        mutex_cleanup(&dev->lock);
-        return ret;
-    }
+    if (ret != HFSSS_OK) goto fail_lock;
 
-    /* Initialize Telemetry ring + lock (REQ-174/175/176) */
     ret = mutex_init(&dev->telemetry_lock);
-    if (ret != HFSSS_OK) {
-        mutex_cleanup(&dev->error_log_lock);
-        mutex_cleanup(&dev->lock);
-        return ret;
-    }
+    if (ret != HFSSS_OK) goto fail_error_log_lock;
+
     ret = telemetry_init(&dev->telemetry);
-    if (ret != HFSSS_OK) {
-        mutex_cleanup(&dev->telemetry_lock);
-        mutex_cleanup(&dev->error_log_lock);
-        mutex_cleanup(&dev->lock);
-        return ret;
-    }
+    if (ret != HFSSS_OK) goto fail_telemetry_lock;
 
-    /* Initialize AER framework (REQ-063) */
     ret = hal_aer_init(&dev->aer);
-    if (ret != HFSSS_OK) {
-        telemetry_cleanup(&dev->telemetry);
-        mutex_cleanup(&dev->telemetry_lock);
-        mutex_cleanup(&dev->error_log_lock);
-        mutex_cleanup(&dev->lock);
-        return ret;
-    }
+    if (ret != HFSSS_OK) goto fail_telemetry;
 
-    /* Initialize NVMe controller */
     ret = nvme_ctrl_init(&dev->ctrl);
-    if (ret != HFSSS_OK) {
-        mutex_cleanup(&dev->lock);
-        return ret;
-    }
+    if (ret != HFSSS_OK) goto fail_aer;
 
-    /* Initialize queue manager */
     ret = nvme_queue_mgr_init(&dev->qmgr, dev);
-    if (ret != HFSSS_OK) {
-        nvme_ctrl_cleanup(&dev->ctrl);
-        mutex_cleanup(&dev->lock);
-        return ret;
-    }
+    if (ret != HFSSS_OK) goto fail_ctrl;
 
-    /* Initialize SSD simulator */
     ret = sssim_init(&dev->sssim, &config->sssim_cfg);
-    if (ret != HFSSS_OK) {
-        nvme_queue_mgr_cleanup(&dev->qmgr);
-        nvme_ctrl_cleanup(&dev->ctrl);
-        mutex_cleanup(&dev->lock);
-        return ret;
-    }
+    if (ret != HFSSS_OK) goto fail_qmgr;
 
-    /* Allocate data buffer */
     dev->data_buffer_size = config->data_buffer_size;
-    dev->data_buffer = malloc(config->data_buffer_size);
+    dev->data_buffer      = malloc(config->data_buffer_size);
     if (!dev->data_buffer) {
-        sssim_cleanup(&dev->sssim);
-        nvme_queue_mgr_cleanup(&dev->qmgr);
-        nvme_ctrl_cleanup(&dev->ctrl);
-        mutex_cleanup(&dev->lock);
-        return HFSSS_ERR_NOMEM;
+        ret = HFSSS_ERR_NOMEM;
+        goto fail_sssim;
     }
 
     dev->initialized = true;
-    dev->running = false;
-
+    dev->running     = false;
     return HFSSS_OK;
+
+fail_sssim:
+    sssim_cleanup(&dev->sssim);
+fail_qmgr:
+    nvme_queue_mgr_cleanup(&dev->qmgr);
+fail_ctrl:
+    nvme_ctrl_cleanup(&dev->ctrl);
+fail_aer:
+    hal_aer_cleanup(&dev->aer);
+fail_telemetry:
+    telemetry_cleanup(&dev->telemetry);
+fail_telemetry_lock:
+    mutex_cleanup(&dev->telemetry_lock);
+fail_error_log_lock:
+    mutex_cleanup(&dev->error_log_lock);
+fail_lock:
+    mutex_cleanup(&dev->lock);
+    return ret;
 }
 
 void nvme_uspace_dev_cleanup(struct nvme_uspace_dev *dev)
