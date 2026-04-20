@@ -74,6 +74,30 @@ int key_table_init(struct key_table *kt);
 int key_table_save(const struct key_table *kt, const char *filepath);
 int key_table_load(struct key_table *kt, const char *filepath);
 
+/* NOR-backed key table storage (REQ-165).
+ *
+ * Dual-copy with UPLP-safe update: each save stamps a monotonic
+ * generation number and writes to slot B first, then slot A. A crash
+ * between the two writes leaves one slot holding the new generation
+ * and the other holding the previous generation — `key_table_load_nor`
+ * picks whichever slot has the highest generation with a valid CRC.
+ *
+ * Requires NOR_PART_KEYS to be sized to at least 2 sectors. */
+#define SEC_NOR_KEYS_MAGIC       0x4E4B4559U  /* "NKEY" */
+#define SEC_NOR_KEYS_SLOT_A_REL  0U
+#define SEC_NOR_KEYS_SLOT_B_REL  (64U * 1024U)  /* second NOR sector */
+
+struct key_table_nor_slot {
+    u32              slot_magic;
+    u32              generation;
+    struct key_table body;
+    u32              slot_crc32;  /* CRC over everything above */
+};
+
+struct nor_dev;
+int key_table_save_nor(const struct key_table *kt, struct nor_dev *nor);
+int key_table_load_nor(struct key_table *kt, struct nor_dev *nor);
+
 /* Crypto erase */
 int crypto_erase_ns(struct key_table *kt, u32 nsid,
                     const u8 mk[SEC_KEY_LEN]);

@@ -41,11 +41,11 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% (100% partial) | ↑ DWRR + partial wiring |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
-| Enterprise: Security | 7 | 5 | 2 | 0 | 0 | 71.4% (100% partial) | ↑ AES-XTS sim, keys, crypto erase, sanitize action modes, secure-boot-verify wired into POST and derived from the active NOR slot by default; key-NOR backing + TCG-Opal remain ⚠️ |
+| Enterprise: Security | 7 | 6 | 1 | 0 | 0 | 85.7% (100% partial) | ↑ AES-XTS sim, keys, crypto erase, sanitize action modes, secure-boot-verify wired into POST, NOR-backed dual-copy UPLP-safe key table; only TCG-Opal command parsing (REQ-161) remains ⚠️ |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 7 | 1 | 0 | 0 | 87.5% (100% partial) | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch; AER (REQ-178) still ⚠️ pending REQ-063 |
-| **Enterprise Subtotal** | **40** | **32** | **8** | **0** | **0** | **80.0%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **125** | **29** | **23** | **1** | **70.2%** (86.5% partial) | ↑ from 38.8% |
+| **Enterprise Subtotal** | **40** | **33** | **7** | **0** | **0** | **82.5%** (100% partial) | ↑ from 0% |
+| **Grand Total** | **178** | **126** | **28** | **23** | **1** | **70.8%** (86.5% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -286,7 +286,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-162 | Crypto erase (destroy DEK) | ✅ | `crypto_erase_ns` in `security.c` |
 | REQ-163 | Secure erase (block erase all user data) | ✅ | `nvme_uspace_sanitize` dispatches all four SANACT modes (EXIT_FAILURE/BLOCK_ERASE/OVERWRITE/CRYPTO_ERASE); OVERWRITE performs explicit zero-fill on every LBA |
 | REQ-164 | Secure boot chain verification (ROM→BL→FW) | ✅ | `secure_boot_verify()` invoked during `BOOT_PHASE_1_POST` in `src/common/boot.c`; tampered image or wrong magic → `HFSSS_ERR_AUTH` abort |
-| REQ-165 | Key storage in NOR (dual-copy, UPLP-safe) | ⚠️ | `key_table_save`/`key_table_load` persist to an arbitrary file path in `security.c`; NOR partition backing, dual-copy fallback and UPLP-safe update path not yet implemented |
+| REQ-165 | Key storage in NOR (dual-copy, UPLP-safe) | ✅ | `key_table_save_nor`/`key_table_load_nor` route persistence through `NOR_PART_KEYS` with dual-copy slots at rel-offsets 0 and 64 KB. Each slot is stamped with a monotonic generation + outer CRC; save writes slot B first then slot A so an interrupted update leaves at least one valid copy. Load returns the slot with the highest valid generation. Covered by six `tests/test_security.c::test_key_table_nor_*` cases including single-slot corruption and mid-update crash recovery. |
 
 ### 15. Enterprise: Multi-Namespace Management (REQ-166 to REQ-170)
 
@@ -366,7 +366,7 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 | LLD_15_PERSISTENCE_FORMAT.md | REQ-131 | Checkpoint + WAL formats landed; LLD-level spec doc not published |
 | LLD_17_POWER_LOSS_PROTECTION.md | REQ-139..146 | Implemented |
 | LLD_18_QOS_DETERMINISM.md | REQ-147..153 | DWRR + latency monitor landed; per-NS caps + SLA enforcement partial |
-| LLD_19_SECURITY_ENCRYPTION.md | REQ-159..165 | Implemented except REQ-161 (TCG Opal commands) and REQ-165 (NOR-backed key table) |
+| LLD_19_SECURITY_ENCRYPTION.md | REQ-159..165 | Implemented except REQ-161 (TCG Opal commands) |
 
 ---
 
@@ -377,7 +377,7 @@ Current position: **core + enterprise features largely landed; polish and gap-cl
 Near-term priorities:
 1. Close **REQ-063 AER** and **REQ-064 PCIe link-state** per LLD_13, then flip HAL from 75% to ~92%.
 2. Enforce **perf targets** (REQ-116..120) in `perf_validation_run_all`, converting the 5 ⚠️ rows to ✅.
-3. Flip the remaining **Security** requirements — TCG Opal command parsing (REQ-161) and NOR-backed key table with dual-copy UPLP-safe updates (REQ-165).
+3. Flip the remaining **Security** requirement — TCG Opal command parsing (REQ-161).
 
 Mid-term:
 4. Broaden QoS coverage — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).
