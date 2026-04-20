@@ -79,6 +79,16 @@ int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config 
         return ret;
     }
 
+    /* Initialize AER framework (REQ-063) */
+    ret = hal_aer_init(&dev->aer);
+    if (ret != HFSSS_OK) {
+        telemetry_cleanup(&dev->telemetry);
+        mutex_cleanup(&dev->telemetry_lock);
+        mutex_cleanup(&dev->error_log_lock);
+        mutex_cleanup(&dev->lock);
+        return ret;
+    }
+
     /* Initialize NVMe controller */
     ret = nvme_ctrl_init(&dev->ctrl);
     if (ret != HFSSS_OK) {
@@ -140,12 +150,42 @@ void nvme_uspace_dev_cleanup(struct nvme_uspace_dev *dev)
 
     nvme_queue_mgr_cleanup(&dev->qmgr);
     nvme_ctrl_cleanup(&dev->ctrl);
+    hal_aer_cleanup(&dev->aer);
     telemetry_cleanup(&dev->telemetry);
     mutex_cleanup(&dev->telemetry_lock);
     mutex_cleanup(&dev->error_log_lock);
     mutex_cleanup(&dev->lock);
 
     memset(dev, 0, sizeof(*dev));
+}
+
+int nvme_uspace_aer_post_event(struct nvme_uspace_dev *dev,
+                               enum nvme_async_event_type type,
+                               enum nvme_async_event_info info,
+                               u8 log_page_id,
+                               bool *out_delivered,
+                               u16 *out_cid,
+                               struct nvme_cq_entry *out_cqe)
+{
+    if (!dev || !dev->initialized || !out_delivered) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct nvme_aer_completion comp;
+    int rc = hal_aer_post_event(&dev->aer, type, info, log_page_id,
+                                out_delivered, &comp);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+    if (*out_delivered) {
+        if (out_cid) {
+            *out_cid = comp.cid;
+        }
+        if (out_cqe) {
+            *out_cqe = comp.cqe;
+        }
+    }
+    return HFSSS_OK;
 }
 
 int nvme_uspace_dev_start(struct nvme_uspace_dev *dev)
@@ -1132,7 +1172,32 @@ int nvme_uspace_dispatch_admin_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_e
         break;
     }
 
-    case NVME_ADMIN_ASYNC_EVENT:
+    case NVME_ADMIN_ASYNC_EVENT: {
+        /* Route through the AER framework (REQ-063). If the host's
+         * outstanding queue still has room, the CID is parked there
+         * and no completion is produced now — real NVMe would leave
+         * the CQE pending. We signal that to the caller by leaving
+         * cpl->cdw0 zero and returning a success status; the AER
+         * framework will stamp the real DW0 when a matching event
+         * arrives via nvme_uspace_aer_post_event(). If an event was
+         * already waiting in the pending ring, the submit completes
+         * immediately — fill cpl with the returned CQE now. */
+        bool immediate = false;
+        struct nvme_aer_completion comp;
+        int aer_rc = hal_aer_submit_request(&dev->aer, cmd->command_id,
+                                            &immediate, &comp);
+        if (aer_rc == HFSSS_ERR_NOSPC) {
+            /* NVMe spec §5.2: Asynchronous Event Request Limit
+             * Exceeded = SCT=Command Specific, SC=0x05. */
+            cpl->status = NVME_BUILD_STATUS(0x05,
+                                            NVME_STATUS_TYPE_CMD_SPEC);
+        } else if (immediate) {
+            cpl->cdw0   = comp.cqe.cdw0;
+            cpl->status = comp.cqe.status;
+        }
+        break;
+    }
+
     case NVME_ADMIN_KEEP_ALIVE:
         /* Accepted but no real action needed */
         break;

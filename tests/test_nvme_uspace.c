@@ -631,6 +631,126 @@ static int test_log_page_unknown_lid_notsupp(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Scenario A: dispatch_admin_cmd on AER parks the CID (cpl->status
+ * stays 0, cdw0 stays 0). A subsequent nvme_uspace_aer_post_event
+ * delivers the event through the outstanding CID, returning the
+ * completion the admin CQ layer should post. */
+static int test_aer_dispatch_queues_then_post_event(void)
+{
+    printf("\n=== AER through admin dispatch: queue then event (REQ-063) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp: dev_init");
+    ret = nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp: dev_start");
+
+    struct nvme_sq_entry sq_cmd;
+    struct nvme_cq_entry cpl;
+    memset(&sq_cmd, 0, sizeof(sq_cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    sq_cmd.opcode     = NVME_ADMIN_ASYNC_EVENT;
+    sq_cmd.command_id = 0x1234;
+
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq_cmd, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp: dispatch returns OK");
+    TEST_ASSERT(cpl.status == 0,
+                "aer-disp: cpl.status stays 0 (queued, no completion yet)");
+    TEST_ASSERT(cpl.cdw0 == 0,
+                "aer-disp: cpl.cdw0 stays 0 until event arrives");
+    TEST_ASSERT(hal_aer_outstanding_count(&dev.aer) == 1,
+                "aer-disp: AER parked in outstanding queue");
+
+    /* Now controller reports an event — it should be delivered to
+     * the pending AER, and post_event returns the completion details. */
+    bool delivered = false;
+    u16  cid_out   = 0;
+    struct nvme_cq_entry event_cqe;
+    memset(&event_cqe, 0, sizeof(event_cqe));
+    ret = nvme_uspace_aer_post_event(&dev,
+                                     NVME_AER_TYPE_NOTICE,
+                                     NVME_AEI_NOTICE_FW_ACTIVATION_START,
+                                     NVME_LID_FW_SLOT,
+                                     &delivered, &cid_out, &event_cqe);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp: post_event OK");
+    TEST_ASSERT(delivered == true,
+                "aer-disp: event delivered to waiting AER");
+    TEST_ASSERT(cid_out == 0x1234,
+                "aer-disp: completion carries the originally submitted CID");
+    u32 expected_dw0 = ((u32)NVME_AER_TYPE_NOTICE & 0x7) |
+                       ((u32)NVME_AEI_NOTICE_FW_ACTIVATION_START << 8) |
+                       ((u32)NVME_LID_FW_SLOT << 16);
+    TEST_ASSERT(event_cqe.cdw0 == expected_dw0,
+                "aer-disp: event CQE DW0 packs type/info/log");
+    TEST_ASSERT(hal_aer_outstanding_count(&dev.aer) == 0,
+                "aer-disp: outstanding drained after event delivery");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Scenario B: event already buffered -> the AER admin command
+ * completes immediately, cpl carries the event DW0 and SC=SUCCESS. */
+static int test_aer_dispatch_completes_immediately_when_event_pending(void)
+{
+    printf("\n=== AER through admin dispatch: event then submit (REQ-063) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp2: dev_init");
+    ret = nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp2: dev_start");
+
+    /* Buffer an event before any AER is submitted. */
+    bool delivered = true;
+    u16  cid_out   = 0;
+    struct nvme_cq_entry ignore;
+    memset(&ignore, 0, sizeof(ignore));
+    ret = nvme_uspace_aer_post_event(&dev,
+                                     NVME_AER_TYPE_SMART_HEALTH,
+                                     NVME_AEI_SMART_SPARE_BELOW_THRESHOLD,
+                                     NVME_LID_SMART,
+                                     &delivered, &cid_out, &ignore);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp2: pre-event post_event OK");
+    TEST_ASSERT(delivered == false,
+                "aer-disp2: pre-event buffered (no AER waiting)");
+    TEST_ASSERT(hal_aer_pending_count(&dev.aer) == 1,
+                "aer-disp2: pending_count == 1");
+
+    /* Now dispatch the AER — should complete with the buffered event. */
+    struct nvme_sq_entry sq_cmd;
+    struct nvme_cq_entry cpl;
+    memset(&sq_cmd, 0, sizeof(sq_cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    sq_cmd.opcode     = NVME_ADMIN_ASYNC_EVENT;
+    sq_cmd.command_id = 0x7777;
+
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq_cmd, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp2: dispatch OK");
+    u16 expected_status = NVME_BUILD_STATUS(NVME_SC_SUCCESS,
+                                            NVME_STATUS_TYPE_GENERIC);
+    TEST_ASSERT(cpl.status == expected_status,
+                "aer-disp2: cpl.status = SC=SUCCESS on immediate completion");
+    u32 expected_dw0 = ((u32)NVME_AER_TYPE_SMART_HEALTH & 0x7) |
+                       ((u32)NVME_AEI_SMART_SPARE_BELOW_THRESHOLD << 8) |
+                       ((u32)NVME_LID_SMART << 16);
+    TEST_ASSERT(cpl.cdw0 == expected_dw0,
+                "aer-disp2: cpl.cdw0 packs type/info/log from buffered event");
+    TEST_ASSERT(hal_aer_pending_count(&dev.aer) == 0,
+                "aer-disp2: pending drained by immediate submit");
+    TEST_ASSERT(hal_aer_outstanding_count(&dev.aer) == 0,
+                "aer-disp2: outstanding stays empty (immediate completion)");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     print_separator();
@@ -645,6 +765,8 @@ int main(void)
     test_log_page_telemetry_ctrl();
     test_log_page_vendor_counters();
     test_log_page_unknown_lid_notsupp();
+    test_aer_dispatch_queues_then_post_event();
+    test_aer_dispatch_completes_immediately_when_event_pending();
 
     print_separator();
     printf("Test Summary\n");
