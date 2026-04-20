@@ -2,8 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 #include "pcie/nvme_uspace.h"
 #include "pcie/nvme.h"
+#include "pcie/smart_monitor.h"
+#include "common/thermal.h"
 
 /* Mirror of the SMART/Health log layout written by
  * nvme_uspace_get_log_page(). Keep in sync with src/pcie/nvme_uspace.c. */
@@ -1244,6 +1247,181 @@ static int test_smart_reflects_live_state_after_notify(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* ------------------------------------------------------------------
+ * REQ-178: SMART monitor runtime producer. Tests use synchronous
+ * smart_monitor_poll_once() to avoid thread-timing flakiness. A
+ * separate start/stop test proves the thread path itself works.
+ * ------------------------------------------------------------------ */
+struct smart_mock_src {
+    u8 thermal;
+    u8 remaining_life;
+    u8 spare;
+};
+
+static u8 mock_get_thermal(void *ctx)
+{
+    return ((struct smart_mock_src *)ctx)->thermal;
+}
+static u8 mock_get_rlp(void *ctx)
+{
+    return ((struct smart_mock_src *)ctx)->remaining_life;
+}
+static u8 mock_get_spare(void *ctx)
+{
+    return ((struct smart_mock_src *)ctx)->spare;
+}
+
+static int test_smart_monitor_poll_fires_aer_on_threshold_cross(void)
+{
+    printf("\n=== SMART monitor: poll -> AER on threshold cross (REQ-178) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    nvme_uspace_config_small(&cfg);
+    int ret = nvme_uspace_dev_init(&dev, &cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "monitor: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    struct smart_mock_src src = {
+        .thermal = 0, .remaining_life = 100, .spare = 100,
+    };
+    struct smart_monitor mon;
+    struct smart_monitor_config mcfg = {
+        .dev                = &dev,
+        .poll_interval_ms   = 0,   /* manual poll via poll_once */
+        .get_thermal        = mock_get_thermal,
+        .get_remaining_life = mock_get_rlp,
+        .get_spare          = mock_get_spare,
+        .cb_ctx             = &src,
+    };
+    ret = smart_monitor_init(&mon, &mcfg);
+    TEST_ASSERT(ret == HFSSS_OK, "monitor: init");
+
+    /* Baseline poll at nominal values: no AER. */
+    smart_monitor_poll_once(&mon);
+    TEST_ASSERT(mon.notify_count_thermal == 0,
+                "monitor: no thermal AER at nominal");
+    TEST_ASSERT(mon.notify_count_wear == 0,
+                "monitor: no wear AER at 100%% life");
+    TEST_ASSERT(mon.notify_count_spare == 0,
+                "monitor: no spare AER at 100%% spare");
+
+    /* Temperature jumps to HEAVY: one thermal AER, dev state stamped. */
+    src.thermal = THERMAL_LEVEL_HEAVY;
+    smart_monitor_poll_once(&mon);
+    TEST_ASSERT(mon.notify_count_thermal == 1,
+                "monitor: 1 thermal AER after rise to HEAVY");
+    TEST_ASSERT(dev.thermal_level == THERMAL_LEVEL_HEAVY,
+                "monitor: dev.thermal_level updated");
+
+    /* Same level on next poll: no duplicate AER. */
+    smart_monitor_poll_once(&mon);
+    TEST_ASSERT(mon.notify_count_thermal == 1,
+                "monitor: no duplicate thermal AER at same level");
+
+    /* Cooling back to NONE should also emit (level changed). */
+    src.thermal = THERMAL_LEVEL_NONE;
+    smart_monitor_poll_once(&mon);
+    TEST_ASSERT(mon.notify_count_thermal == 2,
+                "monitor: thermal AER on cool-down edge too");
+
+    /* Wear drops to 80%% life (20%% used -> bucket 2): emit. */
+    src.remaining_life = 80;
+    smart_monitor_poll_once(&mon);
+    TEST_ASSERT(mon.notify_count_wear == 1,
+                "monitor: 1 wear AER after 20%% used");
+
+    /* Further drop to 75%% (still bucket 2 used): no new AER. */
+    src.remaining_life = 75;
+    smart_monitor_poll_once(&mon);
+    TEST_ASSERT(mon.notify_count_wear == 1,
+                "monitor: no new wear AER within same bucket");
+
+    /* Drop to 70%% (bucket 3 used): new AER. */
+    src.remaining_life = 70;
+    smart_monitor_poll_once(&mon);
+    TEST_ASSERT(mon.notify_count_wear == 2,
+                "monitor: 2nd wear AER after crossing 30%% used");
+
+    /* Spare drops to 5%% (bucket 0): emit spare AER. */
+    src.spare = 5;
+    smart_monitor_poll_once(&mon);
+    TEST_ASSERT(mon.notify_count_spare == 1,
+                "monitor: spare AER after crossing 10%% watermark");
+
+    /* Spare stays at 5%%: no new AER. */
+    smart_monitor_poll_once(&mon);
+    TEST_ASSERT(mon.notify_count_spare == 1,
+                "monitor: no duplicate spare AER when unchanged");
+
+    smart_monitor_cleanup(&mon);
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+static int test_smart_monitor_thread_lifecycle(void)
+{
+    printf("\n=== SMART monitor: start/stop thread lifecycle (REQ-178) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    nvme_uspace_config_small(&cfg);
+    int ret = nvme_uspace_dev_init(&dev, &cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "monitor-thread: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    /* Start from nominal — the first poll seeds baseline without
+     * firing; a subsequent poll after we mutate the mock sees real
+     * change events and emits AERs. This separates the baseline
+     * behavior from the event-detection behavior in one test. */
+    struct smart_mock_src src = {
+        .thermal = 0, .remaining_life = 100, .spare = 100,
+    };
+    struct smart_monitor mon;
+    struct smart_monitor_config mcfg = {
+        .dev                = &dev,
+        .poll_interval_ms   = 5,
+        .get_thermal        = mock_get_thermal,
+        .get_remaining_life = mock_get_rlp,
+        .get_spare          = mock_get_spare,
+        .cb_ctx             = &src,
+    };
+    ret = smart_monitor_init(&mon, &mcfg);
+    TEST_ASSERT(ret == HFSSS_OK, "monitor-thread: init");
+
+    ret = smart_monitor_start(&mon);
+    TEST_ASSERT(ret == HFSSS_OK, "monitor-thread: start OK");
+    TEST_ASSERT(mon.running == true, "monitor-thread: running flag set");
+
+    /* Let the thread seed baseline (a few poll cycles). */
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 30 * 1000 * 1000 };
+    nanosleep(&ts, NULL);
+
+    /* Now mutate the mock values; the running thread should pick up
+     * the new readings within one poll interval and emit AERs. */
+    src.thermal        = THERMAL_LEVEL_HEAVY;
+    src.remaining_life = 50;
+    /* Give the thread at least a couple of polls to observe + react. */
+    ts.tv_nsec = 80 * 1000 * 1000;
+    nanosleep(&ts, NULL);
+
+    smart_monitor_stop(&mon);
+    TEST_ASSERT(mon.running == false, "monitor-thread: stopped cleanly");
+
+    /* Thermal change NONE -> HEAVY and wear bucket 0 -> 5 must both
+     * have surfaced as at least one AER each during the second sleep. */
+    TEST_ASSERT(mon.notify_count_thermal >= 1,
+                "monitor-thread: thermal AER fired after mutation");
+    TEST_ASSERT(mon.notify_count_wear >= 1,
+                "monitor-thread: wear AER fired after mutation");
+
+    smart_monitor_cleanup(&mon);
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     print_separator();
@@ -1269,6 +1447,8 @@ int main(void)
     test_opal_security_recv_reports_lock_state();
     test_opal_default_ns_registered_at_init();
     test_smart_reflects_live_state_after_notify();
+    test_smart_monitor_poll_fires_aer_on_threshold_cross();
+    test_smart_monitor_thread_lifecycle();
 
     print_separator();
     printf("Test Summary\n");

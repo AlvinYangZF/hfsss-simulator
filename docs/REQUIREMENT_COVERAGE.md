@@ -43,9 +43,9 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
 | Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100% | ↑ AES-XTS sim, keys, crypto erase, sanitize action modes, secure-boot-verify, NOR-backed dual-copy UPLP-safe key table, TCG-Opal lock/unlock |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
-| Enterprise: Thermal/Telemetry | 8 | 7 | 1 | 0 | 0 | 87.5% (100% partial) | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers; REQ-178 pending runtime producers |
-| **Enterprise Subtotal** | **40** | **34** | **6** | **0** | **0** | **85.0%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **131** | **25** | **22** | **0** | **73.6%** (86.5% partial) | ↑ from 38.8% |
+| Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
+| **Enterprise Subtotal** | **40** | **35** | **5** | **0** | **0** | **87.5%** (100% partial) | ↑ from 0% |
+| **Grand Total** | **178** | **132** | **24** | **22** | **0** | **74.2%** (86.5% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -309,7 +309,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-175 | Controller-initiated telemetry (Log Page 08h) | ✅ | Same serializer as LID 0x07 but `ctrl_data_available` tracks ring non-emptiness and `ctrl_gen_number` only advances when new events appear since the last poll. **Caveat**: same producer gap as REQ-174 until Tier-C notifiers land. |
 | REQ-176 | Vendor-specific log page (internal counters) | ✅ | LID 0xC0 returns `struct nvme_vendor_log_counters` (magic/total_events/events_in_ring + per-type counts over `enum tel_event_type`) for `hfsss-ctrl` and test introspection. **Caveat**: counters reflect whatever is recorded in `dev->telemetry`; in production they stay zero until Tier-C wires the AER-notify producers. |
 | REQ-177 | SMART remaining life prediction (PE+WAF trend) | ✅ | `smart_predict_life` computes `remaining_life_pct`/`waf`/`avg_erase_count` in `telemetry.c` |
-| REQ-178 | Async event notification (temp/spare/reliability AER) | ⚠️ | Helper bridges `nvme_uspace_aer_notify_thermal/wear/spare()` wire telemetry + AER posting per NVMe §5.2, covered by `tests/test_nvme_uspace.c::test_aer_notify_*`. **Pending**: no runtime producer calls these — the thermal watchdog, wear predictor, and spare monitor aren't yet connected to the notifier surface, so real state changes still don't generate AERs. Flip to ✅ requires wiring those producers (OOB hook or periodic watchdog). |
+| REQ-178 | Async event notification (temp/spare/reliability AER) | ✅ | Helper bridges `nvme_uspace_aer_notify_thermal/wear/spare()` wire telemetry + AER posting per NVMe §5.2. Runtime producer lives in `src/pcie/smart_monitor.c`: a callback-driven polling loop (configurable interval) detects thermal level changes, wear bucket increases (10% granularity), and spare bucket decreases, then calls the matching notifier bridge. Callers inject their own thermal/wear/spare data sources via `smart_monitor_config` callbacks. Tests: `test_smart_monitor_poll_fires_aer_on_threshold_cross` (deterministic poll_once path) and `test_smart_monitor_thread_lifecycle` (background thread path). |
 
 ---
 
@@ -376,8 +376,8 @@ Current position: **core + enterprise features largely landed; polish and gap-cl
 
 Near-term priorities:
 1. Enforce **perf targets** (REQ-116..120) in `perf_validation_run_all`, converting the 5 ⚠️ rows to ✅.
-2. Wire a runtime producer for **REQ-178** (thermal / wear / spare poll loop) to re-promote the AER notifiers from ⚠️ to ✅.
-3. Broaden **QoS coverage** — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).
+2. Broaden **QoS coverage** — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).
+3. Implement **SPSC IPC ring** + periodic resource sampling (REQ-085, REQ-087).
 
 Mid-term:
 4. Broaden QoS coverage — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).
