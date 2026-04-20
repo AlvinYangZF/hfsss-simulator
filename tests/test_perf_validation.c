@@ -113,7 +113,7 @@ static void test_bench_rand_read_qd32(void)
     int rc = bench_run(&cfg, &res);
 
     TEST_ASSERT(rc == HFSSS_OK, "bench_run returns HFSSS_OK");
-    TEST_ASSERT(res.read_iops >= 600000.0, "read IOPS >= 600K (REQ-116)");
+    TEST_ASSERT(res.read_iops >= 1000000.0, "read IOPS >= 1M (REQ-116 PRD target)");
     TEST_ASSERT(res.read_iops <= 1000000.0 * 100, "read IOPS reasonable upper bound");
 }
 
@@ -137,7 +137,7 @@ static void test_bench_rand_write_qd32(void)
     int rc = bench_run(&cfg, &res);
 
     TEST_ASSERT(rc == HFSSS_OK, "bench_run returns HFSSS_OK");
-    TEST_ASSERT(res.write_iops >= 150000.0, "write IOPS >= 150K (REQ-117)");
+    TEST_ASSERT(res.write_iops >= 300000.0, "write IOPS >= 300K (REQ-117 PRD target)");
 }
 
 /* ------------------------------------------------------------------
@@ -301,8 +301,25 @@ static void test_scalability_sanity(void)
     printf("  4-thread parallel efficiency: %.2f%%\n", eff4 * 100.0);
 }
 
+/* Find a perf_req_result row by req_id; NULL if the report has no
+ * such entry. Used to bind the framework's own pass/fail evaluation
+ * to the regression gate (REQ-116..120). */
+static const struct perf_req_result *
+find_req_row(const struct perf_validation_report *r, const char *id)
+{
+    for (int i = 0; i < r->count; i++) {
+        if (r->results[i].req_id && strcmp(r->results[i].req_id, id) == 0) {
+            return &r->results[i];
+        }
+    }
+    return NULL;
+}
+
 /* ------------------------------------------------------------------
- * Test 12: perf_validation_run_all returns a report
+ * Test 12: perf_validation_run_all returns a report AND each perf
+ * target (REQ-116..120) is individually marked passed in the report.
+ * Without this binding the per-REQ targets are effectively advisory
+ * — the test suite would stay green even if the report said failed.
  * ------------------------------------------------------------------ */
 static void test_validation_run_all(void)
 {
@@ -319,6 +336,60 @@ static void test_validation_run_all(void)
     TEST_ASSERT(report.count <= 32, "report.count <= 32");
     TEST_ASSERT(report.passed + report.failed == report.count, "passed + failed == count");
     TEST_ASSERT(report.nand_timing_error_pct >= 0.0, "nand_timing_error_pct >= 0");
+
+    /* REQ-116/117/118: IOPS targets evaluated into the report. */
+    const struct perf_req_result *r116 = find_req_row(&report, "REQ-116");
+    const struct perf_req_result *r117 = find_req_row(&report, "REQ-117");
+    const struct perf_req_result *r118 = find_req_row(&report, "REQ-118");
+    TEST_ASSERT(r116 && r116->passed, "report: REQ-116 passed (random read IOPS >= 1M)");
+    TEST_ASSERT(r117 && r117->passed, "report: REQ-117 passed (random write IOPS >= 300K)");
+    TEST_ASSERT(r118 && r118->passed, "report: REQ-118 passed (mixed 70/30 IOPS >= 250K)");
+
+    /* REQ-119: sequential BW split across read/write rows. */
+    const struct perf_req_result *r119r = find_req_row(&report, "REQ-119-RD");
+    const struct perf_req_result *r119w = find_req_row(&report, "REQ-119-WR");
+    TEST_ASSERT(r119r && r119r->passed, "report: REQ-119-RD passed (seq read BW >= 6500 MB/s)");
+    TEST_ASSERT(r119w && r119w->passed, "report: REQ-119-WR passed (seq write BW >= 3500 MB/s)");
+
+    /* REQ-120: P50/P99/P99.9 latency triple at QD=1. */
+    const struct perf_req_result *r120p50  = find_req_row(&report, "REQ-120-P50");
+    const struct perf_req_result *r120p99  = find_req_row(&report, "REQ-120-P99");
+    const struct perf_req_result *r120p999 = find_req_row(&report, "REQ-120-P999");
+    TEST_ASSERT(r120p50  && r120p50->passed,  "report: REQ-120 P50  <= 100us");
+    TEST_ASSERT(r120p99  && r120p99->passed,  "report: REQ-120 P99  <= 150us");
+    TEST_ASSERT(r120p999 && r120p999->passed, "report: REQ-120 P99.9 <= 500us");
+
+    /* Pin the full report inventory so a future run_all refactor
+     * that drops rows (or adds ones under a different ID) can't
+     * silently regress. The 11-row contract mirrors what
+     * perf_validation_run_all adds today: REQ-116..120 (8 rows
+     * with the RD/WR/P50/P99/P999 sub-IDs) plus REQ-121/122/123. */
+    TEST_ASSERT(report.count == 11, "report: exactly 11 requirement rows");
+    const struct perf_req_result *r121 = find_req_row(&report, "REQ-121");
+    const struct perf_req_result *r122 = find_req_row(&report, "REQ-122");
+    const struct perf_req_result *r123 = find_req_row(&report, "REQ-123");
+    TEST_ASSERT(r121 != NULL, "report: REQ-121 present (NAND timing accuracy)");
+    TEST_ASSERT(r122 != NULL, "report: REQ-122 present (parallel efficiency)");
+    TEST_ASSERT(r123 != NULL, "report: REQ-123 present (CPU utilization)");
+
+    /* Pin the per-REQ target values so a target dilution ("lowered
+     * gate to 500K to make CI green") surfaces as a test failure.
+     * Values mirror the PRD-aligned thresholds encoded in
+     * perf_validation_run_all. */
+    TEST_ASSERT(r116->target == 1000000.0, "report: REQ-116 target == 1M IOPS");
+    TEST_ASSERT(r117->target == 300000.0,  "report: REQ-117 target == 300K IOPS");
+    TEST_ASSERT(r118->target == 250000.0,  "report: REQ-118 target == 250K IOPS");
+    TEST_ASSERT(r119r->target == 6500.0,   "report: REQ-119-RD target == 6500 MB/s");
+    TEST_ASSERT(r119w->target == 3500.0,   "report: REQ-119-WR target == 3500 MB/s");
+    TEST_ASSERT(r120p50->target == 100.0,  "report: REQ-120-P50 target == 100 us");
+    TEST_ASSERT(r120p99->target == 150.0,  "report: REQ-120-P99 target == 150 us");
+    TEST_ASSERT(r120p999->target == 500.0, "report: REQ-120-P999 target == 500 us");
+
+    /* Overall gate: no perf requirement may silently regress in CI.
+     * A failure here means at least one row dropped below target —
+     * surface it as a hard regression rather than a soft warning. */
+    TEST_ASSERT(report.failed == 0,
+                "report: every perf requirement passed in run_all");
 
     printf("  Requirements: %d passed, %d failed\n", report.passed, report.failed);
 }

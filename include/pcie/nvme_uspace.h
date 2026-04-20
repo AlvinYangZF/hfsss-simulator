@@ -86,6 +86,16 @@ struct nvme_uspace_dev {
      * auth with `opal_derive_auth(opal_mk, nsid, ...)`. */
     struct key_table     keys;
     u8                   opal_mk[SEC_KEY_LEN];
+    /* Guards every runtime access to `keys`. The I/O path
+     * (opal_is_locked in nvme_uspace_read/write), the admin path
+     * (opal_lock_ns/unlock_ns in SECURITY_SEND dispatch), and the
+     * SECURITY_RECV STATUS probe all now acquire this mutex; init-
+     * time seeding (key_table_init / key_table_register_ns) runs
+     * before any other thread can reach the dev, so those paths
+     * intentionally stay unlocked. Leaf lock — never held across
+     * another lock acquisition, so ordering against dev->lock is
+     * unconstrained. */
+    struct mutex         keys_lock;
 
     /* SMART live state (REQ-174/REQ-178 consistency). The AER notifier
      * bridges update these fields so Get Log Page LID=0x02 reflects the

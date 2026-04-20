@@ -627,13 +627,15 @@ int perf_validation_run_all(struct perf_validation_report *report)
 
     struct bench_result res;
 
-    /* REQ-116: Random read IOPS at QD=32, 4KB: 600K–1M */
+    /* REQ-116: Random read IOPS per PRD target = 1M at QD=32 / 4KB. */
     run_iops(BENCH_RAND_READ, 4096, 32, 0.0, &res);
-    add_result(report, "REQ-116", "Random read IOPS (4KB, QD=32) >= 600K", res.read_iops, 600000.0, "IOPS", true);
+    add_result(report, "REQ-116", "Random read IOPS (4KB, QD=32) >= 1M",
+               res.read_iops, 1000000.0, "IOPS", true);
 
-    /* REQ-117: Random write IOPS at QD=32, 4KB: 150K–300K */
+    /* REQ-117: Random write IOPS per PRD target = 300K at QD=32 / 4KB. */
     run_iops(BENCH_RAND_WRITE, 4096, 32, 0.0, &res);
-    add_result(report, "REQ-117", "Random write IOPS (4KB, QD=32) >= 150K", res.write_iops, 150000.0, "IOPS", true);
+    add_result(report, "REQ-117", "Random write IOPS (4KB, QD=32) >= 300K",
+               res.write_iops, 300000.0, "IOPS", true);
 
     /* REQ-118: Mixed R/W IOPS >= 250K at QD=32, 70/30 */
     double mixed_iops = run_iops(BENCH_MIXED, 4096, 32, 0.7, &res);

@@ -167,11 +167,11 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-116 | Random read IOPS target (1M IOPS) | 6.1.1 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Partial |
-| REQ-117 | Random write IOPS target (300K IOPS) | 6.1.2 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Partial |
-| REQ-118 | Mixed read/write IOPS (250K IOPS) | 6.1.3 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Partial |
-| REQ-119 | Sequential bandwidth (6.5/3.5 GB/s) | 6.2 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Partial |
-| REQ-120 | Latency targets (P50/P99/P99.9) | 6.3 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Partial |
+| REQ-116 | Random read IOPS target (1M IOPS) | 6.1.1 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Implemented |
+| REQ-117 | Random write IOPS target (300K IOPS) | 6.1.2 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Implemented |
+| REQ-118 | Mixed read/write IOPS (250K IOPS) | 6.1.3 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Implemented |
+| REQ-119 | Sequential bandwidth (6.5/3.5 GB/s) | 6.2 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Implemented |
+| REQ-120 | Latency targets (P50/P99/P99.9) | 6.3 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Implemented |
 | REQ-121 | Simulation accuracy (<5% error) | 6.4 | HLD_03 | LLD_10 | TEST_LLD_03 | Not Implemented |
 | REQ-122 | Scalability (32 ch, 4096 NS) | 6.5 | HLD_01, HLD_06 | LLD_10 | TEST_LLD_01, TEST_LLD_06 | Not Implemented |
 | REQ-123 | Resource utilization targets | 6.6 | HLD_05 | LLD_10 | TEST_LLD_05 | Not Implemented |
@@ -278,7 +278,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Hardware Abstraction Layer | 12 | 12 | 0 | 0 | 0 | 100.0% |
 | Common Services | 24 | 18 | 2 | 0 | 4 | 75.0% |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 0 | 2 | 86.4% |
-| Performance Requirements | 8 | 0 | 5 | 0 | 3 | 0.0% |
+| Performance Requirements | 8 | 5 | 0 | 0 | 3 | 62.5% |
 | Product Interfaces | 8 | 4 | 3 | 0 | 1 | 50.0% |
 | Fault Injection Framework | 3 | 2 | 1 | 0 | 0 | 66.7% |
 | System Reliability/Stability | 4 | 2 | 1 | 0 | 1 | 50.0% |
@@ -288,7 +288,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100.0% |
-| **Total** | **178** | **132** | **24** | **0** | **22** | **74.2%** |
+| **Total** | **178** | **137** | **19** | **0** | **22** | **77.0%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 
