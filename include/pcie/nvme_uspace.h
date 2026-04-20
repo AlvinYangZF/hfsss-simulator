@@ -3,6 +3,7 @@
 
 #include "pcie/nvme.h"
 #include "pcie/queue.h"
+#include "pcie/smart_monitor.h"
 #include "sssim.h"
 #include "common/telemetry.h"
 #include "controller/security.h"
@@ -93,6 +94,13 @@ struct nvme_uspace_dev {
     u8                   thermal_level;       /* 0..4 per common/thermal.h */
     u8                   avail_spare_pct;     /* 0..100 */
     u8                   percent_used_pct;    /* 0..100 */
+
+    /* REQ-178: runtime producer that polls caller-supplied sources
+     * and fires the aer_notify_* bridges on threshold crossings.
+     * Default callbacks return the nominal device state (0 / 100 /
+     * 100) so the monitor is silent until a real data source is
+     * attached via nvme_uspace_dev_set_smart_source(). */
+    struct smart_monitor smart_mon;
 };
 
 /* User-space NVMe Configuration */
@@ -178,6 +186,17 @@ int nvme_uspace_aer_notify_spare(struct nvme_uspace_dev *dev,
                                  bool *out_delivered,
                                  u16 *out_cid,
                                  struct nvme_cq_entry *out_cqe);
+
+/* Attach a live data source to the embedded smart_monitor. Any of
+ * the callbacks may be NULL, in which case the matching default
+ * (always-nominal) is kept. This is the integration point callers
+ * (NBD / vhost / exporter main) use to plug real thermal / wear /
+ * spare producers into the AER path without restarting the dev. */
+int nvme_uspace_dev_set_smart_source(struct nvme_uspace_dev *dev,
+                                     smart_thermal_level_fn  get_thermal,
+                                     smart_remaining_life_fn get_remaining_life,
+                                     smart_spare_fn          get_spare,
+                                     void                   *cb_ctx);
 int nvme_uspace_get_features(struct nvme_uspace_dev *dev, u8 fid, u32 *value);
 int nvme_uspace_set_features(struct nvme_uspace_dev *dev, u8 fid, u32 value);
 

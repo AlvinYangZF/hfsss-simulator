@@ -702,6 +702,298 @@ static int test_pcie_link_aspm_policy_gates_entry(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* REQ-069: hal_pci_cfg byte-level config space (256B std + 4KB ext)
+ * per LLD_13 §6.3. PCIe unresponsive behavior: out-of-range reads
+ * return all-ones, unaligned 16/32-bit reads return all-ones. */
+static int test_hal_pci_cfg_init_defaults(void)
+{
+    printf("\n=== HAL PCI cfg: init defaults (REQ-069) ===\n");
+
+    struct hal_pci_cfg cfg;
+    int ret = hal_pci_cfg_init(&cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "cfg: init OK");
+
+    /* Vendor / Device / Revision reflected in cfg_space[0..9]. */
+    uint16_t vid = hal_pci_cfg_read16(&cfg, 0x00);
+    uint16_t did = hal_pci_cfg_read16(&cfg, 0x02);
+    uint8_t  rid = hal_pci_cfg_read8(&cfg, 0x08);
+    TEST_ASSERT(vid == HFSSS_VENDOR_ID,  "cfg: vendor ID == HFSSS_VENDOR_ID");
+    TEST_ASSERT(did == HFSSS_DEVICE_ID,  "cfg: device ID == HFSSS_DEVICE_ID");
+    TEST_ASSERT(rid == HFSSS_REVISION_ID, "cfg: revision ID");
+
+    /* Class code: 0x0C NVMe interface, 0x0A subclass, 0x0B storage. */
+    uint8_t c_if  = hal_pci_cfg_read8(&cfg, 0x09);
+    uint8_t c_sub = hal_pci_cfg_read8(&cfg, 0x0A);
+    uint8_t c_base = hal_pci_cfg_read8(&cfg, 0x0B);
+    TEST_ASSERT(c_if == PCI_CLASS_INTERFACE_NVME,  "cfg: class interface NVMe");
+    TEST_ASSERT(c_sub == PCI_CLASS_SUBCLASS_NVME,  "cfg: class subclass NVMe");
+    TEST_ASSERT(c_base == PCI_CLASS_CODE_STORAGE,  "cfg: class code storage");
+
+    /* Capabilities pointer set to 0x40 and PCI_STS_CAP_LIST bit on. */
+    uint8_t cap_ptr = hal_pci_cfg_read8(&cfg, 0x34);
+    uint16_t status = hal_pci_cfg_read16(&cfg, 0x06);
+    TEST_ASSERT(cap_ptr == 0x40, "cfg: capabilities pointer == 0x40");
+    TEST_ASSERT((status & PCI_STS_CAP_LIST) != 0,
+                "cfg: status has PCI_STS_CAP_LIST bit");
+
+    /* Extended region defaults to zero. */
+    TEST_ASSERT(hal_pci_cfg_read32(&cfg, 0x100) == 0,
+                "cfg: ext_cfg at 0x100 defaults to 0");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+static int test_hal_pci_cfg_out_of_range_reads(void)
+{
+    printf("\n=== HAL PCI cfg: out-of-range -> all ones (REQ-069) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    /* Beyond 4096: PCIe bus unresponsive returns all-ones. */
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x1000) == 0xFF,
+                "cfg: read8 at 0x1000 -> 0xFF");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0x1000) == 0xFFFF,
+                "cfg: read16 at 0x1000 -> 0xFFFF");
+    TEST_ASSERT(hal_pci_cfg_read32(&cfg, 0x1000) == 0xFFFFFFFFu,
+                "cfg: read32 at 0x1000 -> 0xFFFFFFFF");
+
+    /* Unaligned 16/32 reads return all-ones per LLD_13 alignment rule. */
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0x01) == 0xFFFF,
+                "cfg: read16 at unaligned 0x01 -> 0xFFFF");
+    TEST_ASSERT(hal_pci_cfg_read32(&cfg, 0x03) == 0xFFFFFFFFu,
+                "cfg: read32 at unaligned 0x03 -> 0xFFFFFFFF");
+
+    /* NULL cfg also returns all-ones (defensive API). */
+    TEST_ASSERT(hal_pci_cfg_read8(NULL, 0x00) == 0xFF,
+                "cfg: read8 NULL -> 0xFF");
+    TEST_ASSERT(hal_pci_cfg_read16(NULL, 0x00) == 0xFFFF,
+                "cfg: read16 NULL -> 0xFFFF");
+    TEST_ASSERT(hal_pci_cfg_read32(NULL, 0x00) == 0xFFFFFFFFu,
+                "cfg: read32 NULL -> 0xFFFFFFFF");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-002: PCIe capability linked-list emulation on top of the
+ * REQ-069 config space. The chain is PM@0x40 -> MSI@0x50 ->
+ * MSIX@0x70 -> PCIe@0x90 -> 0. `hal_pci_capability_find` walks
+ * it via cfg_read8, so we verify both the chain layout (byte
+ * reads at each offset) and the walker's return. */
+static int test_hal_pci_cfg_cap_chain_layout(void)
+{
+    printf("\n=== HAL PCI cfg: capability chain layout (REQ-002) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    /* PM cap at 0x40. */
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x40) == PCI_CAP_ID_PM,
+                "chain: 0x40 cap_id == PM");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x41) == 0x50,
+                "chain: PM.next -> 0x50");
+
+    /* MSI cap at 0x50. */
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x50) == PCI_CAP_ID_MSI,
+                "chain: 0x50 cap_id == MSI");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x51) == 0x70,
+                "chain: MSI.next -> 0x70");
+
+    /* MSI-X cap at 0x70. */
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x70) == PCI_CAP_ID_MSIX,
+                "chain: 0x70 cap_id == MSI-X");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x71) == 0x90,
+                "chain: MSI-X.next -> 0x90");
+
+    /* PCIe Express cap at 0x90. Terminator = 0x00. */
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x90) == PCI_CAP_ID_EXP,
+                "chain: 0x90 cap_id == PCIe Express");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x91) == 0x00,
+                "chain: PCIe.next == 0x00 (end of list)");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+static int test_hal_pci_cfg_capability_find(void)
+{
+    printf("\n=== HAL PCI cfg: capability_find walker (REQ-002) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    /* Each registered cap is locatable by ID. */
+    TEST_ASSERT(hal_pci_capability_find(&cfg, PCI_CAP_ID_PM)   == 0x40,
+                "find: PM @ 0x40");
+    TEST_ASSERT(hal_pci_capability_find(&cfg, PCI_CAP_ID_MSI)  == 0x50,
+                "find: MSI @ 0x50");
+    TEST_ASSERT(hal_pci_capability_find(&cfg, PCI_CAP_ID_MSIX) == 0x70,
+                "find: MSI-X @ 0x70");
+    TEST_ASSERT(hal_pci_capability_find(&cfg, PCI_CAP_ID_EXP)  == 0x90,
+                "find: PCIe Express @ 0x90");
+
+    /* Unregistered ID returns 0 (sentinel for "not found"). */
+    TEST_ASSERT(hal_pci_capability_find(&cfg, 0xAB) == 0,
+                "find: unknown cap_id returns 0");
+
+    /* NULL cfg returns 0. */
+    TEST_ASSERT(hal_pci_capability_find(NULL, PCI_CAP_ID_PM) == 0,
+                "find: NULL cfg returns 0");
+
+    /* Loop protection: if someone corrupts a next pointer to form
+     * a cycle, the walker must bail rather than spin forever.
+     * Point PM.next back to itself. */
+    struct hal_pci_cfg loopy;
+    hal_pci_cfg_init(&loopy);
+    (void)hal_pci_cfg_write8(&loopy, 0x41, 0x40);  /* PM.next = 0x40 */
+    TEST_ASSERT(hal_pci_capability_find(&loopy, 0xAB) == 0,
+                "find: cycle detected, returns 0 without hanging");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* PR #93 review Fix-1: guard against uint32_t `offset + size`
+ * wrapping past PCI_EXT_CFG_SPACE_SIZE. Previously the bounds
+ * check was `offset + size > 4096` which 0xFFFFFFFC + 4 bypasses.
+ * All wraparound offsets must now return all-ones on read and
+ * HFSSS_ERR_INVAL on write. */
+static int test_hal_pci_cfg_u32_wraparound(void)
+{
+    printf("\n=== HAL PCI cfg: u32 wraparound rejected (Fix-1) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    TEST_ASSERT(hal_pci_cfg_read8 (&cfg, 0xFFFFFFFFu) == 0xFF,
+                "wrap: read8 at UINT32_MAX -> 0xFF");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0xFFFFFFFEu) == 0xFFFF,
+                "wrap: read16 near UINT32_MAX -> 0xFFFF");
+    TEST_ASSERT(hal_pci_cfg_read32(&cfg, 0xFFFFFFFCu) == 0xFFFFFFFFu,
+                "wrap: read32 near UINT32_MAX -> 0xFFFFFFFF");
+
+    int ret;
+    ret = hal_pci_cfg_write8 (&cfg, 0xFFFFFFFFu, 0xAA);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "wrap: write8 at UINT32_MAX rejected");
+    ret = hal_pci_cfg_write16(&cfg, 0xFFFFFFFEu, 0xAAAA);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "wrap: write16 near UINT32_MAX rejected");
+    ret = hal_pci_cfg_write32(&cfg, 0xFFFFFFFCu, 0xDEADBEEFu);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "wrap: write32 near UINT32_MAX rejected");
+
+    /* Boundary case: offset exactly at size — still invalid. */
+    ret = hal_pci_cfg_write8(&cfg, PCI_EXT_CFG_SPACE_SIZE, 0xBB);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "wrap: write8 at exactly 4KB rejected");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* PR #93 review Fix-2: writes to read-only Type-0 header fields
+ * must be silently dropped (PCIe §7.5.1.1) while still returning
+ * OK — a real bus ACKs RO writes without mutating the register. */
+static int test_hal_pci_cfg_readonly_fields_rejected(void)
+{
+    printf("\n=== HAL PCI cfg: RO header fields silently drop writes (Fix-2) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    /* Vendor ID: try to rewrite, verify unchanged. */
+    int ret = hal_pci_cfg_write16(&cfg, 0x00, 0xBEEF);
+    TEST_ASSERT(ret == HFSSS_OK, "ro: write to vendor_id returns OK");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0x00) == HFSSS_VENDOR_ID,
+                "ro: vendor_id preserved after write");
+
+    /* Class code byte 0x0B (base class = storage). */
+    ret = hal_pci_cfg_write8(&cfg, 0x0B, 0x00);
+    TEST_ASSERT(ret == HFSSS_OK, "ro: write to class_code returns OK");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x0B) == PCI_CLASS_CODE_STORAGE,
+                "ro: class_code preserved");
+
+    /* Capabilities pointer at 0x34: stays at 0x40 after write. */
+    ret = hal_pci_cfg_write8(&cfg, 0x34, 0x00);
+    TEST_ASSERT(ret == HFSSS_OK, "ro: write to cap_ptr returns OK");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x34) == 0x40,
+                "ro: cap_ptr preserved");
+
+    /* Subsystem IDs at 0x2C..0x2F. */
+    ret = hal_pci_cfg_write32(&cfg, 0x2C, 0x00000000);
+    TEST_ASSERT(ret == HFSSS_OK, "ro: write to subsystem IDs returns OK");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0x2C) == HFSSS_SUBSYSTEM_VENDOR_ID,
+                "ro: subsystem_vendor_id preserved");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0x2E) == HFSSS_SUBSYSTEM_ID,
+                "ro: subsystem_id preserved");
+
+    /* Writable peer-test: Command at 0x04 is RW — make sure the RO
+     * guard isn't over-blocking legitimate writes. */
+    ret = hal_pci_cfg_write16(&cfg, 0x04, 0x0006);
+    TEST_ASSERT(ret == HFSSS_OK, "ro: write to Command (RW) OK");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0x04) == 0x0006,
+                "ro: Command register written correctly");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* PR #93 review Fix-3: MSI-X table/PBA offsets must encode BIR
+ * bits so the advertised BAR matches the comment. */
+static int test_hal_pci_cfg_msix_bir(void)
+{
+    printf("\n=== HAL PCI cfg: MSI-X BIR bits encoded correctly (Fix-3) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    uint32_t table = hal_pci_cfg_read32(&cfg, 0x74);
+    uint32_t pba   = hal_pci_cfg_read32(&cfg, 0x78);
+
+    TEST_ASSERT((table & 0x7u) == 2,
+                "msix: table BIR == 2 (BAR2)");
+    TEST_ASSERT((table & ~0x7u) == 0x4000,
+                "msix: table offset within BAR == 0x4000");
+    TEST_ASSERT((pba & 0x7u) == 4,
+                "msix: PBA BIR == 4 (BAR4)");
+    TEST_ASSERT((pba & ~0x7u) == 0x8000,
+                "msix: PBA offset within BAR == 0x8000");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+static int test_hal_pci_cfg_write_roundtrip(void)
+{
+    printf("\n=== HAL PCI cfg: write roundtrip + ext region (REQ-069) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    /* Writable region: Command register at 0x04 (bit 0 I/O, 1 MEM, 2 BM). */
+    int ret = hal_pci_cfg_write16(&cfg, 0x04, 0x0006);
+    TEST_ASSERT(ret == HFSSS_OK, "cfg: write16 Command OK");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0x04) == 0x0006,
+                "cfg: Command roundtrip 0x0006");
+
+    /* Extended region 0x100..0xFFF accepts writes. */
+    ret = hal_pci_cfg_write32(&cfg, 0x100, 0xCAFEBABEu);
+    TEST_ASSERT(ret == HFSSS_OK, "cfg: write32 ext 0x100 OK");
+    TEST_ASSERT(hal_pci_cfg_read32(&cfg, 0x100) == 0xCAFEBABEu,
+                "cfg: ext region roundtrip 0xCAFEBABE");
+
+    /* Writes past 0x1000 are dropped silently; subsequent read yields
+     * the PCIe unresponsive pattern, not the written value. */
+    ret = hal_pci_cfg_write32(&cfg, 0x1000, 0xDEADBEEFu);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL, "cfg: write32 beyond 4KB rejected");
+    TEST_ASSERT(hal_pci_cfg_read32(&cfg, 0x1000) == 0xFFFFFFFFu,
+                "cfg: read past 4KB still returns 0xFFFFFFFF");
+
+    /* Unaligned writes rejected. */
+    ret = hal_pci_cfg_write16(&cfg, 0x05, 0x1234);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL, "cfg: write16 unaligned rejected");
+    ret = hal_pci_cfg_write32(&cfg, 0x03, 0x12345678);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL, "cfg: write32 unaligned rejected");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -729,6 +1021,14 @@ int main(void)
     test_pcie_link_flr_only_from_l0();
     test_pcie_link_aspm_policy();
     test_pcie_link_aspm_policy_gates_entry();
+    test_hal_pci_cfg_init_defaults();
+    test_hal_pci_cfg_out_of_range_reads();
+    test_hal_pci_cfg_u32_wraparound();
+    test_hal_pci_cfg_readonly_fields_rejected();
+    test_hal_pci_cfg_msix_bir();
+    test_hal_pci_cfg_write_roundtrip();
+    test_hal_pci_cfg_cap_chain_layout();
+    test_hal_pci_cfg_capability_find();
 
     printf("\n========================================\n");
     printf("Test Summary\n");
