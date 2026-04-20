@@ -128,6 +128,12 @@ void lat_monitor_reset(struct ns_latency_monitor *mon)
     u32 nsid = mon->nsid;
     u32 target_us = mon->target_us;
     bool initialized = mon->initialized;
+    /* REQ-088 fields survive a histogram reset so an alert handler
+     * installed at boot keeps firing across window boundaries. */
+    u32 p999_th  = mon->p999_threshold_us;
+    u32 p999_cnt = mon->p999_anomalies;
+    lat_anomaly_fn p999_cb = mon->p999_cb;
+    void *p999_cb_ctx      = mon->p999_cb_ctx;
 
     memset(mon->buckets, 0, sizeof(mon->buckets));
     mon->total_samples = 0;
@@ -138,4 +144,45 @@ void lat_monitor_reset(struct ns_latency_monitor *mon)
     mon->nsid = nsid;
     mon->target_us = target_us;
     mon->initialized = initialized;
+    mon->p999_threshold_us = p999_th;
+    mon->p999_anomalies    = p999_cnt;
+    mon->p999_cb           = p999_cb;
+    mon->p999_cb_ctx       = p999_cb_ctx;
+}
+
+int lat_monitor_set_p999_anomaly(struct ns_latency_monitor *mon,
+                                 u32 threshold_us,
+                                 lat_anomaly_fn cb, void *cb_ctx)
+{
+    if (!mon || !mon->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+    mon->p999_threshold_us = threshold_us;
+    mon->p999_cb           = cb;
+    mon->p999_cb_ctx       = cb_ctx;
+    return HFSSS_OK;
+}
+
+bool lat_monitor_check_p999_anomaly(struct ns_latency_monitor *mon)
+{
+    if (!mon || !mon->initialized || mon->p999_threshold_us == 0) {
+        return false;
+    }
+    u64 p999_us = lat_monitor_percentile(mon, 999);
+    if (p999_us > mon->p999_threshold_us) {
+        mon->p999_anomalies++;
+        if (mon->p999_cb) {
+            mon->p999_cb(mon->nsid, p999_us, mon->p999_cb_ctx);
+        }
+        return true;
+    }
+    return false;
+}
+
+u32 lat_monitor_p999_anomaly_count(const struct ns_latency_monitor *mon)
+{
+    if (!mon || !mon->initialized) {
+        return 0;
+    }
+    return mon->p999_anomalies;
 }

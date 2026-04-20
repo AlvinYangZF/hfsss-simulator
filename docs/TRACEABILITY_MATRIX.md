@@ -128,10 +128,10 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-082 | OOB interface (Unix Socket, /proc) | 5.6.6 | HLD_05 | LLD_05, LLD_07 | TEST_LLD_05 | Implemented |
 | REQ-083 | OOB management functions | 5.6.6 | HLD_05 | LLD_05, LLD_07 | TEST_LLD_05 | Implemented |
 | REQ-084 | SMART information (Log Page 02h) | 5.6.6 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-085 | Inter-core communication (SPSC Ring Buffer) | 5.6.7 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Not Implemented |
+| REQ-085 | Inter-core communication (SPSC Ring Buffer) | 5.6.7 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Implemented |
 | REQ-086 | Watchdog (per-task feed) | 5.6.8 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-087 | System resource monitoring | 5.6.8 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Not Implemented |
-| REQ-088 | Performance anomaly detection/Temp emulation | 5.6.8 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Partial |
+| REQ-087 | System resource monitoring | 5.6.8 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Implemented |
+| REQ-088 | Performance anomaly detection/Temp emulation | 5.6.8 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Implemented |
 | REQ-089 | Assert mechanism | 5.6.9 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
 | REQ-090 | Panic procedure | 5.6.9 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
 | REQ-091 | Debug mechanism (Trace, GDB) | 5.6.10 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
@@ -276,19 +276,19 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Controller Thread | 15 | 12 | 1 | 0 | 2 | 80.0% |
 | Media Threads | 20 | 15 | 4 | 0 | 1 | 75.0% |
 | Hardware Abstraction Layer | 12 | 12 | 0 | 0 | 0 | 100.0% |
-| Common Services | 24 | 18 | 2 | 0 | 4 | 75.0% |
+| Common Services | 24 | 20 | 2 | 0 | 2 | 83.3% |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 0 | 2 | 86.4% |
 | Performance Requirements | 8 | 5 | 0 | 0 | 3 | 62.5% |
 | Product Interfaces | 8 | 4 | 3 | 0 | 1 | 50.0% |
 | Fault Injection Framework | 3 | 2 | 1 | 0 | 0 | 66.7% |
-| System Reliability/Stability | 4 | 2 | 1 | 0 | 1 | 50.0% |
+| System Reliability/Stability | 4 | 3 | 0 | 0 | 1 | 75.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100.0% |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100.0% |
-| **Total** | **178** | **137** | **19** | **0** | **22** | **77.0%** |
+| **Total** | **178** | **140** | **18** | **0** | **20** | **78.7%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 

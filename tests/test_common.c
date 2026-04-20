@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include "common/log.h"
 #include "common/mempool.h"
 #include "common/msgqueue.h"
@@ -9,6 +11,8 @@
 #include "common/mutex.h"
 #include "common/memory.h"
 #include "common/watchdog.h"
+#include "common/spsc_ring.h"
+#include "common/system_monitor.h"
 
 #define TEST_PASS 0
 #define TEST_FAIL 1
@@ -517,6 +521,251 @@ static int test_watchdog(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* REQ-085: SPSC lock-free ring. Basic put/get invariants: empty at
+ * init, fills to capacity, rejects past capacity, drains in FIFO
+ * order, recovers usable after drain. Multi-threaded producer /
+ * consumer correctness is covered by the separate contention test
+ * below. */
+static int test_spsc_ring_basic(void)
+{
+    printf("\n=== SPSC ring: basic put/get (REQ-085) ===\n");
+
+    struct spsc_ring r;
+    int rc = spsc_ring_init(&r, sizeof(u32), 16);
+    TEST_ASSERT(rc == HFSSS_OK, "spsc: init OK");
+    TEST_ASSERT(spsc_ring_empty(&r), "spsc: fresh ring empty");
+    TEST_ASSERT(!spsc_ring_full(&r), "spsc: fresh ring not full");
+    TEST_ASSERT(spsc_ring_count(&r) == 0, "spsc: count 0 at init");
+
+    /* Capacity must be a power of two. */
+    struct spsc_ring bad;
+    TEST_ASSERT(spsc_ring_init(&bad, sizeof(u32), 17) == HFSSS_ERR_INVAL,
+                "spsc: non-pow2 capacity rejected");
+    TEST_ASSERT(spsc_ring_init(&bad, 0, 16) == HFSSS_ERR_INVAL,
+                "spsc: zero elem_size rejected");
+    TEST_ASSERT(spsc_ring_init(NULL, sizeof(u32), 16) == HFSSS_ERR_INVAL,
+                "spsc: NULL ring rejected");
+
+    /* Fill to capacity (16 slots). */
+    for (u32 i = 0; i < 16; i++) {
+        TEST_ASSERT(spsc_ring_tryput(&r, &i) == HFSSS_OK,
+                    "spsc: put within capacity OK");
+    }
+    TEST_ASSERT(spsc_ring_full(&r), "spsc: ring full after 16 puts");
+    TEST_ASSERT(spsc_ring_count(&r) == 16, "spsc: count == capacity when full");
+
+    /* 17th put must fail with NOSPC. */
+    u32 sentinel = 0xDEADBEEFu;
+    TEST_ASSERT(spsc_ring_tryput(&r, &sentinel) == HFSSS_ERR_NOSPC,
+                "spsc: put past capacity rejected with NOSPC");
+
+    /* Drain and verify FIFO ordering. */
+    for (u32 i = 0; i < 16; i++) {
+        u32 out = 0xFFFFFFFFu;
+        TEST_ASSERT(spsc_ring_tryget(&r, &out) == HFSSS_OK,
+                    "spsc: get while non-empty OK");
+        TEST_ASSERT(out == i, "spsc: FIFO order preserved");
+    }
+    TEST_ASSERT(spsc_ring_empty(&r), "spsc: ring empty after drain");
+
+    /* Empty get returns AGAIN. */
+    u32 out = 0;
+    TEST_ASSERT(spsc_ring_tryget(&r, &out) == HFSSS_ERR_AGAIN,
+                "spsc: get on empty ring returns AGAIN");
+
+    /* Wrap-around: put 10 more to exercise the mask arithmetic past
+     * the initial drain point. */
+    for (u32 i = 100; i < 110; i++) {
+        TEST_ASSERT(spsc_ring_tryput(&r, &i) == HFSSS_OK,
+                    "spsc: wrap-around put OK");
+    }
+    for (u32 i = 100; i < 110; i++) {
+        u32 val = 0;
+        TEST_ASSERT(spsc_ring_tryget(&r, &val) == HFSSS_OK,
+                    "spsc: wrap-around get OK");
+        TEST_ASSERT(val == i, "spsc: wrap-around FIFO preserved");
+    }
+
+    spsc_ring_cleanup(&r);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-085 SPSC contention: one producer thread, one consumer
+ * thread, N items shipped through the ring. Consumer must observe
+ * every producer value in order with no duplicates and no drops. */
+struct spsc_thread_args {
+    struct spsc_ring *r;
+    u32 count;
+    u32 unexpected;   /* out-of-order or duplicate values */
+    u32 consumed;
+};
+
+static void *spsc_producer(void *arg)
+{
+    struct spsc_thread_args *a = (struct spsc_thread_args *)arg;
+    for (u32 i = 0; i < a->count; i++) {
+        while (spsc_ring_tryput(a->r, &i) == HFSSS_ERR_NOSPC) {
+            /* Tight retry — consumer is draining on the other side. */
+        }
+    }
+    return NULL;
+}
+
+static void *spsc_consumer(void *arg)
+{
+    struct spsc_thread_args *a = (struct spsc_thread_args *)arg;
+    u32 expected = 0;
+    while (a->consumed < a->count) {
+        u32 v;
+        if (spsc_ring_tryget(a->r, &v) == HFSSS_OK) {
+            if (v != expected) a->unexpected++;
+            expected++;
+            a->consumed++;
+        }
+    }
+    return NULL;
+}
+
+static int test_spsc_ring_contention(void)
+{
+    printf("\n=== SPSC ring: single-producer/consumer contention (REQ-085) ===\n");
+
+    struct spsc_ring r;
+    int rc = spsc_ring_init(&r, sizeof(u32), 64);
+    TEST_ASSERT(rc == HFSSS_OK, "spsc-mt: init OK");
+
+    struct spsc_thread_args pargs = { .r = &r, .count = 100000 };
+    struct spsc_thread_args cargs = { .r = &r, .count = 100000 };
+    pthread_t pt, ct;
+    int rp = pthread_create(&pt, NULL, spsc_producer, &pargs);
+    int rc2 = pthread_create(&ct, NULL, spsc_consumer, &cargs);
+    TEST_ASSERT(rp == 0 && rc2 == 0, "spsc-mt: threads spawned");
+
+    pthread_join(pt, NULL);
+    pthread_join(ct, NULL);
+
+    TEST_ASSERT(cargs.consumed == 100000,
+                "spsc-mt: consumer saw every item");
+    TEST_ASSERT(cargs.unexpected == 0,
+                "spsc-mt: no out-of-order or duplicate values");
+    TEST_ASSERT(spsc_ring_empty(&r),
+                "spsc-mt: ring drained after both threads finished");
+
+    spsc_ring_cleanup(&r);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-087: periodic system resource monitor. Tests use a mock CPU
+ * time source so the computed cpu_pct is deterministic; wall time
+ * comes from the monitor's own clock. Memory + thread count are
+ * simple pass-through so they can be asserted exactly. */
+struct sm_mock {
+    u64 cpu_ns;        /* advances as the test chooses */
+    u64 mem_bytes;
+    u32 thread_count;
+};
+static u64 mock_cpu_ns    (void *ctx) { return ((struct sm_mock *)ctx)->cpu_ns; }
+static u64 mock_mem_bytes (void *ctx) { return ((struct sm_mock *)ctx)->mem_bytes; }
+static u32 mock_thread_cnt(void *ctx) { return ((struct sm_mock *)ctx)->thread_count; }
+
+static int test_system_monitor_basic(void)
+{
+    printf("\n=== System monitor: basic poll + sample readback (REQ-087) ===\n");
+
+    struct sm_mock src = {
+        .cpu_ns = 0, .mem_bytes = 4ULL * 1024 * 1024, .thread_count = 7,
+    };
+    struct system_monitor mon;
+    struct system_monitor_config cfg = {
+        .poll_interval_ms = 0,
+        .get_cpu_time_ns  = mock_cpu_ns,
+        .get_mem_bytes    = mock_mem_bytes,
+        .get_thread_count = mock_thread_cnt,
+        .cb_ctx           = &src,
+    };
+    int rc = system_monitor_init(&mon, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "sysmon: init OK");
+
+    /* NULL safety + config validation. */
+    TEST_ASSERT(system_monitor_init(NULL, &cfg) == HFSSS_ERR_INVAL,
+                "sysmon: NULL monitor rejected");
+    struct system_monitor bad;
+    struct system_monitor_config bad_cfg = cfg;
+    bad_cfg.get_cpu_time_ns = NULL;
+    TEST_ASSERT(system_monitor_init(&bad, &bad_cfg) == HFSSS_ERR_INVAL,
+                "sysmon: missing get_cpu_time_ns rejected");
+
+    /* Seed baseline with first poll. sample_count advances; cpu_pct
+     * has no history yet so it reads as 0. */
+    system_monitor_poll_once(&mon);
+    TEST_ASSERT(system_monitor_sample_count(&mon) == 1,
+                "sysmon: sample_count == 1 after first poll");
+    TEST_ASSERT(system_monitor_mem_bytes(&mon) == src.mem_bytes,
+                "sysmon: mem passed through");
+    TEST_ASSERT(system_monitor_thread_count(&mon) == src.thread_count,
+                "sysmon: thread_count passed through");
+    TEST_ASSERT(system_monitor_cpu_pct(&mon) == 0.0,
+                "sysmon: cpu_pct == 0 on baseline poll");
+
+    /* Advance CPU time by ~50ms of "work" across a real ~100ms wall
+     * sleep -> cpu_pct should land close to 50%. Allow a wide band
+     * (30..80%) to absorb scheduler jitter on shared CI runners. */
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 100 * 1000 * 1000 };
+    nanosleep(&ts, NULL);
+    src.cpu_ns += 50ULL * 1000 * 1000;   /* +50ms CPU */
+    src.mem_bytes = 8ULL * 1024 * 1024;
+    src.thread_count = 12;
+    system_monitor_poll_once(&mon);
+    double cpu = system_monitor_cpu_pct(&mon);
+    TEST_ASSERT(cpu > 30.0 && cpu < 80.0,
+                "sysmon: cpu_pct in (30,80) band for 50ms/100ms workload");
+    TEST_ASSERT(system_monitor_mem_bytes(&mon) == 8ULL * 1024 * 1024,
+                "sysmon: mem reflects latest sample");
+    TEST_ASSERT(system_monitor_thread_count(&mon) == 12,
+                "sysmon: thread_count reflects latest sample");
+    TEST_ASSERT(system_monitor_sample_count(&mon) == 2,
+                "sysmon: sample_count == 2 after second poll");
+
+    system_monitor_cleanup(&mon);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+static int test_system_monitor_thread_lifecycle(void)
+{
+    printf("\n=== System monitor: start/stop thread lifecycle (REQ-087) ===\n");
+
+    struct sm_mock src = {
+        .cpu_ns = 0, .mem_bytes = 1ULL * 1024 * 1024, .thread_count = 4,
+    };
+    struct system_monitor mon;
+    struct system_monitor_config cfg = {
+        .poll_interval_ms = 5,
+        .get_cpu_time_ns  = mock_cpu_ns,
+        .get_mem_bytes    = mock_mem_bytes,
+        .get_thread_count = mock_thread_cnt,
+        .cb_ctx           = &src,
+    };
+    int rc = system_monitor_init(&mon, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "sysmon-thread: init OK");
+
+    rc = system_monitor_start(&mon);
+    TEST_ASSERT(rc == HFSSS_OK, "sysmon-thread: start OK");
+    TEST_ASSERT(mon.running == true, "sysmon-thread: running flag set");
+
+    /* Let the thread run ~50ms; it should accumulate multiple
+     * samples. */
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
+    nanosleep(&ts, NULL);
+
+    system_monitor_stop(&mon);
+    TEST_ASSERT(mon.running == false, "sysmon-thread: stopped cleanly");
+    TEST_ASSERT(system_monitor_sample_count(&mon) >= 2,
+                "sysmon-thread: at least two samples during run");
+
+    system_monitor_cleanup(&mon);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -536,6 +785,10 @@ int main(void)
     test_mutex();
     test_memory();
     test_watchdog();
+    test_spsc_ring_basic();
+    test_spsc_ring_contention();
+    test_system_monitor_basic();
+    test_system_monitor_thread_lifecycle();
 
     printf("\n========================================\n");
     printf("Test Summary\n");
