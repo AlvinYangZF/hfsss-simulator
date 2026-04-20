@@ -102,7 +102,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-060 | NOR driver API | 5.5.2 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
 | REQ-061 | NOR driver internal (delay injection) | 5.5.2 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
 | REQ-062 | Command completion submission (CQE build) | 5.5.3 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
-| REQ-063 | Async event management (AER) | 5.5.3 | HLD_04 | LLD_04, LLD_13 | TEST_LLD_04 | Partial |
+| REQ-063 | Async event management (AER) | 5.5.3 | HLD_04 | LLD_04, LLD_13 | TEST_LLD_04 | Implemented |
 | REQ-064 | PCIe link state management | 5.5.3 | HLD_04 | LLD_04, LLD_13 | TEST_LLD_04 | Not Implemented |
 | REQ-065 | Namespace management interface | 5.5.3 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
 | REQ-066 | NVMe power state emulation (PS0-PS4) | 5.5.4 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
@@ -191,7 +191,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-132 | NAND media fault injection | 8.1.1 | HLD_03 | LLD_08 | TEST_LLD_03 | Partial |
+| REQ-132 | NAND media fault injection | 8.1.1 | HLD_03 | LLD_08 | TEST_LLD_03 | Implemented |
 | REQ-133 | Power fault injection (Sudden Power Off) | 8.1.2 | HLD_05 | LLD_08 | TEST_LLD_05 | Implemented |
 | REQ-134 | Controller fault injection | 8.1.3 | HLD_02 | LLD_08 | TEST_LLD_02 | Partial |
 ### 10. System Reliability and Stability (REQ-135 through REQ-138)
@@ -244,7 +244,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-162 | Crypto erase (destroy DEK) | 12.4.5 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
 | REQ-163 | Secure erase (block erase all) | 12.4.6 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
 | REQ-164 | Secure boot chain verification | 12.4.7 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
-| REQ-165 | Key storage in NOR (dual-copy, UPLP-safe) | 12.4.7 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Partial |
+| REQ-165 | Key storage in NOR (dual-copy, UPLP-safe) | 12.4.7 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | Implemented |
 ### 15. Enterprise Requirements: Multi-Namespace Management (REQ-166 through REQ-170)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
@@ -261,9 +261,9 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-171 | Composite temperature calculation | 12.6.2 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Implemented |
 | REQ-172 | Progressive thermal throttle (3-level) | 12.6.3 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Implemented |
 | REQ-173 | Thermal shutdown (90C threshold) | 12.6.4 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Implemented |
-| REQ-174 | Host-initiated telemetry (Log Page 07h) | 12.7.2 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Partial |
-| REQ-175 | Controller-initiated telemetry (Log Page 08h) | 12.7.3 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Partial |
-| REQ-176 | Vendor-specific log page | 12.7.4 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Partial |
+| REQ-174 | Host-initiated telemetry (Log Page 07h) | 12.7.2 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Implemented |
+| REQ-175 | Controller-initiated telemetry (Log Page 08h) | 12.7.3 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Implemented |
+| REQ-176 | Vendor-specific log page | 12.7.4 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Implemented |
 | REQ-177 | SMART remaining life prediction | 12.7.5 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Implemented |
 | REQ-178 | Async event notification (AER for temp/spare) | 12.7.6 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Partial |
 ---
@@ -275,20 +275,20 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | PCIe/NVMe Device Emulation | 22 | 12 | 2 | 0 | 8 | 54.5% |
 | Controller Thread | 15 | 12 | 1 | 0 | 2 | 80.0% |
 | Media Threads | 20 | 15 | 4 | 0 | 1 | 75.0% |
-| Hardware Abstraction Layer | 12 | 9 | 1 | 1 | 1 | 75.0% |
+| Hardware Abstraction Layer | 12 | 10 | 0 | 1 | 1 | 83.3% |
 | Common Services | 24 | 18 | 2 | 0 | 4 | 75.0% |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 0 | 2 | 86.4% |
 | Performance Requirements | 8 | 0 | 5 | 0 | 3 | 0.0% |
 | Product Interfaces | 8 | 4 | 3 | 0 | 1 | 50.0% |
-| Fault Injection Framework | 3 | 1 | 2 | 0 | 0 | 33.3% |
+| Fault Injection Framework | 3 | 2 | 1 | 0 | 0 | 66.7% |
 | System Reliability/Stability | 4 | 2 | 1 | 0 | 1 | 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100.0% |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100.0% |
-| Enterprise: Security | 7 | 5 | 2 | 0 | 0 | 71.4% |
+| Enterprise: Security | 7 | 6 | 1 | 0 | 0 | 85.7% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
-| Enterprise: Thermal/Telemetry | 8 | 4 | 4 | 0 | 0 | 50.0% |
-| **Total** | **178** | **121** | **33** | **1** | **23** | **68.0%** |
+| Enterprise: Thermal/Telemetry | 8 | 7 | 1 | 0 | 0 | 87.5% |
+| **Total** | **178** | **127** | **27** | **1** | **23** | **71.3%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 
@@ -301,9 +301,9 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | UPLP (Unexpected Power Loss Protection) | 12.1 | 8 | REQ-139..146 | HLD_04, HLD_05 | LLD_17 | TEST_LLD_04, TEST_LLD_05 | ✅ Implemented (8/8) |
 | QoS Determinism | 12.2 | 7 | REQ-147..153 | HLD_02 | LLD_18 | TEST_LLD_02 | ⚠️ Partial (2 ✅ / 5 ⚠️) — DWRR + latency monitor landed; per-NS caps pending |
 | T10 DIF/PI (Data Integrity) | 12.3 | 5 | REQ-154..158 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | ⚠️ Partial (3 ✅ / 2 ⚠️) — CRC-16 types 1/2/3 done; GC propagation + error log page pending |
-| Data-at-Rest Encryption / Security | 12.4 | 7 | REQ-159..165 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | ⚠️ Partial (5 ✅ / 2 ⚠️) — AES-XTS sim, key hierarchy, crypto erase, sanitize action modes, secure-boot wiring ✅; TCG Opal cmds, key-table NOR backing pending |
+| Data-at-Rest Encryption / Security | 12.4 | 7 | REQ-159..165 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | ⚠️ Partial (6 ✅ / 1 ⚠️) — AES-XTS sim, key hierarchy, crypto erase, sanitize action modes, secure-boot wiring, NOR-backed dual-copy key table ✅; only TCG Opal command parsing pending |
 | Multi-Namespace Management | 12.5 | 5 | REQ-166..170 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 | ✅ Implemented (5/5) |
-| Thermal Management & Telemetry | 12.6, 12.7 | 8 | REQ-171..178 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | ⚠️ Partial (4 ✅ / 4 ⚠️) — throttle + SMART predict ✅; NVMe Log Page 07h/08h dispatch + AER delivery pending |
+| Thermal Management & Telemetry | 12.6, 12.7 | 8 | REQ-171..178 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | ⚠️ Partial (7 ✅ / 1 ⚠️) — throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch ✅; AER delivery (REQ-178) pending REQ-063 |
 
 ---
 

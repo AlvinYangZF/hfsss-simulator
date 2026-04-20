@@ -49,6 +49,22 @@ static void print_separator(void)
     printf("========================================\n");
 }
 
+/* Shared small-SSD config for the fast tests; the nvme_uspace_config
+ * default allocates a 1 TB geometry that blows out per-test memory. */
+static void nvme_uspace_config_small(struct nvme_uspace_config *config)
+{
+    nvme_uspace_config_default(config);
+    config->sssim_cfg.page_size         = 4096;
+    config->sssim_cfg.spare_size        = 64;
+    config->sssim_cfg.channel_count     = 2;
+    config->sssim_cfg.chips_per_channel = 2;
+    config->sssim_cfg.dies_per_chip     = 1;
+    config->sssim_cfg.planes_per_die    = 1;
+    config->sssim_cfg.blocks_per_plane  = 64;
+    config->sssim_cfg.pages_per_block   = 64;
+    config->sssim_cfg.total_lbas        = 512;
+}
+
 /* User-space NVMe Device Tests */
 static int test_nvme_uspace_dev(void)
 {
@@ -406,6 +422,335 @@ static int test_error_log_production_path(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Host-initiated Telemetry Log Page (LID=0x07, REQ-174).
+ * White-box: inject events directly into dev->telemetry so we know the
+ * exact state, then assert the log page header + Data Area 1 reflect it. */
+static int test_log_page_telemetry_host(void)
+{
+    printf("\n=== Telemetry Log Page LID=0x07 (REQ-174) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "tel-host: dev_init");
+    ret = nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(ret == HFSSS_OK, "tel-host: dev_start");
+
+    /* Inject 3 telemetry events with distinct types + payloads. */
+    uint8_t p1[TEL_PAYLOAD_LEN]; memset(p1, 0x11, sizeof(p1));
+    uint8_t p2[TEL_PAYLOAD_LEN]; memset(p2, 0x22, sizeof(p2));
+    uint8_t p3[TEL_PAYLOAD_LEN]; memset(p3, 0x33, sizeof(p3));
+    telemetry_record(&dev.telemetry, TEL_EVENT_THERMAL, 1, p1, sizeof(p1));
+    telemetry_record(&dev.telemetry, TEL_EVENT_GC,      2, p2, sizeof(p2));
+    telemetry_record(&dev.telemetry, TEL_EVENT_WEAR,    0, p3, sizeof(p3));
+
+    uint8_t buf[1024];
+    memset(buf, 0xAB, sizeof(buf));
+    ret = nvme_uspace_get_log_page(&dev, 0, NVME_LID_TELEMETRY_HOST,
+                                   buf, sizeof(buf));
+    TEST_ASSERT(ret == HFSSS_OK, "tel-host: LID=0x07 dispatch OK");
+
+    struct nvme_telemetry_log_header *hdr =
+        (struct nvme_telemetry_log_header *)buf;
+    TEST_ASSERT(hdr->log_identifier == NVME_LID_TELEMETRY_HOST,
+                "tel-host: header.log_identifier == 0x07");
+    TEST_ASSERT(hdr->host_gen_number == 1,
+                "tel-host: host_gen_number advanced to 1 on first read");
+    TEST_ASSERT(hdr->data_area_1_last_block >= 1,
+                "tel-host: data_area_1_last_block set (events present)");
+
+    /* Data Area 1 starts at byte 512, events in newest-first order. */
+    struct tel_event *events = (struct tel_event *)(buf + 512);
+    TEST_ASSERT(events[0].type == TEL_EVENT_WEAR,
+                "tel-host: newest event first (WEAR)");
+    TEST_ASSERT(events[1].type == TEL_EVENT_GC,
+                "tel-host: second-newest event is GC");
+    TEST_ASSERT(events[2].type == TEL_EVENT_THERMAL,
+                "tel-host: oldest event is THERMAL");
+    TEST_ASSERT(events[0].payload[0] == 0x33,
+                "tel-host: newest event payload preserved");
+
+    /* Second read: gen_number must advance again per NVMe spec. */
+    memset(buf, 0, sizeof(buf));
+    ret = nvme_uspace_get_log_page(&dev, 0, NVME_LID_TELEMETRY_HOST,
+                                   buf, sizeof(buf));
+    TEST_ASSERT(ret == HFSSS_OK, "tel-host: second read OK");
+    hdr = (struct nvme_telemetry_log_header *)buf;
+    TEST_ASSERT(hdr->host_gen_number == 2,
+                "tel-host: host_gen_number advances on every read");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Controller-initiated Telemetry Log Page (LID=0x08, REQ-175).
+ * ctrl_data_available must be 0 with an empty ring and 1 after events
+ * appear. The ctrl_gen_number only advances when NEW events were added
+ * since the previous read. */
+static int test_log_page_telemetry_ctrl(void)
+{
+    printf("\n=== Telemetry Log Page LID=0x08 (REQ-175) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "tel-ctrl: dev_init");
+    ret = nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(ret == HFSSS_OK, "tel-ctrl: dev_start");
+
+    uint8_t buf[1024];
+
+    /* Empty ring: ctrl_data_available must be 0 and gen stays at 0. */
+    memset(buf, 0xAB, sizeof(buf));
+    ret = nvme_uspace_get_log_page(&dev, 0, NVME_LID_TELEMETRY_CTRL,
+                                   buf, sizeof(buf));
+    TEST_ASSERT(ret == HFSSS_OK, "tel-ctrl: empty-ring dispatch OK");
+    struct nvme_telemetry_log_header *hdr =
+        (struct nvme_telemetry_log_header *)buf;
+    TEST_ASSERT(hdr->log_identifier == NVME_LID_TELEMETRY_CTRL,
+                "tel-ctrl: header.log_identifier == 0x08");
+    TEST_ASSERT(hdr->ctrl_data_available == 0,
+                "tel-ctrl: ctrl_data_available=0 when ring is empty");
+    TEST_ASSERT(hdr->ctrl_gen_number == 0,
+                "tel-ctrl: ctrl_gen_number=0 when never advanced");
+
+    /* After 2 events: data_available=1, gen advances. */
+    telemetry_record(&dev.telemetry, TEL_EVENT_ERROR, 2, NULL, 0);
+    telemetry_record(&dev.telemetry, TEL_EVENT_SLA_VIOL, 3, NULL, 0);
+    memset(buf, 0, sizeof(buf));
+    ret = nvme_uspace_get_log_page(&dev, 0, NVME_LID_TELEMETRY_CTRL,
+                                   buf, sizeof(buf));
+    TEST_ASSERT(ret == HFSSS_OK, "tel-ctrl: after-events dispatch OK");
+    hdr = (struct nvme_telemetry_log_header *)buf;
+    TEST_ASSERT(hdr->ctrl_data_available == 1,
+                "tel-ctrl: ctrl_data_available=1 once events present");
+    uint8_t gen_after_first_events = hdr->ctrl_gen_number;
+    TEST_ASSERT(gen_after_first_events == 1,
+                "tel-ctrl: ctrl_gen_number advanced to 1");
+
+    /* Re-read with NO new events: gen must NOT advance. */
+    memset(buf, 0, sizeof(buf));
+    ret = nvme_uspace_get_log_page(&dev, 0, NVME_LID_TELEMETRY_CTRL,
+                                   buf, sizeof(buf));
+    TEST_ASSERT(ret == HFSSS_OK, "tel-ctrl: idempotent re-read OK");
+    hdr = (struct nvme_telemetry_log_header *)buf;
+    TEST_ASSERT(hdr->ctrl_gen_number == gen_after_first_events,
+                "tel-ctrl: ctrl_gen_number unchanged with no new events");
+
+    /* Add 1 more event, re-read: gen advances. */
+    telemetry_record(&dev.telemetry, TEL_EVENT_POWER, 0, NULL, 0);
+    memset(buf, 0, sizeof(buf));
+    ret = nvme_uspace_get_log_page(&dev, 0, NVME_LID_TELEMETRY_CTRL,
+                                   buf, sizeof(buf));
+    TEST_ASSERT(ret == HFSSS_OK, "tel-ctrl: after-new-event dispatch OK");
+    hdr = (struct nvme_telemetry_log_header *)buf;
+    TEST_ASSERT(hdr->ctrl_gen_number == (uint8_t)(gen_after_first_events + 1),
+                "tel-ctrl: ctrl_gen_number advances on new events");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Vendor-specific Log Page (LID=0xC0, REQ-176): internal counter snapshot. */
+static int test_log_page_vendor_counters(void)
+{
+    printf("\n=== Vendor Log Page LID=0xC0 (REQ-176) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "tel-vendor: dev_init");
+    ret = nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(ret == HFSSS_OK, "tel-vendor: dev_start");
+
+    /* Inject events across different types so events_by_type can be
+     * asserted with known ground truth. */
+    telemetry_record(&dev.telemetry, TEL_EVENT_THERMAL, 0, NULL, 0);
+    telemetry_record(&dev.telemetry, TEL_EVENT_THERMAL, 0, NULL, 0);
+    telemetry_record(&dev.telemetry, TEL_EVENT_GC, 1, NULL, 0);
+    telemetry_record(&dev.telemetry, TEL_EVENT_ERROR, 2, NULL, 0);
+    telemetry_record(&dev.telemetry, TEL_EVENT_ERROR, 2, NULL, 0);
+    telemetry_record(&dev.telemetry, TEL_EVENT_ERROR, 2, NULL, 0);
+
+    struct nvme_vendor_log_counters counters;
+    memset(&counters, 0xAB, sizeof(counters));
+    ret = nvme_uspace_get_log_page(&dev, 0, NVME_LID_VENDOR_COUNTERS,
+                                   &counters, sizeof(counters));
+    TEST_ASSERT(ret == HFSSS_OK, "tel-vendor: LID=0xC0 dispatch OK");
+    TEST_ASSERT(counters.magic == NVME_VENDOR_LOG_MAGIC,
+                "tel-vendor: magic == NVME_VENDOR_LOG_MAGIC");
+    TEST_ASSERT(counters.total_events == 6,
+                "tel-vendor: total_events matches injected count");
+    TEST_ASSERT(counters.events_in_ring == 6,
+                "tel-vendor: events_in_ring matches live ring count");
+    TEST_ASSERT(counters.events_by_type[TEL_EVENT_THERMAL] == 2,
+                "tel-vendor: per-type counter: THERMAL=2");
+    TEST_ASSERT(counters.events_by_type[TEL_EVENT_GC] == 1,
+                "tel-vendor: per-type counter: GC=1");
+    TEST_ASSERT(counters.events_by_type[TEL_EVENT_ERROR] == 3,
+                "tel-vendor: per-type counter: ERROR=3");
+    TEST_ASSERT(counters.events_by_type[TEL_EVENT_POWER] == 0,
+                "tel-vendor: per-type counter: POWER stays zero");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Unknown LIDs still get NOTSUPP (spec-correct for unsupported pages). */
+static int test_log_page_unknown_lid_notsupp(void)
+{
+    printf("\n=== Unknown Log Page LIDs -> NOTSUPP ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "tel-unknown: dev_init");
+    ret = nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(ret == HFSSS_OK, "tel-unknown: dev_start");
+
+    uint8_t buf[512];
+    ret = nvme_uspace_get_log_page(&dev, 0, 0x04, buf, sizeof(buf));
+    TEST_ASSERT(ret == HFSSS_ERR_NOTSUPP,
+                "tel-unknown: LID=0x04 returns NOTSUPP");
+    ret = nvme_uspace_get_log_page(&dev, 0, 0x05, buf, sizeof(buf));
+    TEST_ASSERT(ret == HFSSS_ERR_NOTSUPP,
+                "tel-unknown: LID=0x05 returns NOTSUPP");
+    ret = nvme_uspace_get_log_page(&dev, 0, 0xC1, buf, sizeof(buf));
+    TEST_ASSERT(ret == HFSSS_ERR_NOTSUPP,
+                "tel-unknown: LID=0xC1 returns NOTSUPP (vendor range but unwired)");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Scenario A: dispatch_admin_cmd on AER parks the CID (cpl->status
+ * stays 0, cdw0 stays 0). A subsequent nvme_uspace_aer_post_event
+ * delivers the event through the outstanding CID, returning the
+ * completion the admin CQ layer should post. */
+static int test_aer_dispatch_queues_then_post_event(void)
+{
+    printf("\n=== AER through admin dispatch: queue then event (REQ-063) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp: dev_init");
+    ret = nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp: dev_start");
+
+    struct nvme_sq_entry sq_cmd;
+    struct nvme_cq_entry cpl;
+    memset(&sq_cmd, 0, sizeof(sq_cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    sq_cmd.opcode     = NVME_ADMIN_ASYNC_EVENT;
+    sq_cmd.command_id = 0x1234;
+
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq_cmd, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp: dispatch returns OK");
+    TEST_ASSERT(cpl.status == 0,
+                "aer-disp: cpl.status stays 0 (queued, no completion yet)");
+    TEST_ASSERT(cpl.cdw0 == 0,
+                "aer-disp: cpl.cdw0 stays 0 until event arrives");
+    TEST_ASSERT(hal_aer_outstanding_count(&dev.aer) == 1,
+                "aer-disp: AER parked in outstanding queue");
+
+    /* Now controller reports an event — it should be delivered to
+     * the pending AER, and post_event returns the completion details. */
+    bool delivered = false;
+    u16  cid_out   = 0;
+    struct nvme_cq_entry event_cqe;
+    memset(&event_cqe, 0, sizeof(event_cqe));
+    ret = nvme_uspace_aer_post_event(&dev,
+                                     NVME_AER_TYPE_NOTICE,
+                                     NVME_AEI_NOTICE_FW_ACTIVATION_START,
+                                     NVME_LID_FW_SLOT,
+                                     &delivered, &cid_out, &event_cqe);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp: post_event OK");
+    TEST_ASSERT(delivered == true,
+                "aer-disp: event delivered to waiting AER");
+    TEST_ASSERT(cid_out == 0x1234,
+                "aer-disp: completion carries the originally submitted CID");
+    u32 expected_dw0 = ((u32)NVME_AER_TYPE_NOTICE & 0x7) |
+                       ((u32)NVME_AEI_NOTICE_FW_ACTIVATION_START << 8) |
+                       ((u32)NVME_LID_FW_SLOT << 16);
+    TEST_ASSERT(event_cqe.cdw0 == expected_dw0,
+                "aer-disp: event CQE DW0 packs type/info/log");
+    TEST_ASSERT(hal_aer_outstanding_count(&dev.aer) == 0,
+                "aer-disp: outstanding drained after event delivery");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Scenario B: event already buffered -> the AER admin command
+ * completes immediately, cpl carries the event DW0 and SC=SUCCESS. */
+static int test_aer_dispatch_completes_immediately_when_event_pending(void)
+{
+    printf("\n=== AER through admin dispatch: event then submit (REQ-063) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp2: dev_init");
+    ret = nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp2: dev_start");
+
+    /* Buffer an event before any AER is submitted. */
+    bool delivered = true;
+    u16  cid_out   = 0;
+    struct nvme_cq_entry ignore;
+    memset(&ignore, 0, sizeof(ignore));
+    ret = nvme_uspace_aer_post_event(&dev,
+                                     NVME_AER_TYPE_SMART_HEALTH,
+                                     NVME_AEI_SMART_SPARE_BELOW_THRESHOLD,
+                                     NVME_LID_SMART,
+                                     &delivered, &cid_out, &ignore);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp2: pre-event post_event OK");
+    TEST_ASSERT(delivered == false,
+                "aer-disp2: pre-event buffered (no AER waiting)");
+    TEST_ASSERT(hal_aer_pending_count(&dev.aer) == 1,
+                "aer-disp2: pending_count == 1");
+
+    /* Now dispatch the AER — should complete with the buffered event. */
+    struct nvme_sq_entry sq_cmd;
+    struct nvme_cq_entry cpl;
+    memset(&sq_cmd, 0, sizeof(sq_cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    sq_cmd.opcode     = NVME_ADMIN_ASYNC_EVENT;
+    sq_cmd.command_id = 0x7777;
+
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq_cmd, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK, "aer-disp2: dispatch OK");
+    u16 expected_status = NVME_BUILD_STATUS(NVME_SC_SUCCESS,
+                                            NVME_STATUS_TYPE_GENERIC);
+    TEST_ASSERT(cpl.status == expected_status,
+                "aer-disp2: cpl.status = SC=SUCCESS on immediate completion");
+    u32 expected_dw0 = ((u32)NVME_AER_TYPE_SMART_HEALTH & 0x7) |
+                       ((u32)NVME_AEI_SMART_SPARE_BELOW_THRESHOLD << 8) |
+                       ((u32)NVME_LID_SMART << 16);
+    TEST_ASSERT(cpl.cdw0 == expected_dw0,
+                "aer-disp2: cpl.cdw0 packs type/info/log from buffered event");
+    TEST_ASSERT(hal_aer_pending_count(&dev.aer) == 0,
+                "aer-disp2: pending drained by immediate submit");
+    TEST_ASSERT(hal_aer_outstanding_count(&dev.aer) == 0,
+                "aer-disp2: outstanding stays empty (immediate completion)");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     print_separator();
@@ -416,6 +761,12 @@ int main(void)
     test_sanitize_action_modes();
     test_error_log_page();
     test_error_log_production_path();
+    test_log_page_telemetry_host();
+    test_log_page_telemetry_ctrl();
+    test_log_page_vendor_counters();
+    test_log_page_unknown_lid_notsupp();
+    test_aer_dispatch_queues_then_post_event();
+    test_aer_dispatch_completes_immediately_when_event_pending();
 
     print_separator();
     printf("Test Summary\n");

@@ -4,6 +4,8 @@
 #include "pcie/nvme.h"
 #include "pcie/queue.h"
 #include "sssim.h"
+#include "common/telemetry.h"
+#include "hal/hal_aer.h"
 
 /* User-space NVMe Device Context */
 struct nvme_uspace_dev {
@@ -43,6 +45,24 @@ struct nvme_uspace_dev {
     u32  error_log_head;
     u64  error_log_count;
     struct mutex error_log_lock;
+
+    /* NVMe Telemetry Log Page backing ring (REQ-174 / REQ-175 / REQ-176).
+     * `telemetry` holds all recorded events. The generation numbers are
+     * stamped into the Telemetry Log header so the host can detect new
+     * data across polls. `last_ctrl_gen_total_events` tracks the
+     * telemetry count at the most recent controller-initiated (LID 0x08)
+     * read so the controller-initiated generation number only advances
+     * when genuinely new events have been appended. */
+    struct telemetry_log telemetry;
+    struct mutex         telemetry_lock;
+    u8                   telemetry_host_gen;
+    u8                   telemetry_ctrl_gen;
+    u64                  last_ctrl_gen_total_events;
+
+    /* NVMe AER framework (REQ-063). Holds outstanding Async Event
+     * Request CIDs and pending events produced by subsystems like
+     * thermal / wear / spare. */
+    struct hal_aer_ctx   aer;
 };
 
 /* User-space NVMe Configuration */
@@ -88,6 +108,19 @@ int nvme_uspace_get_log_page(struct nvme_uspace_dev *dev, u32 nsid, u8 lid, void
 void nvme_uspace_report_error(struct nvme_uspace_dev *dev,
                               u16 sq_id, u16 cmd_id, u16 status_field,
                               u64 lba, u32 nsid);
+
+/* Post an async event into the device's AER framework (REQ-063).
+ * If the host had an outstanding AER, it consumes the event and
+ * `*out_delivered` becomes true; `*out_cid` / `*out_cqe` receive the
+ * completion to post on the admin CQ. Otherwise the event is buffered
+ * in the pending ring. */
+int nvme_uspace_aer_post_event(struct nvme_uspace_dev *dev,
+                               enum nvme_async_event_type type,
+                               enum nvme_async_event_info info,
+                               u8 log_page_id,
+                               bool *out_delivered,
+                               u16 *out_cid,
+                               struct nvme_cq_entry *out_cqe);
 int nvme_uspace_get_features(struct nvme_uspace_dev *dev, u8 fid, u32 *value);
 int nvme_uspace_set_features(struct nvme_uspace_dev *dev, u8 fid, u32 value);
 

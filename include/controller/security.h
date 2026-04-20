@@ -69,10 +69,36 @@ int  sec_dek_unwrap(const u8 kek[SEC_KEY_LEN],
                     const u8 wrapped[SEC_WRAPPED_LEN],
                     u8 dek_out[SEC_KEY_LEN]);
 
-/* Key table management */
+/* Key table management (REQ-165).
+ *
+ * Persistence is NOR-backed with dual-copy + UPLP-safe update:
+ * each save stamps a monotonic generation number and writes to
+ * slot B first, then slot A. A crash between the two writes leaves
+ * one slot holding the new generation and the other holding the
+ * previous generation — `key_table_load` picks whichever slot has
+ * the highest generation with a valid CRC.
+ *
+ * The canonical save/load API takes `struct nor_dev *` directly;
+ * there is no file-backed path. Callers that want to persist a
+ * key table outside of NOR must serialize the struct themselves.
+ *
+ * Requires NOR_PART_KEYS to be sized to at least two 64 KB sectors.
+ */
+#define SEC_NOR_KEYS_MAGIC       0x4E4B4559U  /* "NKEY" */
+#define SEC_NOR_KEYS_SLOT_A_REL  0U
+#define SEC_NOR_KEYS_SLOT_B_REL  (64U * 1024U)  /* second NOR sector */
+
+struct key_table_nor_slot {
+    u32              slot_magic;
+    u32              generation;
+    struct key_table body;
+    u32              slot_crc32;  /* CRC over everything above */
+};
+
+struct nor_dev;
 int key_table_init(struct key_table *kt);
-int key_table_save(const struct key_table *kt, const char *filepath);
-int key_table_load(struct key_table *kt, const char *filepath);
+int key_table_save(const struct key_table *kt, struct nor_dev *nor);
+int key_table_load(struct key_table *kt, struct nor_dev *nor);
 
 /* Crypto erase */
 int crypto_erase_ns(struct key_table *kt, u32 nsid,

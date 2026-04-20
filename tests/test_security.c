@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include "common/common.h"
 #include "controller/security.h"
+#include "media/nor_flash.h"
 
 /* Test counters */
 static int total_tests = 0;
@@ -270,64 +271,32 @@ static void test_dek_unwrap_wrong_kek(void)
 /* ----------------------------------------------------------------
  * Key Table Init / Save / Load Round-Trip
  * ---------------------------------------------------------------- */
-static void test_key_table_persistence(void)
+/* Init happy path + magic/version sanity. Round-trip and corruption
+ * coverage live in the NOR-backed tests further down, where the
+ * canonical save/load APIs are exercised against real NOR state. */
+static void test_key_table_init_fields(void)
 {
     struct key_table kt_orig;
-    struct key_table kt_loaded;
-    const char *path = "/tmp/hfsss_test_keytable.bin";
     int ret;
 
     print_separator();
-    printf("Test: Key Table Init/Save/Load Round-Trip\n");
+    printf("Test: Key Table Init Fields\n");
     print_separator();
 
     ret = key_table_init(&kt_orig);
     TEST_ASSERT(ret == HFSSS_OK, "key_table_init succeeds");
     TEST_ASSERT(kt_orig.magic == SEC_KEY_MAGIC, "key table magic is correct");
     TEST_ASSERT(kt_orig.version == 1, "key table version is 1");
-
-    ret = key_table_save(&kt_orig, path);
-    TEST_ASSERT(ret == HFSSS_OK, "key_table_save succeeds");
-
-    memset(&kt_loaded, 0xFF, sizeof(kt_loaded));
-    ret = key_table_load(&kt_loaded, path);
-    TEST_ASSERT(ret == HFSSS_OK, "key_table_load succeeds");
-    TEST_ASSERT(memcmp(&kt_orig, &kt_loaded, sizeof(struct key_table)) == 0,
-                "loaded key table matches original");
-
-    unlink(path);
-    printf("\n");
-}
-
-/* ----------------------------------------------------------------
- * Key Table Load With Corrupt File
- * ---------------------------------------------------------------- */
-static void test_key_table_corrupt(void)
-{
-    struct key_table kt;
-    const char *path = "/tmp/hfsss_test_keytable_corrupt.bin";
-    FILE *fp;
-    int ret;
-
-    print_separator();
-    printf("Test: Key Table Load With Corrupt File\n");
-    print_separator();
-
-    /* Write garbage data */
-    fp = fopen(path, "wb");
-    TEST_ASSERT(fp != NULL, "create corrupt test file");
-    if (fp) {
-        u8 garbage[sizeof(struct key_table)];
-        memset(garbage, 0xDE, sizeof(garbage));
-        fwrite(garbage, sizeof(garbage), 1, fp);
-        fclose(fp);
+    for (u32 i = 0; i < SEC_MAX_NS; i++) {
+        TEST_ASSERT(kt_orig.entries[i].state == KEY_EMPTY,
+                    "entry initialized as KEY_EMPTY");
+        TEST_ASSERT(kt_orig.entries[i].nsid == 0,
+                    "entry nsid zeroed");
     }
-
-    ret = key_table_load(&kt, path);
-    TEST_ASSERT(ret == HFSSS_ERR_CRYPTO,
-                "key_table_load detects corrupt file");
-
-    unlink(path);
+    u32 expected_crc = hfsss_crc32(&kt_orig,
+                                   offsetof(struct key_table, crc32));
+    TEST_ASSERT(kt_orig.crc32 == expected_crc,
+                "body CRC covers everything except crc32 field");
     printf("\n");
 }
 
@@ -518,6 +487,269 @@ static void test_secure_boot_tampered(void)
 }
 
 /* ----------------------------------------------------------------
+ * NOR-backed key table: round-trip save/load (REQ-165)
+ * ---------------------------------------------------------------- */
+static void with_tmp_nor_dev(void (*body)(struct nor_dev *))
+{
+    char img_path[64];
+    snprintf(img_path, sizeof(img_path),
+             "/tmp/hfsss_test_nor_keys_%d.bin", (int)getpid());
+    unlink(img_path);
+
+    struct nor_dev nor;
+    int ret = nor_dev_init(&nor, img_path);
+    TEST_ASSERT(ret == HFSSS_OK, "nor-key: nor_dev_init");
+
+    body(&nor);
+
+    nor_dev_cleanup(&nor);
+    unlink(img_path);
+}
+
+static void body_nor_roundtrip(struct nor_dev *nor)
+{
+    struct key_table kt_orig;
+    struct key_table kt_loaded;
+    int ret;
+
+    ret = key_table_init(&kt_orig);
+    TEST_ASSERT(ret == HFSSS_OK, "nor-key: key_table_init");
+    kt_orig.entries[3].nsid  = 7;
+    kt_orig.entries[3].state = KEY_ACTIVE;
+    /* Recompute body CRC so save/load authenticates the mutation. */
+    kt_orig.crc32 = hfsss_crc32(&kt_orig, offsetof(struct key_table, crc32));
+
+    /* Empty-NOR load: neither slot exists yet. */
+    ret = key_table_load(&kt_loaded, nor);
+    TEST_ASSERT(ret == HFSSS_ERR_NOENT,
+                "nor-key: load_nor on blank NOR returns NOENT");
+
+    ret = key_table_save(&kt_orig, nor);
+    TEST_ASSERT(ret == HFSSS_OK, "nor-key: save_nor OK");
+
+    memset(&kt_loaded, 0xAB, sizeof(kt_loaded));
+    ret = key_table_load(&kt_loaded, nor);
+    TEST_ASSERT(ret == HFSSS_OK, "nor-key: load_nor OK after save");
+    TEST_ASSERT(memcmp(&kt_loaded, &kt_orig, sizeof(kt_orig)) == 0,
+                "nor-key: round-tripped body matches original");
+}
+
+static void test_key_table_nor_roundtrip(void)
+{
+    printf("Test: NOR-backed key table round-trip (REQ-165)\n");
+    with_tmp_nor_dev(body_nor_roundtrip);
+    printf("\n");
+}
+
+/* Helper: peek at a slot's generation field directly. */
+static u32 slot_peek_generation(struct nor_dev *nor, u32 rel_offset)
+{
+    struct key_table_nor_slot slot;
+    if (nor_partition_read(nor, NOR_PART_KEYS, rel_offset,
+                           &slot, sizeof(slot)) != HFSSS_OK) {
+        return 0;
+    }
+    if (slot.slot_magic != SEC_NOR_KEYS_MAGIC) {
+        return 0;
+    }
+    return slot.generation;
+}
+
+static void body_nor_generation_advance(struct nor_dev *nor)
+{
+    struct key_table kt;
+    key_table_init(&kt);
+
+    /* First save -> generation 1 in both slots. */
+    TEST_ASSERT(key_table_save(&kt, nor) == HFSSS_OK,
+                "nor-key: first save OK");
+    TEST_ASSERT(slot_peek_generation(nor, SEC_NOR_KEYS_SLOT_A_REL) == 1,
+                "nor-key: slot A has generation 1 after first save");
+    TEST_ASSERT(slot_peek_generation(nor, SEC_NOR_KEYS_SLOT_B_REL) == 1,
+                "nor-key: slot B has generation 1 after first save");
+
+    /* Second save -> generation 2. */
+    TEST_ASSERT(key_table_save(&kt, nor) == HFSSS_OK,
+                "nor-key: second save OK");
+    TEST_ASSERT(slot_peek_generation(nor, SEC_NOR_KEYS_SLOT_A_REL) == 2,
+                "nor-key: generation advances on each save");
+    TEST_ASSERT(slot_peek_generation(nor, SEC_NOR_KEYS_SLOT_B_REL) == 2,
+                "nor-key: both slots reach new generation after save");
+}
+
+static void test_key_table_nor_generation_advance(void)
+{
+    printf("Test: NOR key table monotonic generation (REQ-165)\n");
+    with_tmp_nor_dev(body_nor_generation_advance);
+    printf("\n");
+}
+
+/* Corrupt slot A after a save; load must recover from slot B. */
+static void body_nor_slot_a_corruption(struct nor_dev *nor)
+{
+    struct key_table kt;
+    key_table_init(&kt);
+    kt.entries[0].nsid  = 11;
+    kt.entries[0].state = KEY_ACTIVE;
+    kt.crc32 = hfsss_crc32(&kt, offsetof(struct key_table, crc32));
+    TEST_ASSERT(key_table_save(&kt, nor) == HFSSS_OK,
+                "nor-key: baseline save OK");
+
+    /* Destroy slot A: rewrite its magic header with garbage by
+     * erasing its sector (blank NOR has magic 0xFFFFFFFF). */
+    u32 part_off = 0;
+    nor_get_partition(NOR_PART_KEYS, &part_off, NULL);
+    TEST_ASSERT(nor_write_enable(nor) == HFSSS_OK,
+                "nor-key: write_enable before manual corrupt");
+    TEST_ASSERT(nor_sector_erase(nor,
+                                 (u64)part_off + SEC_NOR_KEYS_SLOT_A_REL) == HFSSS_OK,
+                "nor-key: slot A erase (corruption)");
+    TEST_ASSERT(slot_peek_generation(nor, SEC_NOR_KEYS_SLOT_A_REL) == 0,
+                "nor-key: slot A now blank/invalid");
+    TEST_ASSERT(slot_peek_generation(nor, SEC_NOR_KEYS_SLOT_B_REL) != 0,
+                "nor-key: slot B still intact");
+
+    struct key_table kt_loaded;
+    memset(&kt_loaded, 0, sizeof(kt_loaded));
+    TEST_ASSERT(key_table_load(&kt_loaded, nor) == HFSSS_OK,
+                "nor-key: load still OK after slot A corrupted");
+    TEST_ASSERT(memcmp(&kt_loaded, &kt, sizeof(kt)) == 0,
+                "nor-key: slot B recovered the saved body");
+}
+
+static void test_key_table_nor_slot_a_corruption_falls_back_to_b(void)
+{
+    printf("Test: NOR key table slot-A corruption recovery (REQ-165)\n");
+    with_tmp_nor_dev(body_nor_slot_a_corruption);
+    printf("\n");
+}
+
+/* Corrupt slot B; load should still succeed from slot A. */
+static void body_nor_slot_b_corruption(struct nor_dev *nor)
+{
+    struct key_table kt;
+    key_table_init(&kt);
+    kt.entries[1].nsid  = 22;
+    kt.entries[1].state = KEY_ACTIVE;
+    kt.crc32 = hfsss_crc32(&kt, offsetof(struct key_table, crc32));
+    TEST_ASSERT(key_table_save(&kt, nor) == HFSSS_OK,
+                "nor-key: baseline save OK");
+
+    u32 part_off = 0;
+    nor_get_partition(NOR_PART_KEYS, &part_off, NULL);
+    nor_write_enable(nor);
+    nor_sector_erase(nor, (u64)part_off + SEC_NOR_KEYS_SLOT_B_REL);
+
+    struct key_table kt_loaded;
+    memset(&kt_loaded, 0, sizeof(kt_loaded));
+    TEST_ASSERT(key_table_load(&kt_loaded, nor) == HFSSS_OK,
+                "nor-key: load OK after slot B corrupted");
+    TEST_ASSERT(memcmp(&kt_loaded, &kt, sizeof(kt)) == 0,
+                "nor-key: slot A recovered the saved body");
+}
+
+static void test_key_table_nor_slot_b_corruption_still_loads_a(void)
+{
+    printf("Test: NOR key table slot-B corruption recovery (REQ-165)\n");
+    with_tmp_nor_dev(body_nor_slot_b_corruption);
+    printf("\n");
+}
+
+/* Both slots corrupt -> load returns NOENT. */
+static void body_nor_both_corrupt(struct nor_dev *nor)
+{
+    struct key_table kt;
+    key_table_init(&kt);
+    TEST_ASSERT(key_table_save(&kt, nor) == HFSSS_OK,
+                "nor-key: baseline save OK");
+
+    u32 part_off = 0;
+    nor_get_partition(NOR_PART_KEYS, &part_off, NULL);
+    nor_write_enable(nor);
+    nor_sector_erase(nor, (u64)part_off + SEC_NOR_KEYS_SLOT_A_REL);
+    nor_write_enable(nor);
+    nor_sector_erase(nor, (u64)part_off + SEC_NOR_KEYS_SLOT_B_REL);
+
+    struct key_table kt_loaded;
+    TEST_ASSERT(key_table_load(&kt_loaded, nor) == HFSSS_ERR_NOENT,
+                "nor-key: both-slots-corrupt returns NOENT");
+}
+
+static void test_key_table_nor_both_corrupt(void)
+{
+    printf("Test: NOR key table both slots corrupt (REQ-165)\n");
+    with_tmp_nor_dev(body_nor_both_corrupt);
+    printf("\n");
+}
+
+/* Simulate a crash between slot B and slot A writes: slot B should
+ * hold the new generation, slot A the previous. Load must pick the
+ * higher generation. */
+static void body_nor_interrupted_save(struct nor_dev *nor)
+{
+    /* Baseline save puts gen=1 into both slots. */
+    struct key_table kt_old;
+    key_table_init(&kt_old);
+    kt_old.entries[5].nsid = 99;
+    kt_old.entries[5].state = KEY_SUSPENDED;
+    kt_old.crc32 = hfsss_crc32(&kt_old, offsetof(struct key_table, crc32));
+    TEST_ASSERT(key_table_save(&kt_old, nor) == HFSSS_OK,
+                "nor-key: baseline gen=1 save OK");
+    TEST_ASSERT(slot_peek_generation(nor, SEC_NOR_KEYS_SLOT_A_REL) == 1,
+                "nor-key: slot A starts at gen=1");
+
+    /* Prepare a new table that WOULD be gen=2 after save. */
+    struct key_table kt_new;
+    key_table_init(&kt_new);
+    kt_new.entries[5].nsid = 100;
+    kt_new.entries[5].state = KEY_ACTIVE;
+    kt_new.crc32 = hfsss_crc32(&kt_new, offsetof(struct key_table, crc32));
+
+    /* Manually reproduce the "slot B updated, slot A still old"
+     * intermediate state. Build a slot record for kt_new with gen=2
+     * and program it into slot B only. */
+    struct key_table_nor_slot crash_slot;
+    memset(&crash_slot, 0, sizeof(crash_slot));
+    crash_slot.slot_magic = SEC_NOR_KEYS_MAGIC;
+    crash_slot.generation = 2;
+    crash_slot.body       = kt_new;
+    crash_slot.slot_crc32 = hfsss_crc32(
+        &crash_slot, offsetof(struct key_table_nor_slot, slot_crc32));
+
+    u32 part_off = 0;
+    nor_get_partition(NOR_PART_KEYS, &part_off, NULL);
+    nor_write_enable(nor);
+    nor_sector_erase(nor, (u64)part_off + SEC_NOR_KEYS_SLOT_B_REL);
+    nor_write_enable(nor);
+    TEST_ASSERT(nor_partition_write(nor, NOR_PART_KEYS,
+                                    SEC_NOR_KEYS_SLOT_B_REL,
+                                    &crash_slot,
+                                    sizeof(crash_slot)) == HFSSS_OK,
+                "nor-key: manually wrote gen=2 to slot B (simulated crash)");
+    TEST_ASSERT(slot_peek_generation(nor, SEC_NOR_KEYS_SLOT_A_REL) == 1,
+                "nor-key: slot A still at gen=1 (pre-crash)");
+    TEST_ASSERT(slot_peek_generation(nor, SEC_NOR_KEYS_SLOT_B_REL) == 2,
+                "nor-key: slot B at gen=2 (post-partial-save)");
+
+    /* Load should pick gen=2 (the newer). */
+    struct key_table kt_loaded;
+    memset(&kt_loaded, 0, sizeof(kt_loaded));
+    TEST_ASSERT(key_table_load(&kt_loaded, nor) == HFSSS_OK,
+                "nor-key: load picks higher gen after crash");
+    TEST_ASSERT(kt_loaded.entries[5].nsid == 100,
+                "nor-key: loaded body is kt_new (highest gen wins)");
+    TEST_ASSERT(kt_loaded.entries[5].state == KEY_ACTIVE,
+                "nor-key: loaded state matches kt_new");
+}
+
+static void test_key_table_nor_interrupted_save(void)
+{
+    printf("Test: NOR key table interrupted save / crash recovery (REQ-165)\n");
+    with_tmp_nor_dev(body_nor_interrupted_save);
+    printf("\n");
+}
+
+/* ----------------------------------------------------------------
  * Main
  * ---------------------------------------------------------------- */
 int main(void)
@@ -534,12 +766,17 @@ int main(void)
     test_hkdf_derivation();
     test_dek_wrap_unwrap();
     test_dek_unwrap_wrong_kek();
-    test_key_table_persistence();
-    test_key_table_corrupt();
+    test_key_table_init_fields();
     test_crypto_erase();
     test_crypto_erase_data_loss();
     test_secure_boot_valid();
     test_secure_boot_tampered();
+    test_key_table_nor_roundtrip();
+    test_key_table_nor_generation_advance();
+    test_key_table_nor_slot_a_corruption_falls_back_to_b();
+    test_key_table_nor_slot_b_corruption_still_loads_a();
+    test_key_table_nor_both_corrupt();
+    test_key_table_nor_interrupted_save();
 
     print_separator();
     printf("Test Summary\n");

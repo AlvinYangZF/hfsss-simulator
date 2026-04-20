@@ -11,6 +11,8 @@
  */
 
 #include "controller/security.h"
+#include "media/nor_flash.h"
+#include <stddef.h>
 
 /* ----------------------------------------------------------------
  * AES-XTS Simulation (XOR-based)
@@ -238,60 +240,133 @@ int key_table_init(struct key_table *kt)
     return HFSSS_OK;
 }
 
-int key_table_save(const struct key_table *kt, const char *filepath)
-{
-    FILE *fp;
+/* ----------------------------------------------------------------
+ * NOR-backed Key Table (REQ-165)
+ *
+ * The persistent store for the key table lives in NOR_PART_KEYS;
+ * there is no file-backed fallback. Layout inside NOR_PART_KEYS:
+ *   [ 0,       64KB) — slot A
+ *   [64KB,   128KB) — slot B
+ * Each slot holds a `struct key_table_nor_slot` whose outer CRC
+ * authenticates the 2176-byte record. Generation numbers are
+ * monotonic so readers can pick the newest valid slot even after
+ * an interrupted save leaves the two slots disagreeing.
+ * ---------------------------------------------------------------- */
 
-    if (!kt || !filepath) {
+/* Build outer CRC over everything except the trailing slot_crc32 word. */
+static u32 key_slot_compute_crc(const struct key_table_nor_slot *slot)
+{
+    return hfsss_crc32(slot, offsetof(struct key_table_nor_slot, slot_crc32));
+}
+
+/* Return slot generation if the slot is valid (magic + both CRCs
+ * match), or 0 if invalid/blank. Generation 0 is reserved to mean
+ * "never written" — the first save stamps generation 1. */
+static u32 key_slot_read_if_valid(struct nor_dev *nor, u32 rel_offset,
+                                  struct key_table_nor_slot *out)
+{
+    if (nor_partition_read(nor, NOR_PART_KEYS, rel_offset,
+                           out, sizeof(*out)) != HFSSS_OK) {
+        return 0;
+    }
+    if (out->slot_magic != SEC_NOR_KEYS_MAGIC) {
+        return 0;
+    }
+    if (out->generation == 0) {
+        return 0;
+    }
+    if (key_slot_compute_crc(out) != out->slot_crc32) {
+        return 0;
+    }
+    u32 body_crc = hfsss_crc32(&out->body,
+                               offsetof(struct key_table, crc32));
+    if (body_crc != out->body.crc32) {
+        return 0;
+    }
+    return out->generation;
+}
+
+/* Erase the NOR sector containing the given partition-relative offset
+ * and reprogram it with `slot`. Called once per copy. Returns the
+ * status of the first failing NOR op, or HFSSS_OK. */
+static int key_slot_write(struct nor_dev *nor, u32 rel_offset,
+                          const struct key_table_nor_slot *slot)
+{
+    u32 part_offset = 0;
+    int ret = nor_get_partition(NOR_PART_KEYS, &part_offset, NULL);
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+    ret = nor_write_enable(nor);
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+    ret = nor_sector_erase(nor, (u64)part_offset + rel_offset);
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+    ret = nor_write_enable(nor);
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+    return nor_partition_write(nor, NOR_PART_KEYS, rel_offset,
+                               slot, sizeof(*slot));
+}
+
+int key_table_save(const struct key_table *kt, struct nor_dev *nor)
+{
+    if (!kt || !nor) {
         return HFSSS_ERR_INVAL;
     }
 
-    fp = fopen(filepath, "wb");
-    if (!fp) {
-        return HFSSS_ERR_IO;
+    /* Look up current generation numbers so the new save strictly
+     * supersedes whatever's there. */
+    struct key_table_nor_slot probe;
+    u32 gen_a = key_slot_read_if_valid(nor, SEC_NOR_KEYS_SLOT_A_REL, &probe);
+    u32 gen_b = key_slot_read_if_valid(nor, SEC_NOR_KEYS_SLOT_B_REL, &probe);
+    u32 max_gen = (gen_a > gen_b) ? gen_a : gen_b;
+    u32 new_gen = max_gen + 1;
+
+    /* Assemble the outgoing slot once; both physical copies are
+     * byte-for-byte identical aside from their NOR offset. */
+    struct key_table_nor_slot slot;
+    memset(&slot, 0, sizeof(slot));
+    slot.slot_magic = SEC_NOR_KEYS_MAGIC;
+    slot.generation = new_gen;
+    slot.body       = *kt;
+    slot.slot_crc32 = key_slot_compute_crc(&slot);
+
+    /* Slot B first: an interrupted save leaves A with the old (but
+     * valid) generation so load can still recover. Then slot A. */
+    int ret = key_slot_write(nor, SEC_NOR_KEYS_SLOT_B_REL, &slot);
+    if (ret != HFSSS_OK) {
+        return ret;
+    }
+    ret = key_slot_write(nor, SEC_NOR_KEYS_SLOT_A_REL, &slot);
+    if (ret != HFSSS_OK) {
+        return ret;
     }
 
-    if (fwrite(kt, sizeof(*kt), 1, fp) != 1) {
-        fclose(fp);
-        return HFSSS_ERR_IO;
-    }
-
-    fclose(fp);
     return HFSSS_OK;
 }
 
-int key_table_load(struct key_table *kt, const char *filepath)
+int key_table_load(struct key_table *kt, struct nor_dev *nor)
 {
-    FILE *fp;
-    u32 computed_crc;
-
-    if (!kt || !filepath) {
+    if (!kt || !nor) {
         return HFSSS_ERR_INVAL;
     }
 
-    fp = fopen(filepath, "rb");
-    if (!fp) {
-        return HFSSS_ERR_IO;
+    struct key_table_nor_slot slot_a;
+    struct key_table_nor_slot slot_b;
+    u32 gen_a = key_slot_read_if_valid(nor, SEC_NOR_KEYS_SLOT_A_REL, &slot_a);
+    u32 gen_b = key_slot_read_if_valid(nor, SEC_NOR_KEYS_SLOT_B_REL, &slot_b);
+
+    if (gen_a == 0 && gen_b == 0) {
+        return HFSSS_ERR_NOENT;
     }
 
-    if (fread(kt, sizeof(*kt), 1, fp) != 1) {
-        fclose(fp);
-        return HFSSS_ERR_IO;
-    }
-
-    fclose(fp);
-
-    /* Verify magic */
-    if (kt->magic != SEC_KEY_MAGIC) {
-        return HFSSS_ERR_CRYPTO;
-    }
-
-    /* Verify CRC32 */
-    computed_crc = hfsss_crc32(kt, offsetof(struct key_table, crc32));
-    if (computed_crc != kt->crc32) {
-        return HFSSS_ERR_CRYPTO;
-    }
-
+    const struct key_table_nor_slot *src = (gen_a >= gen_b) ? &slot_a : &slot_b;
+    *kt = src->body;
     return HFSSS_OK;
 }
 

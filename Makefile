@@ -547,9 +547,9 @@ $(TEST_QOS): $(TEST_DIR)/test_qos.c $(LIBHFSSS_CTRL) $(LIBHFSSS_FTL) $(LIBHFSSS_
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-controller -lhfsss-ftl -lhfsss-common -lm $(LDFLAGS)
 
-$(TEST_SECURITY): $(TEST_DIR)/test_security.c $(LIBHFSSS_CTRL) $(LIBHFSSS_COMMON)
+$(TEST_SECURITY): $(TEST_DIR)/test_security.c $(LIBHFSSS_CTRL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
-	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-controller -lhfsss-common $(LDFLAGS)
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-controller -lhfsss-media -lhfsss-common $(LDFLAGS)
 
 $(TEST_MULTI_NS): $(TEST_DIR)/test_multi_ns.c $(LIBHFSSS_FTL) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"

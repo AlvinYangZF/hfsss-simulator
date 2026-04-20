@@ -5,6 +5,7 @@
 #include "common/log.h"
 #include "media/media.h"
 #include "hal/hal.h"
+#include "hal/hal_aer.h"
 
 #define TEST_PASS 0
 #define TEST_FAIL 1
@@ -329,6 +330,166 @@ static int test_hal(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* ==================== REQ-063 AER Tests ==================== */
+
+/* Scenario A: AER submitted first, event posted later -> event
+ * consumes outstanding CID, caller gets the completion on post. */
+static int test_aer_submit_then_event(void)
+{
+    printf("\n=== AER: submit-then-event (REQ-063) ===\n");
+    struct hal_aer_ctx aer;
+    TEST_ASSERT(hal_aer_init(&aer) == HFSSS_OK, "aer: init");
+
+    bool immediate = true;  /* start true so we know it gets overwritten */
+    struct nvme_aer_completion c;
+    int rc = hal_aer_submit_request(&aer, 0xA001, &immediate, &c);
+    TEST_ASSERT(rc == HFSSS_OK, "aer: submit returns OK");
+    TEST_ASSERT(immediate == false,
+                "aer: submit before any event is not immediate");
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == 1,
+                "aer: outstanding_count == 1 after submit");
+    TEST_ASSERT(hal_aer_pending_count(&aer) == 0,
+                "aer: no pending events yet");
+
+    bool delivered = false;
+    rc = hal_aer_post_event(&aer, NVME_AER_TYPE_SMART_HEALTH,
+                            NVME_AEI_SMART_TEMPERATURE_THRESHOLD, 0x02,
+                            &delivered, &c);
+    TEST_ASSERT(rc == HFSSS_OK, "aer: post returns OK");
+    TEST_ASSERT(delivered == true,
+                "aer: post delivers to waiting AER (immediate completion)");
+    TEST_ASSERT(c.cid == 0xA001,
+                "aer: completion carries the submitted CID");
+    /* DW0 encoding: type<<0 | info<<8 | log<<16 */
+    u32 expected_dw0 = ((u32)NVME_AER_TYPE_SMART_HEALTH) |
+                       ((u32)NVME_AEI_SMART_TEMPERATURE_THRESHOLD << 8) |
+                       ((u32)0x02 << 16);
+    TEST_ASSERT(c.cqe.cdw0 == expected_dw0,
+                "aer: CQE DW0 packs type/info/log per NVMe spec");
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == 0,
+                "aer: outstanding drained by matching event");
+
+    hal_aer_cleanup(&aer);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Scenario B: Event posted first, AER submitted later -> pending ring
+ * holds event, next submit completes immediately. */
+static int test_aer_event_then_submit(void)
+{
+    printf("\n=== AER: event-then-submit (REQ-063) ===\n");
+    struct hal_aer_ctx aer;
+    hal_aer_init(&aer);
+
+    bool delivered = true;  /* start true to verify override */
+    struct nvme_aer_completion c;
+    int rc = hal_aer_post_event(&aer, NVME_AER_TYPE_ERROR,
+                                NVME_AEI_SMART_NVM_SUBSYS_RELIABILITY, 0x01,
+                                &delivered, &c);
+    TEST_ASSERT(rc == HFSSS_OK, "aer: post OK with no outstanding AER");
+    TEST_ASSERT(delivered == false,
+                "aer: post not delivered -> event buffered in ring");
+    TEST_ASSERT(hal_aer_pending_count(&aer) == 1,
+                "aer: pending_count == 1 after buffered event");
+
+    bool immediate = false;
+    rc = hal_aer_submit_request(&aer, 0xB002, &immediate, &c);
+    TEST_ASSERT(rc == HFSSS_OK, "aer: submit OK after buffered event");
+    TEST_ASSERT(immediate == true,
+                "aer: submit completes immediately when pending non-empty");
+    TEST_ASSERT(c.cid == 0xB002,
+                "aer: immediate completion carries caller CID");
+    TEST_ASSERT((c.cqe.cdw0 & 0x7) == NVME_AER_TYPE_ERROR,
+                "aer: CQE type bits match posted event");
+    TEST_ASSERT(hal_aer_pending_count(&aer) == 0,
+                "aer: pending drained by matching submit");
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == 0,
+                "aer: outstanding empty after immediate completion");
+
+    hal_aer_cleanup(&aer);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Submit 16 AERs -> all queued. 17th returns NOSPC. */
+static int test_aer_outstanding_overflow(void)
+{
+    printf("\n=== AER: outstanding overflow (REQ-063) ===\n");
+    struct hal_aer_ctx aer;
+    hal_aer_init(&aer);
+
+    struct nvme_aer_completion c;
+    bool immediate;
+    for (u32 i = 0; i < AER_REQUEST_MAX; i++) {
+        int rc = hal_aer_submit_request(&aer, (u16)(0x1000 + i),
+                                        &immediate, &c);
+        TEST_ASSERT(rc == HFSSS_OK && !immediate,
+                    "aer: submit #N queued OK while under limit");
+    }
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == AER_REQUEST_MAX,
+                "aer: outstanding_count reaches AER_REQUEST_MAX");
+
+    int rc = hal_aer_submit_request(&aer, 0xFFFE, &immediate, &c);
+    TEST_ASSERT(rc == HFSSS_ERR_NOSPC,
+                "aer: 17th submit returns NOSPC");
+
+    hal_aer_cleanup(&aer);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Controller reset drains outstanding AERs with SC=COMMAND ABORTED. */
+static int test_aer_abort_on_reset(void)
+{
+    printf("\n=== AER: abort_pending on reset (REQ-063) ===\n");
+    struct hal_aer_ctx aer;
+    hal_aer_init(&aer);
+
+    bool immediate;
+    struct nvme_aer_completion ignore;
+    hal_aer_submit_request(&aer, 0x2001, &immediate, &ignore);
+    hal_aer_submit_request(&aer, 0x2002, &immediate, &ignore);
+    hal_aer_submit_request(&aer, 0x2003, &immediate, &ignore);
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == 3,
+                "aer: 3 AERs outstanding before abort");
+
+    struct nvme_aer_completion aborts[4];
+    u32 n = hal_aer_abort_pending(&aer, aborts, 4);
+    TEST_ASSERT(n == 3, "aer: abort returns count of aborted AERs");
+    TEST_ASSERT(hal_aer_outstanding_count(&aer) == 0,
+                "aer: outstanding empty after abort");
+    /* Completions should carry SC=CMD_ABORT_REQUESTED. */
+    u16 expected = NVME_BUILD_STATUS(NVME_SC_CMD_ABORT_REQUESTED,
+                                     NVME_STATUS_TYPE_GENERIC);
+    TEST_ASSERT(aborts[0].cqe.status == expected,
+                "aer: abort CQE carries SC=0x07 (CMD_ABORT_REQUESTED)");
+    TEST_ASSERT(aborts[0].cid == 0x2001,
+                "aer: abort preserves FIFO order (first-in first aborted)");
+    TEST_ASSERT(aborts[1].cid == 0x2002,
+                "aer: abort second CID matches second submit");
+    TEST_ASSERT(aborts[2].cid == 0x2003,
+                "aer: abort third CID matches third submit");
+
+    hal_aer_cleanup(&aer);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* DW0 encoding golden vector. */
+static int test_aer_dw0_encoding(void)
+{
+    printf("\n=== AER: DW0 encoding (REQ-063) ===\n");
+    u32 dw0 = hal_aer_dw0_encode(NVME_AER_TYPE_SMART_HEALTH,
+                                 NVME_AEI_SMART_SPARE_BELOW_THRESHOLD,
+                                 0x02 /* SMART log */);
+    TEST_ASSERT((dw0 & 0x7) == NVME_AER_TYPE_SMART_HEALTH,
+                "aer: DW0 bits[2:0] = type");
+    TEST_ASSERT(((dw0 >> 8) & 0xFF) == NVME_AEI_SMART_SPARE_BELOW_THRESHOLD,
+                "aer: DW0 bits[15:8] = info");
+    TEST_ASSERT(((dw0 >> 16) & 0xFF) == 0x02,
+                "aer: DW0 bits[23:16] = log page id");
+    TEST_ASSERT((dw0 >> 24) == 0,
+                "aer: DW0 bits[31:24] remain zero (reserved)");
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -345,6 +506,11 @@ int main(void)
     test_hal_power();
     test_hal_pci();
     test_hal();
+    test_aer_submit_then_event();
+    test_aer_event_then_submit();
+    test_aer_outstanding_overflow();
+    test_aer_abort_on_reset();
+    test_aer_dw0_encoding();
 
     printf("\n========================================\n");
     printf("Test Summary\n");

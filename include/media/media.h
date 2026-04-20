@@ -63,11 +63,22 @@ struct media_ctx {
     struct media_stats stats;
     struct mutex lock;
     bool initialized;
+    /* Optional fault injection registry (REQ-132). When NULL, all
+     * NAND ops run unaltered. When attached, media_nand_read/program/
+     * erase consult fault_check() on their first line and surface any
+     * hit as HFSSS_ERR_IO before reaching the NAND command engine. */
+    struct fault_registry *faults;
 };
 
 /* Function Prototypes */
 int media_init(struct media_ctx *ctx, struct media_config *config);
 void media_cleanup(struct media_ctx *ctx);
+
+/* Attach or detach a fault injection registry (REQ-132). Pass NULL
+ * to detach. Must be called after media_init(). */
+struct fault_registry;
+void media_attach_fault_registry(struct media_ctx *ctx,
+                                 struct fault_registry *reg);
 int media_nand_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page, void *data,
                     void *spare);
 int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane, u32 block, u32 page,
