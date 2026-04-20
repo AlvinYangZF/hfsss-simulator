@@ -121,6 +121,33 @@ int nvme_uspace_aer_post_event(struct nvme_uspace_dev *dev,
                                bool *out_delivered,
                                u16 *out_cid,
                                struct nvme_cq_entry *out_cqe);
+
+/* Controller-side convenience bridges (REQ-178). These record a
+ * telemetry event into dev->telemetry AND post the appropriate AER,
+ * matching NVMe §5.2 semantics for SMART/Health asynchronous events.
+ *
+ *   aer_notify_thermal(dev, level)  – SMART temperature threshold AER
+ *   aer_notify_wear   (dev, pct)    – NVM subsystem reliability AER
+ *   aer_notify_spare  (dev, pct)    – Spare below threshold AER
+ *
+ * `level` uses THERMAL_LEVEL_* from common/thermal.h. `pct` is the
+ * current remaining-life / spare percentage (0-100). The optional
+ * `out_*` parameters mirror nvme_uspace_aer_post_event. */
+int nvme_uspace_aer_notify_thermal(struct nvme_uspace_dev *dev,
+                                   u8 thermal_level,
+                                   bool *out_delivered,
+                                   u16 *out_cid,
+                                   struct nvme_cq_entry *out_cqe);
+int nvme_uspace_aer_notify_wear(struct nvme_uspace_dev *dev,
+                                u8 remaining_life_pct,
+                                bool *out_delivered,
+                                u16 *out_cid,
+                                struct nvme_cq_entry *out_cqe);
+int nvme_uspace_aer_notify_spare(struct nvme_uspace_dev *dev,
+                                 u8 spare_pct,
+                                 bool *out_delivered,
+                                 u16 *out_cid,
+                                 struct nvme_cq_entry *out_cqe);
 int nvme_uspace_get_features(struct nvme_uspace_dev *dev, u8 fid, u32 *value);
 int nvme_uspace_set_features(struct nvme_uspace_dev *dev, u8 fid, u32 value);
 

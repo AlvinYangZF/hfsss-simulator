@@ -171,6 +171,123 @@ int nvme_uspace_aer_post_event(struct nvme_uspace_dev *dev,
     return HFSSS_OK;
 }
 
+/* Record a telemetry event under dev->telemetry_lock so the Log Page
+ * 07h/08h dispatch (REQ-174/175/176) sees the payload consistently. */
+static void aer_record_telemetry(struct nvme_uspace_dev *dev,
+                                 enum tel_event_type type, u8 severity,
+                                 const void *payload, u32 payload_len)
+{
+    mutex_lock(&dev->telemetry_lock, 0);
+    telemetry_record(&dev->telemetry, type, severity, payload, payload_len);
+    mutex_unlock(&dev->telemetry_lock);
+}
+
+int nvme_uspace_aer_notify_thermal(struct nvme_uspace_dev *dev,
+                                   u8 thermal_level,
+                                   bool *out_delivered,
+                                   u16 *out_cid,
+                                   struct nvme_cq_entry *out_cqe)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Map thermal level to telemetry severity. */
+    u8 severity = 0;
+    if (thermal_level >= 4) {        /* SHUTDOWN */
+        severity = 3;
+    } else if (thermal_level >= 3) { /* HEAVY */
+        severity = 2;
+    } else if (thermal_level >= 1) { /* LIGHT / MODERATE */
+        severity = 1;
+    }
+    aer_record_telemetry(dev, TEL_EVENT_THERMAL, severity,
+                         &thermal_level, sizeof(thermal_level));
+
+    bool local_delivered = false;
+    u16  local_cid       = 0;
+    struct nvme_cq_entry local_cqe;
+    memset(&local_cqe, 0, sizeof(local_cqe));
+    int rc = nvme_uspace_aer_post_event(dev,
+                                        NVME_AER_TYPE_SMART_HEALTH,
+                                        NVME_AEI_SMART_TEMPERATURE_THRESHOLD,
+                                        NVME_LID_SMART,
+                                        &local_delivered, &local_cid,
+                                        &local_cqe);
+    if (out_delivered) *out_delivered = local_delivered;
+    if (out_cid && local_delivered) *out_cid = local_cid;
+    if (out_cqe && local_delivered) *out_cqe = local_cqe;
+    return rc;
+}
+
+int nvme_uspace_aer_notify_wear(struct nvme_uspace_dev *dev,
+                                u8 remaining_life_pct,
+                                bool *out_delivered,
+                                u16 *out_cid,
+                                struct nvme_cq_entry *out_cqe)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* Severity climbs as life drops. 3=critical (<5%), 2=warn, 1=info. */
+    u8 severity = 0;
+    if (remaining_life_pct < 5) {
+        severity = 3;
+    } else if (remaining_life_pct < 10) {
+        severity = 2;
+    } else if (remaining_life_pct < 25) {
+        severity = 1;
+    }
+    aer_record_telemetry(dev, TEL_EVENT_WEAR, severity,
+                         &remaining_life_pct, sizeof(remaining_life_pct));
+
+    bool local_delivered = false;
+    u16  local_cid       = 0;
+    struct nvme_cq_entry local_cqe;
+    memset(&local_cqe, 0, sizeof(local_cqe));
+    int rc = nvme_uspace_aer_post_event(dev,
+                                        NVME_AER_TYPE_SMART_HEALTH,
+                                        NVME_AEI_SMART_NVM_SUBSYS_RELIABILITY,
+                                        NVME_LID_SMART,
+                                        &local_delivered, &local_cid,
+                                        &local_cqe);
+    if (out_delivered) *out_delivered = local_delivered;
+    if (out_cid && local_delivered) *out_cid = local_cid;
+    if (out_cqe && local_delivered) *out_cqe = local_cqe;
+    return rc;
+}
+
+int nvme_uspace_aer_notify_spare(struct nvme_uspace_dev *dev,
+                                 u8 spare_pct,
+                                 bool *out_delivered,
+                                 u16 *out_cid,
+                                 struct nvme_cq_entry *out_cqe)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    u8 severity = (spare_pct < 10) ? 2 : 1;
+    aer_record_telemetry(dev, TEL_EVENT_SPARE, severity,
+                         &spare_pct, sizeof(spare_pct));
+
+    bool local_delivered = false;
+    u16  local_cid       = 0;
+    struct nvme_cq_entry local_cqe;
+    memset(&local_cqe, 0, sizeof(local_cqe));
+    int rc = nvme_uspace_aer_post_event(dev,
+                                        NVME_AER_TYPE_SMART_HEALTH,
+                                        NVME_AEI_SMART_SPARE_BELOW_THRESHOLD,
+                                        NVME_LID_SMART,
+                                        &local_delivered, &local_cid,
+                                        &local_cqe);
+    if (out_delivered) *out_delivered = local_delivered;
+    if (out_cid && local_delivered) *out_cid = local_cid;
+    if (out_cqe && local_delivered) *out_cqe = local_cqe;
+    return rc;
+}
+
 int nvme_uspace_dev_start(struct nvme_uspace_dev *dev)
 {
     if (!dev || !dev->initialized) {

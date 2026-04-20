@@ -43,9 +43,9 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
 | Enterprise: Security | 7 | 6 | 1 | 0 | 0 | 85.7% (100% partial) | ↑ AES-XTS sim, keys, crypto erase, sanitize action modes, secure-boot-verify wired into POST, NOR-backed dual-copy UPLP-safe key table; only TCG-Opal command parsing (REQ-161) remains ⚠️ |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
-| Enterprise: Thermal/Telemetry | 8 | 7 | 1 | 0 | 0 | 87.5% (100% partial) | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch; AER (REQ-178) still ⚠️ pending REQ-063 |
-| **Enterprise Subtotal** | **40** | **33** | **7** | **0** | **0** | **82.5%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **127** | **27** | **23** | **1** | **71.3%** (86.5% partial) | ↑ from 38.8% |
+| Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER (temp/wear/spare) |
+| **Enterprise Subtotal** | **40** | **34** | **6** | **0** | **0** | **85.0%** (100% partial) | ↑ from 0% |
+| **Grand Total** | **178** | **128** | **26** | **23** | **1** | **71.9%** (86.5% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -309,7 +309,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-175 | Controller-initiated telemetry (Log Page 08h) | ✅ | Same serializer as LID 0x07 but `ctrl_data_available` tracks ring non-emptiness and `ctrl_gen_number` only advances when new events appear since the last poll. **Caveat**: same producer gap as REQ-174 until Tier-C notifiers land. |
 | REQ-176 | Vendor-specific log page (internal counters) | ✅ | LID 0xC0 returns `struct nvme_vendor_log_counters` (magic/total_events/events_in_ring + per-type counts over `enum tel_event_type`) for `hfsss-ctrl` and test introspection. **Caveat**: counters reflect whatever is recorded in `dev->telemetry`; in production they stay zero until Tier-C wires the AER-notify producers. |
 | REQ-177 | SMART remaining life prediction (PE+WAF trend) | ✅ | `smart_predict_life` computes `remaining_life_pct`/`waf`/`avg_erase_count` in `telemetry.c` |
-| REQ-178 | Async event notification (temp/spare/reliability AER) | ⚠️ | Event ring covers temperature/wear/spare paths; NVMe AER delivery depends on REQ-063 completion |
+| REQ-178 | Async event notification (temp/spare/reliability AER) | ✅ | `nvme_uspace_aer_notify_thermal/wear/spare()` bridge thermal / wear / spare signals into the AER framework (REQ-063). Each notifier records a telemetry event (severity scaled by threshold) and posts the right SMART AER: TEMPERATURE_THRESHOLD (0x01), NVM_SUBSYS_RELIABILITY (0x00), SPARE_BELOW_THRESHOLD (0x02). Covered end-to-end by `tests/test_nvme_uspace.c::test_aer_notify_*`. |
 
 ---
 

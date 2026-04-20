@@ -265,7 +265,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-175 | Controller-initiated telemetry (Log Page 08h) | 12.7.3 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Implemented |
 | REQ-176 | Vendor-specific log page | 12.7.4 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Implemented |
 | REQ-177 | SMART remaining life prediction | 12.7.5 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Implemented |
-| REQ-178 | Async event notification (AER for temp/spare) | 12.7.6 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Partial |
+| REQ-178 | Async event notification (AER for temp/spare) | 12.7.6 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | Implemented |
 ---
 
 ## Coverage Summary
@@ -287,8 +287,8 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Security | 7 | 6 | 1 | 0 | 0 | 85.7% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
-| Enterprise: Thermal/Telemetry | 8 | 7 | 1 | 0 | 0 | 87.5% |
-| **Total** | **178** | **127** | **27** | **1** | **23** | **71.3%** |
+| Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100.0% |
+| **Total** | **178** | **128** | **26** | **1** | **23** | **71.9%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 
@@ -303,7 +303,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | T10 DIF/PI (Data Integrity) | 12.3 | 5 | REQ-154..158 | HLD_01, HLD_06 | LLD_11 | TEST_LLD_01, TEST_LLD_06 | ⚠️ Partial (3 ✅ / 2 ⚠️) — CRC-16 types 1/2/3 done; GC propagation + error log page pending |
 | Data-at-Rest Encryption / Security | 12.4 | 7 | REQ-159..165 | HLD_03, HLD_04, HLD_05 | LLD_19 | TEST_LLD_03, TEST_LLD_04, TEST_LLD_05 | ⚠️ Partial (6 ✅ / 1 ⚠️) — AES-XTS sim, key hierarchy, crypto erase, sanitize action modes, secure-boot wiring, NOR-backed dual-copy key table ✅; only TCG Opal command parsing pending |
 | Multi-Namespace Management | 12.5 | 5 | REQ-166..170 | HLD_01, HLD_06 | LLD_01, LLD_06 | TEST_LLD_01, TEST_LLD_06 | ✅ Implemented (5/5) |
-| Thermal Management & Telemetry | 12.6, 12.7 | 8 | REQ-171..178 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | ⚠️ Partial (7 ✅ / 1 ⚠️) — throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch ✅; AER delivery (REQ-178) pending REQ-063 |
+| Thermal Management & Telemetry | 12.6, 12.7 | 8 | REQ-171..178 | HLD_03, HLD_05 | LLD_12 | TEST_LLD_03, TEST_LLD_05 | ✅ Implemented (8/8) — throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER (temp/wear/spare) notifiers |
 
 ---
 

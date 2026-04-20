@@ -751,6 +751,153 @@ static int test_aer_dispatch_completes_immediately_when_event_pending(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* REQ-178: thermal-threshold crossing records a telemetry event AND
+ * consumes a waiting host AER with the temperature-threshold info. */
+static int test_aer_notify_thermal_delivers_temperature_event(void)
+{
+    printf("\n=== AER notify_thermal wiring (REQ-178) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "notify-therm: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    /* Host submits an AER so there's something waiting. */
+    struct nvme_sq_entry sq_cmd;
+    struct nvme_cq_entry cpl;
+    memset(&sq_cmd, 0, sizeof(sq_cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    sq_cmd.opcode     = NVME_ADMIN_ASYNC_EVENT;
+    sq_cmd.command_id = 0xCAFE;
+    nvme_uspace_dispatch_admin_cmd(&dev, &sq_cmd, &cpl, NULL, 0);
+    TEST_ASSERT(hal_aer_outstanding_count(&dev.aer) == 1,
+                "notify-therm: AER parked before notify");
+
+    /* Fire a HEAVY thermal transition. */
+    bool delivered = false;
+    u16  cid_out   = 0;
+    struct nvme_cq_entry event_cqe;
+    memset(&event_cqe, 0, sizeof(event_cqe));
+    ret = nvme_uspace_aer_notify_thermal(&dev, 3 /* HEAVY */,
+                                         &delivered, &cid_out, &event_cqe);
+    TEST_ASSERT(ret == HFSSS_OK, "notify-therm: notify OK");
+    TEST_ASSERT(delivered == true,
+                "notify-therm: thermal AER consumed the waiting AER");
+    TEST_ASSERT(cid_out == 0xCAFE,
+                "notify-therm: completion carries the submitted CID");
+    u32 expected_dw0 = ((u32)NVME_AER_TYPE_SMART_HEALTH & 0x7) |
+                       ((u32)NVME_AEI_SMART_TEMPERATURE_THRESHOLD << 8) |
+                       ((u32)NVME_LID_SMART << 16);
+    TEST_ASSERT(event_cqe.cdw0 == expected_dw0,
+                "notify-therm: CQE DW0 encodes TEMPERATURE_THRESHOLD + SMART");
+    TEST_ASSERT(hal_aer_outstanding_count(&dev.aer) == 0,
+                "notify-therm: outstanding drained");
+
+    /* Telemetry recorded even when no host is waiting. Reset dev. */
+    nvme_uspace_dev_cleanup(&dev);
+    TEST_ASSERT(nvme_uspace_dev_init(&dev, &config) == HFSSS_OK,
+                "notify-therm: second dev_init");
+    nvme_uspace_dev_start(&dev);
+    ret = nvme_uspace_aer_notify_thermal(&dev, 4 /* SHUTDOWN */,
+                                         &delivered, NULL, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "notify-therm: notify (no host) OK");
+    TEST_ASSERT(delivered == false,
+                "notify-therm: no host AER -> event buffered");
+    TEST_ASSERT(dev.telemetry.count == 1,
+                "notify-therm: telemetry event recorded even without host");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-178: remaining-life drop triggers NVM_SUBSYS_RELIABILITY AER. */
+static int test_aer_notify_wear_delivers_reliability_event(void)
+{
+    printf("\n=== AER notify_wear wiring (REQ-178) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "notify-wear: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    struct nvme_sq_entry sq_cmd;
+    struct nvme_cq_entry cpl;
+    memset(&sq_cmd, 0, sizeof(sq_cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    sq_cmd.opcode     = NVME_ADMIN_ASYNC_EVENT;
+    sq_cmd.command_id = 0xBEEF;
+    nvme_uspace_dispatch_admin_cmd(&dev, &sq_cmd, &cpl, NULL, 0);
+
+    bool delivered = false;
+    u16  cid_out   = 0;
+    struct nvme_cq_entry event_cqe;
+    memset(&event_cqe, 0, sizeof(event_cqe));
+    /* 4% remaining = critical. */
+    ret = nvme_uspace_aer_notify_wear(&dev, 4,
+                                      &delivered, &cid_out, &event_cqe);
+    TEST_ASSERT(ret == HFSSS_OK, "notify-wear: notify OK");
+    TEST_ASSERT(delivered == true, "notify-wear: waiting AER consumed");
+    TEST_ASSERT(cid_out == 0xBEEF, "notify-wear: CID matches submit");
+    u32 expected_dw0 = ((u32)NVME_AER_TYPE_SMART_HEALTH & 0x7) |
+                       ((u32)NVME_AEI_SMART_NVM_SUBSYS_RELIABILITY << 8) |
+                       ((u32)NVME_LID_SMART << 16);
+    TEST_ASSERT(event_cqe.cdw0 == expected_dw0,
+                "notify-wear: CQE DW0 encodes NVM_SUBSYS_RELIABILITY");
+    TEST_ASSERT(dev.telemetry.count == 1,
+                "notify-wear: wear event recorded to telemetry ring");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-178: spare below threshold posts SPARE_BELOW_THRESHOLD AER. */
+static int test_aer_notify_spare_delivers_spare_event(void)
+{
+    printf("\n=== AER notify_spare wiring (REQ-178) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "notify-spare: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    struct nvme_sq_entry sq_cmd;
+    struct nvme_cq_entry cpl;
+    memset(&sq_cmd, 0, sizeof(sq_cmd));
+    memset(&cpl, 0, sizeof(cpl));
+    sq_cmd.opcode     = NVME_ADMIN_ASYNC_EVENT;
+    sq_cmd.command_id = 0xFEED;
+    nvme_uspace_dispatch_admin_cmd(&dev, &sq_cmd, &cpl, NULL, 0);
+
+    bool delivered = false;
+    u16  cid_out   = 0;
+    struct nvme_cq_entry event_cqe;
+    memset(&event_cqe, 0, sizeof(event_cqe));
+    ret = nvme_uspace_aer_notify_spare(&dev, 5 /* 5% spare */,
+                                       &delivered, &cid_out, &event_cqe);
+    TEST_ASSERT(ret == HFSSS_OK, "notify-spare: notify OK");
+    TEST_ASSERT(delivered == true, "notify-spare: waiting AER consumed");
+    TEST_ASSERT(cid_out == 0xFEED, "notify-spare: CID matches submit");
+    u32 expected_dw0 = ((u32)NVME_AER_TYPE_SMART_HEALTH & 0x7) |
+                       ((u32)NVME_AEI_SMART_SPARE_BELOW_THRESHOLD << 8) |
+                       ((u32)NVME_LID_SMART << 16);
+    TEST_ASSERT(event_cqe.cdw0 == expected_dw0,
+                "notify-spare: CQE DW0 encodes SPARE_BELOW_THRESHOLD");
+    TEST_ASSERT(dev.telemetry.count == 1,
+                "notify-spare: spare event recorded to telemetry ring");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     print_separator();
@@ -767,6 +914,9 @@ int main(void)
     test_log_page_unknown_lid_notsupp();
     test_aer_dispatch_queues_then_post_event();
     test_aer_dispatch_completes_immediately_when_event_pending();
+    test_aer_notify_thermal_delivers_temperature_event();
+    test_aer_notify_wear_delivers_reliability_event();
+    test_aer_notify_spare_delivers_spare_event();
 
     print_separator();
     printf("Test Summary\n");
