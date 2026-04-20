@@ -40,6 +40,13 @@ int hal_pci_cfg_write8 (struct hal_pci_cfg *cfg, uint32_t offset, uint8_t  val);
 int hal_pci_cfg_write16(struct hal_pci_cfg *cfg, uint32_t offset, uint16_t val);
 int hal_pci_cfg_write32(struct hal_pci_cfg *cfg, uint32_t offset, uint32_t val);
 
+/* REQ-002: walk the PCIe capability linked list (chain head at
+ * cfg_space[0x34], each entry: [cap_id, next]). Returns the
+ * offset of the first entry matching `cap_id`, or 0 when not
+ * found. The walker self-limits to a safe hop count so a
+ * corrupted next-pointer cannot cause an infinite loop. */
+uint8_t hal_pci_capability_find(const struct hal_pci_cfg *cfg, uint8_t cap_id);
+
 /* Command Completion Entry */
 struct hal_pci_completion {
     u32 command_id;

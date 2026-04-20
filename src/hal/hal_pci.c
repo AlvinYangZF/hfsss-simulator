@@ -55,15 +55,81 @@ int hal_pci_cfg_init(struct hal_pci_cfg *cfg)
     cfg->cfg[0x2E] = (uint8_t)(HFSSS_SUBSYSTEM_ID & 0xFF);
     cfg->cfg[0x2F] = (uint8_t)(HFSSS_SUBSYSTEM_ID >> 8);
 
-    /* Capabilities pointer -> first capability at 0x40. The actual
-     * cap chain is seeded by REQ-002 in a separate step. */
+    /* Capabilities pointer -> first capability at 0x40. */
     cfg->cfg[0x34] = 0x40;
 
     /* Interrupt pin: INTA#. */
     cfg->cfg[0x3D] = 0x01;
 
+    /* ------------------------------------------------------------------
+     * REQ-002: PCIe capability linked list seeded in-place.
+     *   0x40 : Power Management  -> 0x50
+     *   0x50 : MSI                -> 0x70
+     *   0x70 : MSI-X              -> 0x90
+     *   0x90 : PCI Express        -> 0x00 (end of list)
+     * Each header is the standard { cap_id, next_ptr } pair; the
+     * payload bytes are stamped to match LLD_01 §3.2 defaults so the
+     * host sees a coherent capability on read.
+     * ------------------------------------------------------------------ */
+    /* PM @ 0x40: PMC = 0x0003 (v1.2), PMCSR D0 */
+    cfg->cfg[0x40] = PCI_CAP_ID_PM;
+    cfg->cfg[0x41] = 0x50;
+    cfg->cfg[0x42] = 0x03; cfg->cfg[0x43] = 0x00;
+
+    /* MSI @ 0x50: Message Control = 0x0080 (64-bit addressing capable) */
+    cfg->cfg[0x50] = PCI_CAP_ID_MSI;
+    cfg->cfg[0x51] = 0x70;
+    cfg->cfg[0x52] = 0x80; cfg->cfg[0x53] = 0x00;
+
+    /* MSI-X @ 0x70: Message Control = 0x001F (32 vectors),
+     * Table Offset = 0x00004000 (BAR2 + 0x0000),
+     * PBA Offset   = 0x00008000. */
+    cfg->cfg[0x70] = PCI_CAP_ID_MSIX;
+    cfg->cfg[0x71] = 0x90;
+    cfg->cfg[0x72] = 0x1F; cfg->cfg[0x73] = 0x00;
+    cfg->cfg[0x74] = 0x00; cfg->cfg[0x75] = 0x40;
+    cfg->cfg[0x76] = 0x00; cfg->cfg[0x77] = 0x00;
+    cfg->cfg[0x78] = 0x00; cfg->cfg[0x79] = 0x80;
+    cfg->cfg[0x7A] = 0x00; cfg->cfg[0x7B] = 0x00;
+
+    /* PCI Express @ 0x90: PCIE_CAP = 0x0002 (Express Endpoint v2),
+     * terminator next = 0x00. */
+    cfg->cfg[0x90] = PCI_CAP_ID_EXP;
+    cfg->cfg[0x91] = 0x00;
+    cfg->cfg[0x92] = 0x02; cfg->cfg[0x93] = 0x00;
+
     cfg->initialized = true;
     return HFSSS_OK;
+}
+
+uint8_t hal_pci_capability_find(const struct hal_pci_cfg *cfg, uint8_t cap_id)
+{
+    if (!cfg) {
+        return 0;
+    }
+    /* Capabilities pointer lives at PCI header offset 0x34. A value
+     * of 0 or 0xFF both indicate "no more entries". Cap headers
+     * start at 0x40, so a properly-formed list never produces 0x34
+     * itself as a next. */
+    uint8_t off = hal_pci_cfg_read8(cfg, 0x34);
+
+    /* Each cap occupies at least 2 bytes; the whole standard header
+     * region after 0x40 is 192 bytes, so an upper bound of 96 hops
+     * covers any legal chain. Treat anything beyond that as a
+     * corrupted (possibly cyclic) pointer and bail. */
+    for (int hops = 0; hops < 96; hops++) {
+        if (off == 0 || off == 0xFF) {
+            return 0;
+        }
+        if (off < 0x40 || off >= PCI_CFG_SPACE_SIZE) {
+            return 0;
+        }
+        if (hal_pci_cfg_read8(cfg, off) == cap_id) {
+            return off;
+        }
+        off = hal_pci_cfg_read8(cfg, off + 1);
+    }
+    return 0;
 }
 
 uint8_t hal_pci_cfg_read8(const struct hal_pci_cfg *cfg, uint32_t offset)

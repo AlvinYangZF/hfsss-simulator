@@ -29,7 +29,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
 | REQ-001 | PCI Type 0 config header | 5.1.2 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
-| REQ-002 | PCIe Capabilities linked list | 5.1.2 | HLD_01 | LLD_01 | TEST_LLD_01 | Partial |
+| REQ-002 | PCIe Capabilities linked list | 5.1.2 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
 | REQ-003 | BAR register configuration | 5.1.2 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
 | REQ-004 | CAP register configuration | 5.1.3 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
 | REQ-005 | VS register (NVMe 2.0) | 5.1.3 | HLD_01 | LLD_01 | TEST_LLD_01 | Implemented |
@@ -272,7 +272,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 
 | Module | Total Reqs | Implemented | Partial | Stub | Not Implemented | Coverage % |
 |--------|-----------|-------------|---------|------|-----------------|------------|
-| PCIe/NVMe Device Emulation | 22 | 12 | 2 | 0 | 8 | 54.5% |
+| PCIe/NVMe Device Emulation | 22 | 13 | 1 | 0 | 8 | 59.1% |
 | Controller Thread | 15 | 12 | 1 | 0 | 2 | 80.0% |
 | Media Threads | 20 | 15 | 4 | 0 | 1 | 75.0% |
 | Hardware Abstraction Layer | 12 | 12 | 0 | 0 | 0 | 100.0% |
@@ -288,7 +288,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Thermal/Telemetry | 8 | 7 | 1 | 0 | 0 | 87.5% |
-| **Total** | **178** | **130** | **26** | **0** | **22** | **73.0%** |
+| **Total** | **178** | **131** | **25** | **0** | **22** | **73.6%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 

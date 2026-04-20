@@ -27,7 +27,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 
 | Module | Total | ✅ | ⚠️ | ❌ | 🔧 | Coverage % | Change |
 |--------|------:|---:|---:|---:|---:|-----------:|--------|
-| PCIe/NVMe Device Emulation | 22 | 12 | 2 | 8 | 0 | 54.5% | ↑ +1 (REQ-018 Trim) |
+| PCIe/NVMe Device Emulation | 22 | 13 | 1 | 8 | 0 | 59.1% | ↑ REQ-002 PCIe cap linked-list walk flipped after REQ-069 config space landed |
 | Controller Thread | 15 | 12 | 1 | 2 | 0 | 80.0% | -- |
 | Media Threads | 20 | 15 | 4 | 1 | 0 | 75.0% | ↑ +4 (NOR full) |
 | HAL | 12 | 12 | 0 | 0 | 0 | 100% | ↑ REQ-063 AER + REQ-064 PCIe link state + REQ-069 byte-level config space (LLD_13) |
@@ -37,7 +37,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Product Interfaces | 8 | 4 | 3 | 1 | 0 | 50.0% | ↑ +4 (/proc, hfsss-ctrl, YAML, persistence) |
 | Fault Injection | 3 | 2 | 1 | 0 | 0 | 66.7% (100% partial) | ↑ registry + power hook + NAND read/program/erase fault gates landed |
 | System Reliability | 4 | 2 | 1 | 1 | 0 | 50.0% | -- |
-| **Core Subtotal** | **138** | **96** | **20** | **22** | **0** | **69.6%** (84.1% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **97** | **19** | **22** | **0** | **70.3%** (84.1% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% (100% partial) | ↑ DWRR + partial wiring |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 7 | 1 | 0 | 0 | 87.5% (100% partial) | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers; REQ-178 pending runtime producers |
 | **Enterprise Subtotal** | **40** | **34** | **6** | **0** | **0** | **85.0%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **130** | **26** | **22** | **0** | **73.0%** (86.5% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **131** | **25** | **22** | **0** | **73.6%** (86.5% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -58,7 +58,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | ID | Requirement Description | Status | Notes |
 |----|------------------------|--------|-------|
 | REQ-001 | PCIe Config Space Emulation - Standard PCI Type 0 Config Header | ✅ | Basic config header structures in `pci.h` |
-| REQ-002 | PCIe Config Space Emulation - PCIe Capabilities Linked List | ⚠️ | Capability structures defined, but not full emulation |
+| REQ-002 | PCIe Config Space Emulation - PCIe Capabilities Linked List | ✅ | Four standard caps (PM 0x01 @ 0x40, MSI 0x05 @ 0x50, MSI-X 0x11 @ 0x70, PCIe Express 0x10 @ 0x90) seeded in `hal_pci_cfg_init`. `hal_pci_capability_find` walks the chain via `cfg_read8` on each entry's `{cap_id, next}` header with a 96-hop safety bound against corrupted pointers. Covered by `tests/test_hal.c::test_hal_pci_cfg_cap_chain_layout` / `test_hal_pci_cfg_capability_find` (15 assertions, incl. cycle-detection). |
 | REQ-003 | PCIe Config Space Emulation - BAR Register Configuration | ✅ | BAR constants and structures defined |
 | REQ-004 | NVMe Controller Register Emulation - CAP Register Configuration | ✅ | NVMe controller registers in `nvme.h` |
 | REQ-005 | NVMe Controller Register Emulation - VS Register Configuration | ✅ | VS register (NVMe 2.0) defined |
@@ -377,7 +377,7 @@ Current position: **core + enterprise features largely landed; polish and gap-cl
 Near-term priorities:
 1. Enforce **perf targets** (REQ-116..120) in `perf_validation_run_all`, converting the 5 ⚠️ rows to ✅.
 2. Wire a runtime producer for **REQ-178** (thermal / wear / spare poll loop) to re-promote the AER notifiers from ⚠️ to ✅.
-3. Flesh out **REQ-002** PCIe capability linked-list walk on top of the new REQ-069 config space.
+3. Broaden **QoS coverage** — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).
 
 Mid-term:
 4. Broaden QoS coverage — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).

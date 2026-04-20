@@ -775,6 +775,82 @@ static int test_hal_pci_cfg_out_of_range_reads(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* REQ-002: PCIe capability linked-list emulation on top of the
+ * REQ-069 config space. The chain is PM@0x40 -> MSI@0x50 ->
+ * MSIX@0x70 -> PCIe@0x90 -> 0. `hal_pci_capability_find` walks
+ * it via cfg_read8, so we verify both the chain layout (byte
+ * reads at each offset) and the walker's return. */
+static int test_hal_pci_cfg_cap_chain_layout(void)
+{
+    printf("\n=== HAL PCI cfg: capability chain layout (REQ-002) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    /* PM cap at 0x40. */
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x40) == PCI_CAP_ID_PM,
+                "chain: 0x40 cap_id == PM");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x41) == 0x50,
+                "chain: PM.next -> 0x50");
+
+    /* MSI cap at 0x50. */
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x50) == PCI_CAP_ID_MSI,
+                "chain: 0x50 cap_id == MSI");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x51) == 0x70,
+                "chain: MSI.next -> 0x70");
+
+    /* MSI-X cap at 0x70. */
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x70) == PCI_CAP_ID_MSIX,
+                "chain: 0x70 cap_id == MSI-X");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x71) == 0x90,
+                "chain: MSI-X.next -> 0x90");
+
+    /* PCIe Express cap at 0x90. Terminator = 0x00. */
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x90) == PCI_CAP_ID_EXP,
+                "chain: 0x90 cap_id == PCIe Express");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x91) == 0x00,
+                "chain: PCIe.next == 0x00 (end of list)");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+static int test_hal_pci_cfg_capability_find(void)
+{
+    printf("\n=== HAL PCI cfg: capability_find walker (REQ-002) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    /* Each registered cap is locatable by ID. */
+    TEST_ASSERT(hal_pci_capability_find(&cfg, PCI_CAP_ID_PM)   == 0x40,
+                "find: PM @ 0x40");
+    TEST_ASSERT(hal_pci_capability_find(&cfg, PCI_CAP_ID_MSI)  == 0x50,
+                "find: MSI @ 0x50");
+    TEST_ASSERT(hal_pci_capability_find(&cfg, PCI_CAP_ID_MSIX) == 0x70,
+                "find: MSI-X @ 0x70");
+    TEST_ASSERT(hal_pci_capability_find(&cfg, PCI_CAP_ID_EXP)  == 0x90,
+                "find: PCIe Express @ 0x90");
+
+    /* Unregistered ID returns 0 (sentinel for "not found"). */
+    TEST_ASSERT(hal_pci_capability_find(&cfg, 0xAB) == 0,
+                "find: unknown cap_id returns 0");
+
+    /* NULL cfg returns 0. */
+    TEST_ASSERT(hal_pci_capability_find(NULL, PCI_CAP_ID_PM) == 0,
+                "find: NULL cfg returns 0");
+
+    /* Loop protection: if someone corrupts a next pointer to form
+     * a cycle, the walker must bail rather than spin forever.
+     * Point PM.next back to itself. */
+    struct hal_pci_cfg loopy;
+    hal_pci_cfg_init(&loopy);
+    (void)hal_pci_cfg_write8(&loopy, 0x41, 0x40);  /* PM.next = 0x40 */
+    TEST_ASSERT(hal_pci_capability_find(&loopy, 0xAB) == 0,
+                "find: cycle detected, returns 0 without hanging");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 static int test_hal_pci_cfg_write_roundtrip(void)
 {
     printf("\n=== HAL PCI cfg: write roundtrip + ext region (REQ-069) ===\n");
@@ -840,6 +916,8 @@ int main(void)
     test_hal_pci_cfg_init_defaults();
     test_hal_pci_cfg_out_of_range_reads();
     test_hal_pci_cfg_write_roundtrip();
+    test_hal_pci_cfg_cap_chain_layout();
+    test_hal_pci_cfg_capability_find();
 
     printf("\n========================================\n");
     printf("Test Summary\n");
