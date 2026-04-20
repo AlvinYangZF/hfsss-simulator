@@ -240,6 +240,28 @@ int key_table_init(struct key_table *kt)
     return HFSSS_OK;
 }
 
+int key_table_register_ns(struct key_table *kt, u32 nsid)
+{
+    if (!kt || nsid == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+    for (u32 i = 0; i < SEC_MAX_NS; i++) {
+        if (kt->entries[i].nsid == nsid &&
+            kt->entries[i].state != KEY_EMPTY) {
+            return HFSSS_ERR_EXIST;
+        }
+    }
+    for (u32 i = 0; i < SEC_MAX_NS; i++) {
+        if (kt->entries[i].state == KEY_EMPTY) {
+            kt->entries[i].nsid  = nsid;
+            kt->entries[i].state = KEY_ACTIVE;
+            kt->crc32 = hfsss_crc32(kt, offsetof(struct key_table, crc32));
+            return HFSSS_OK;
+        }
+    }
+    return HFSSS_ERR_NOMEM;
+}
+
 /* ----------------------------------------------------------------
  * NOR-backed Key Table (REQ-165)
  *

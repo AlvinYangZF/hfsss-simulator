@@ -377,7 +377,7 @@ Current position: **core + enterprise features largely landed; polish and gap-cl
 Near-term priorities:
 1. Close **REQ-069 PCI config management** (remaining HAL stub), which would push HAL to 100%.
 2. Enforce **perf targets** (REQ-116..120) in `perf_validation_run_all`, converting the 5 ⚠️ rows to ✅.
-3. Flip the remaining **Security** requirement — TCG Opal command parsing (REQ-161).
+3. Wire a runtime producer for **REQ-178** (thermal / wear / spare poll loop) to re-promote the AER notifiers from ⚠️ to ✅.
 
 Mid-term:
 4. Broaden QoS coverage — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).

@@ -100,6 +100,14 @@ int key_table_init(struct key_table *kt);
 int key_table_save(const struct key_table *kt, struct nor_dev *nor);
 int key_table_load(struct key_table *kt, struct nor_dev *nor);
 
+/* Seed `nsid` into the first empty slot as KEY_ACTIVE so the
+ * Opal admin path (SECURITY_SEND/RECV) can target it without
+ * host-side enrollment. Without this the Opal LOCK command is
+ * unreachable at runtime because key_table_init leaves every
+ * slot KEY_EMPTY. Returns HFSSS_ERR_EXIST if the nsid is already
+ * registered (in any non-EMPTY state), HFSSS_ERR_NOMEM if full. */
+int key_table_register_ns(struct key_table *kt, u32 nsid);
+
 /* Crypto erase */
 int crypto_erase_ns(struct key_table *kt, u32 nsid,
                     const u8 mk[SEC_KEY_LEN]);

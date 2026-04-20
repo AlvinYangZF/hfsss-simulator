@@ -1124,6 +1124,52 @@ static int test_opal_security_recv_reports_lock_state(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* PR #92 review Fix-1: the default namespace (nsid=1, matching
+ * Identify Controller's NN=1) must be auto-registered into
+ * dev->keys at init. Before this fix SECURITY_SEND/LOCK on nsid=1
+ * returned SC=INVALID_FIELD because key_table_init left all slots
+ * KEY_EMPTY — only test helpers that patched dev->keys directly
+ * could exercise the rest of the Opal flow. */
+static int test_opal_default_ns_registered_at_init(void)
+{
+    printf("\n=== Opal: default ns registered at init (PR #92 Fix-1) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config config;
+    nvme_uspace_config_small(&config);
+    int ret = nvme_uspace_dev_init(&dev, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "ns-seed: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    /* Without any manual seed, nsid=1 must already be present in the
+     * key table as KEY_ACTIVE so Opal LOCK can transition it. */
+    TEST_ASSERT(dev.keys.entries[0].nsid == 1,
+                "ns-seed: entries[0].nsid == 1");
+    TEST_ASSERT(dev.keys.entries[0].state == KEY_ACTIVE,
+                "ns-seed: entries[0].state == KEY_ACTIVE");
+    TEST_ASSERT(opal_is_locked(&dev.keys, 1) == false,
+                "ns-seed: nsid=1 reports unlocked");
+
+    /* SECURITY_SEND LOCK on nsid=1 now completes with SC=SUCCESS. */
+    u8 frame[OPAL_CMD_FRAME_LEN];
+    build_opal_frame(frame, OPAL_CMD_LOCK, 1, NULL);
+    struct nvme_sq_entry sq; struct nvme_cq_entry cpl;
+    memset(&sq, 0, sizeof(sq)); memset(&cpl, 0, sizeof(cpl));
+    sq.opcode     = NVME_ADMIN_SECURITY_SEND;
+    sq.command_id = 0x0101;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl,
+                                         frame, sizeof(frame));
+    TEST_ASSERT(ret == HFSSS_OK, "ns-seed: dispatch envelope OK");
+    TEST_ASSERT(cpl.status == 0,
+                "ns-seed: LOCK completes with SC=SUCCESS (not INVALID_FIELD)");
+    TEST_ASSERT(opal_is_locked(&dev.keys, 1) == true,
+                "ns-seed: nsid=1 now locked after LOCK");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Fix-3: SMART (LID=0x02) must reflect the live thermal / spare /
  * percent_used state set by the AER notifier bridges. Before this
  * fix the payload was hard-coded so a host that polled SMART after
@@ -1221,6 +1267,7 @@ int main(void)
     test_opal_security_send_unlock_restores_io();
     test_opal_security_send_wrong_auth_keeps_locked();
     test_opal_security_recv_reports_lock_state();
+    test_opal_default_ns_registered_at_init();
     test_smart_reflects_live_state_after_notify();
 
     print_separator();

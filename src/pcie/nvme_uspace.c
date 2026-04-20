@@ -76,8 +76,12 @@ int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config 
 
     /* Device-wide Opal key table (REQ-161). key_table_init is
      * infallible so no rollback is needed beyond the later failure
-     * legs that already wind this back down. */
+     * legs that already wind this back down. Register the default
+     * namespace so SECURITY_SEND/LOCK on nsid=1 (the only namespace
+     * Identify Controller advertises here, NN=1) reaches a live
+     * entry instead of being rejected as INVALID_FIELD. */
     key_table_init(&dev->keys);
+    (void)key_table_register_ns(&dev->keys, 1);
 
     /* SMART live state defaults (REQ-174/178 consistency). */
     dev->thermal_level    = 0;
