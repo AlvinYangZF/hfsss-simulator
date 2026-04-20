@@ -130,7 +130,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-084 | SMART information (Log Page 02h) | 5.6.6 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
 | REQ-085 | Inter-core communication (SPSC Ring Buffer) | 5.6.7 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Implemented |
 | REQ-086 | Watchdog (per-task feed) | 5.6.8 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
-| REQ-087 | System resource monitoring | 5.6.8 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Not Implemented |
+| REQ-087 | System resource monitoring | 5.6.8 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Implemented |
 | REQ-088 | Performance anomaly detection/Temp emulation | 5.6.8 | HLD_05 | LLD_05, LLD_12 | TEST_LLD_05 | Partial |
 | REQ-089 | Assert mechanism | 5.6.9 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
 | REQ-090 | Panic procedure | 5.6.9 | HLD_05 | LLD_05 | TEST_LLD_05 | Implemented |
