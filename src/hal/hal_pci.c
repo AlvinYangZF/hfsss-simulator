@@ -1,6 +1,131 @@
 #include "hal/hal_pci.h"
+#include "pcie/pci.h"
 #include <stdio.h>
 #include <string.h>
+
+/* ------------------------------------------------------------------
+ * REQ-069: byte-level PCI/PCIe config space (LLD_13 §6.3).
+ *
+ * Internal helper: classify an access request. Returns true if the
+ * (offset, size) pair is serviceable; false on any of:
+ *   - offset + size wraps past PCI_EXT_CFG_SPACE_SIZE
+ *   - 16/32-bit access that isn't naturally aligned
+ * Out-of-range or misaligned requests translate at the public API
+ * to a PCIe "all-ones" response on read, and HFSSS_ERR_INVAL on
+ * write, mirroring an unresponsive device.
+ * ------------------------------------------------------------------ */
+static inline bool cfg_access_ok(uint32_t offset, uint32_t size)
+{
+    if (size == 2 && (offset & 0x1)) return false;
+    if (size == 4 && (offset & 0x3)) return false;
+    if (offset + size > PCI_EXT_CFG_SPACE_SIZE) return false;
+    return true;
+}
+
+int hal_pci_cfg_init(struct hal_pci_cfg *cfg)
+{
+    if (!cfg) {
+        return HFSSS_ERR_INVAL;
+    }
+    memset(cfg, 0, sizeof(*cfg));
+
+    /* Vendor / Device / Revision */
+    cfg->cfg[0x00] = (uint8_t)(HFSSS_VENDOR_ID & 0xFF);
+    cfg->cfg[0x01] = (uint8_t)(HFSSS_VENDOR_ID >> 8);
+    cfg->cfg[0x02] = (uint8_t)(HFSSS_DEVICE_ID & 0xFF);
+    cfg->cfg[0x03] = (uint8_t)(HFSSS_DEVICE_ID >> 8);
+    cfg->cfg[0x08] = HFSSS_REVISION_ID;
+
+    /* Class code: byte 0x09 = programming interface, 0x0A = subclass,
+     * 0x0B = base class. NVMe = base 0x01 (storage), sub 0x08, IF 0x02. */
+    cfg->cfg[0x09] = PCI_CLASS_INTERFACE_NVME;
+    cfg->cfg[0x0A] = PCI_CLASS_SUBCLASS_NVME;
+    cfg->cfg[0x0B] = PCI_CLASS_CODE_STORAGE;
+
+    /* Header type = Type 0 Endpoint. */
+    cfg->cfg[0x0E] = PCI_HEADER_TYPE_NORMAL;
+
+    /* Status: Capabilities list present so the host walks the chain. */
+    cfg->cfg[0x06] = (uint8_t)(PCI_STS_CAP_LIST & 0xFF);
+    cfg->cfg[0x07] = (uint8_t)(PCI_STS_CAP_LIST >> 8);
+
+    /* Subsystem IDs mirror vendor/device. */
+    cfg->cfg[0x2C] = (uint8_t)(HFSSS_SUBSYSTEM_VENDOR_ID & 0xFF);
+    cfg->cfg[0x2D] = (uint8_t)(HFSSS_SUBSYSTEM_VENDOR_ID >> 8);
+    cfg->cfg[0x2E] = (uint8_t)(HFSSS_SUBSYSTEM_ID & 0xFF);
+    cfg->cfg[0x2F] = (uint8_t)(HFSSS_SUBSYSTEM_ID >> 8);
+
+    /* Capabilities pointer -> first capability at 0x40. The actual
+     * cap chain is seeded by REQ-002 in a separate step. */
+    cfg->cfg[0x34] = 0x40;
+
+    /* Interrupt pin: INTA#. */
+    cfg->cfg[0x3D] = 0x01;
+
+    cfg->initialized = true;
+    return HFSSS_OK;
+}
+
+uint8_t hal_pci_cfg_read8(const struct hal_pci_cfg *cfg, uint32_t offset)
+{
+    if (!cfg || !cfg_access_ok(offset, 1)) {
+        return 0xFF;
+    }
+    return cfg->cfg[offset];
+}
+
+uint16_t hal_pci_cfg_read16(const struct hal_pci_cfg *cfg, uint32_t offset)
+{
+    if (!cfg || !cfg_access_ok(offset, 2)) {
+        return 0xFFFF;
+    }
+    /* Assemble little-endian so the layout matches what a
+     * memory-mapped PCI register would return on x86 / arm. */
+    return (uint16_t)cfg->cfg[offset]
+         | ((uint16_t)cfg->cfg[offset + 1] << 8);
+}
+
+uint32_t hal_pci_cfg_read32(const struct hal_pci_cfg *cfg, uint32_t offset)
+{
+    if (!cfg || !cfg_access_ok(offset, 4)) {
+        return 0xFFFFFFFFu;
+    }
+    return (uint32_t)cfg->cfg[offset]
+         | ((uint32_t)cfg->cfg[offset + 1] << 8)
+         | ((uint32_t)cfg->cfg[offset + 2] << 16)
+         | ((uint32_t)cfg->cfg[offset + 3] << 24);
+}
+
+int hal_pci_cfg_write8(struct hal_pci_cfg *cfg, uint32_t offset, uint8_t val)
+{
+    if (!cfg || !cfg_access_ok(offset, 1)) {
+        return HFSSS_ERR_INVAL;
+    }
+    cfg->cfg[offset] = val;
+    return HFSSS_OK;
+}
+
+int hal_pci_cfg_write16(struct hal_pci_cfg *cfg, uint32_t offset, uint16_t val)
+{
+    if (!cfg || !cfg_access_ok(offset, 2)) {
+        return HFSSS_ERR_INVAL;
+    }
+    cfg->cfg[offset]     = (uint8_t)(val & 0xFF);
+    cfg->cfg[offset + 1] = (uint8_t)(val >> 8);
+    return HFSSS_OK;
+}
+
+int hal_pci_cfg_write32(struct hal_pci_cfg *cfg, uint32_t offset, uint32_t val)
+{
+    if (!cfg || !cfg_access_ok(offset, 4)) {
+        return HFSSS_ERR_INVAL;
+    }
+    cfg->cfg[offset]     = (uint8_t)(val & 0xFF);
+    cfg->cfg[offset + 1] = (uint8_t)((val >> 8) & 0xFF);
+    cfg->cfg[offset + 2] = (uint8_t)((val >> 16) & 0xFF);
+    cfg->cfg[offset + 3] = (uint8_t)((val >> 24) & 0xFF);
+    return HFSSS_OK;
+}
 
 int hal_pci_init(struct hal_pci_ctx *ctx)
 {

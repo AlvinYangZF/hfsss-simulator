@@ -108,7 +108,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-066 | NVMe power state emulation (PS0-PS4) | 5.5.4 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
 | REQ-067 | Power management features | 5.5.4 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
 | REQ-068 | HAL main interface | 5.5.1 | HLD_04 | LLD_04 | TEST_LLD_04 | Implemented |
-| REQ-069 | PCI management interface | 5.5.3 | HLD_04 | LLD_04, LLD_13 | TEST_LLD_04 | Stub |
+| REQ-069 | PCI management interface | 5.5.3 | HLD_04 | LLD_04, LLD_13 | TEST_LLD_04 | Implemented |
 ### 5. Common Services (REQ-070 through REQ-093)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
@@ -275,7 +275,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | PCIe/NVMe Device Emulation | 22 | 12 | 2 | 0 | 8 | 54.5% |
 | Controller Thread | 15 | 12 | 1 | 0 | 2 | 80.0% |
 | Media Threads | 20 | 15 | 4 | 0 | 1 | 75.0% |
-| Hardware Abstraction Layer | 12 | 11 | 0 | 1 | 0 | 91.7% |
+| Hardware Abstraction Layer | 12 | 12 | 0 | 0 | 0 | 100.0% |
 | Common Services | 24 | 18 | 2 | 0 | 4 | 75.0% |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 0 | 2 | 86.4% |
 | Performance Requirements | 8 | 0 | 5 | 0 | 3 | 0.0% |
@@ -288,7 +288,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Thermal/Telemetry | 8 | 7 | 1 | 0 | 0 | 87.5% |
-| **Total** | **178** | **129** | **26** | **1** | **22** | **72.5%** |
+| **Total** | **178** | **130** | **26** | **0** | **22** | **73.0%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 
