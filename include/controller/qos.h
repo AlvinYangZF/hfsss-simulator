@@ -57,6 +57,11 @@ struct ns_qos_ctx {
     bool initialized;
 };
 
+/* REQ-088: caller-supplied alert fired when the P99.9 anomaly
+ * detector observes a breach. Receives the offending nsid, the
+ * current P99.9 reading (microseconds), and the caller ctx. */
+typedef void (*lat_anomaly_fn)(u32 nsid, u64 p999_us, void *ctx);
+
 /* Latency monitor per namespace */
 struct ns_latency_monitor {
     u32 nsid;
@@ -67,6 +72,14 @@ struct ns_latency_monitor {
     u32 sla_violations;
     u32 consecutive_violations;
     bool initialized;
+
+    /* REQ-088: P99.9 anomaly detector. threshold_us==0 keeps the
+     * detector disabled; any non-zero value arms it. `p999_cb` may
+     * be NULL — then only the counter advances on breach. */
+    u32             p999_threshold_us;
+    u32             p999_anomalies;
+    lat_anomaly_fn  p999_cb;
+    void           *p999_cb_ctx;
 };
 
 /* Deterministic window configuration */
@@ -115,6 +128,19 @@ u64 lat_monitor_percentile(const struct ns_latency_monitor *mon,
                            u32 percentile_x10);
 bool lat_monitor_check_sla(struct ns_latency_monitor *mon);
 void lat_monitor_reset(struct ns_latency_monitor *mon);
+
+/* REQ-088: P99.9 anomaly detector. set_p999_anomaly installs a
+ * threshold + optional alert callback; passing threshold_us=0
+ * disables the detector without touching the histogram.
+ * check_p999_anomaly computes the current P99.9 from the backing
+ * histogram, compares against the threshold, and on breach bumps
+ * the p999_anomalies counter and fires the callback (if non-NULL).
+ * Returns true on breach, false otherwise. */
+int  lat_monitor_set_p999_anomaly(struct ns_latency_monitor *mon,
+                                  u32 threshold_us,
+                                  lat_anomaly_fn cb, void *cb_ctx);
+bool lat_monitor_check_p999_anomaly(struct ns_latency_monitor *mon);
+u32  lat_monitor_p999_anomaly_count(const struct ns_latency_monitor *mon);
 
 /* Deterministic window functions */
 int det_window_init(struct det_window_config *cfg, u32 host_pct,

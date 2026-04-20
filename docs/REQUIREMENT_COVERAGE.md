@@ -31,13 +31,13 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Controller Thread | 15 | 12 | 1 | 2 | 0 | 80.0% | -- |
 | Media Threads | 20 | 15 | 4 | 1 | 0 | 75.0% | ↑ +4 (NOR full) |
 | HAL | 12 | 12 | 0 | 0 | 0 | 100% | ↑ REQ-063 AER + REQ-064 PCIe link state + REQ-069 byte-level config space (LLD_13) |
-| Common Services | 24 | 18 | 2 | 4 | 0 | 75.0% | ↑ +9 (boot/power/OOB/SMART/trace) |
+| Common Services | 24 | 20 | 2 | 2 | 0 | 83.3% | ↑ REQ-085 SPSC ring + REQ-087 system resource monitor on top of boot/power/OOB/SMART/trace |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 2 | 0 | 86.4% | ↑ +6 (cmd state machine, retries, flow ctl, wear monitor, Error Log Page) |
 | Performance Requirements | 8 | 5 | 0 | 3 | 0 | 62.5% (62.5% partial) | ↑ REQ-116..120 perf targets asserted in run_all report + gated by regression suite |
 | Product Interfaces | 8 | 4 | 3 | 1 | 0 | 50.0% | ↑ +4 (/proc, hfsss-ctrl, YAML, persistence) |
 | Fault Injection | 3 | 2 | 1 | 0 | 0 | 66.7% (100% partial) | ↑ registry + power hook + NAND read/program/erase fault gates landed |
-| System Reliability | 4 | 2 | 1 | 1 | 0 | 50.0% | -- |
-| **Core Subtotal** | **138** | **102** | **14** | **22** | **0** | **73.9%** (84.1% partial) | ↑ from 50.0% |
+| System Reliability | 4 | 3 | 0 | 1 | 0 | 75.0% | ↑ REQ-088 P99.9 latency anomaly detector |
+| **Core Subtotal** | **138** | **105** | **13** | **20** | **0** | **76.1%** (85.5% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% (100% partial) | ↑ DWRR + partial wiring |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
 | **Enterprise Subtotal** | **40** | **35** | **5** | **0** | **0** | **87.5%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **137** | **19** | **22** | **0** | **77.0%** (88.8% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **140** | **18** | **20** | **0** | **78.7%** (88.8% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -164,7 +164,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-085 | Inter-Core Communication - Communication Mechanism | ✅ | Lock-free single-producer single-consumer ring buffer in `include/common/spsc_ring.h` + `src/common/spsc_ring.c`. Power-of-two capacity with masked indices, `atomic_uint` head/tail using release-store on publish and acquire-load on cross-side read, wait-free `tryput` / `tryget` returning `NOSPC` / `AGAIN` on boundary conditions. Covered by `tests/test_common.c::test_spsc_ring_basic` (FIFO + capacity + wrap-around) and `test_spsc_ring_contention` (100K items shipped producer→consumer across two threads, no drops or reorders). |
 | REQ-086 | System Stability Monitoring - Watchdog | ✅ | Basic watchdog implemented (Phase 2) |
 | REQ-087 | System Stability Monitoring - System Resource Monitoring | ✅ | `include/common/system_monitor.h` + `src/common/system_monitor.c` expose a callback-driven periodic sampler. CPU utilization comes from `(cpu_delta / wall_delta) * 100` between polls; memory + thread count pass through caller-supplied callbacks. Default POSIX implementations back `get_cpu_time_ns` and `get_mem_bytes` with `getrusage(RUSAGE_SELF)` (ru_maxrss conversion handled per-platform). Synchronous `system_monitor_poll_once` for tests + `start/stop` daemon-thread path for production. Covered by `tests/test_common.c::test_system_monitor_basic` and `::test_system_monitor_thread_lifecycle`. |
-| REQ-088 | System Stability Monitoring - Performance Anomaly Detection/Thermal Emulation | ⚠️ | Thermal model implemented (`src/common/thermal.c`, see REQ-171..173); P99.9 latency anomaly alert not yet wired |
+| REQ-088 | System Stability Monitoring - Performance Anomaly Detection/Thermal Emulation | ✅ | Thermal model in `src/common/thermal.c` (REQ-171..173) + P99.9 latency anomaly detector in `src/controller/latency_monitor.c`. `lat_monitor_set_p999_anomaly` installs threshold + optional callback; `lat_monitor_check_p999_anomaly` computes P99.9 from the existing histogram, bumps `p999_anomalies`, and fires the callback on breach. Covered by `tests/test_qos.c::test_latency_p999_anomaly_detector` (healthy workload doesn't fire, injected outliers do, counter persists across breaches, detector disable/enable, NULL safety). |
 | REQ-089 | Panic/Assert Handling - Assert Mechanism | ✅ | Basic ASSERT in `common.h` |
 | REQ-090 | Panic/Assert Handling - Panic Flow | ✅ | Panic flow implemented (Phase 1) |
 | REQ-091 | System Debug Mechanism - Debug Functions | ✅ | Per-thread lockless trace ring in `src/common/trace.c` (compile-gated behind `HFSSS_DEBUG_TRACE`, `TRACE=1` build variant); `tests/test_trace.c`; `scripts/qemu_blackbox/phase_a/analyze_trace.py` consumes dumps |
@@ -376,8 +376,8 @@ Current position: **core + enterprise features largely landed; polish and gap-cl
 
 Near-term priorities:
 1. Broaden **QoS coverage** — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).
-2. Implement **SPSC IPC ring** + periodic resource sampling (REQ-085, REQ-087).
-3. Address remaining perf items (REQ-122 scalability / REQ-123 resource) with multi-threaded reference measurements.
+2. Address remaining perf items (REQ-122 scalability / REQ-123 resource) with multi-threaded reference measurements.
+3. Wire **real producers** for `system_monitor` (REQ-087) into the NBD / vhost / exporter mains — defaults are POSIX-backed but callers still need to attach real thread-count sources.
 
 Mid-term:
 4. Broaden QoS coverage — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).

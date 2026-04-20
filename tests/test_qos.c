@@ -612,6 +612,95 @@ static void test_det_window_invalid(void)
     TEST_ASSERT(det_window_allow_host_io(NULL, 0), "NULL config allows host IO");
 }
 
+/* REQ-088: P99.9 latency anomaly detector. The monitor accumulates
+ * histogram samples via the existing lat_monitor_record API; the
+ * anomaly check computes current P99.9 and, if it exceeds the
+ * configured threshold, bumps a counter and optionally fires the
+ * caller-supplied alert callback. */
+static u32 g_p999_alert_calls = 0;
+static u64 g_p999_last_reading = 0;
+static u32 g_p999_last_nsid    = 0;
+static void p999_alert_cb(u32 nsid, u64 p999_us, void *ctx)
+{
+    (void)ctx;
+    g_p999_alert_calls++;
+    g_p999_last_reading = p999_us;
+    g_p999_last_nsid    = nsid;
+}
+
+static void test_latency_p999_anomaly_detector(void)
+{
+    print_separator();
+    printf("Latency Monitor P99.9 anomaly detector (REQ-088)\n");
+    print_separator();
+
+    struct ns_latency_monitor mon;
+    int ret = lat_monitor_init(&mon, 42, 1000);
+    TEST_ASSERT(ret == HFSSS_OK, "p999: lat_monitor_init");
+
+    /* Threshold 4ms: healthy samples stay under it. */
+    ret = lat_monitor_set_p999_anomaly(&mon, 4000, p999_alert_cb, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "p999: threshold + cb installed");
+
+    /* 1000 healthy samples around 500us -> P99.9 well below 4ms. */
+    g_p999_alert_calls = 0;
+    for (int i = 0; i < 1000; i++) {
+        lat_monitor_record(&mon, 500000);  /* 500us */
+    }
+    bool fired = lat_monitor_check_p999_anomaly(&mon);
+    TEST_ASSERT(fired == false,
+                "p999: healthy workload doesn't fire");
+    TEST_ASSERT(lat_monitor_p999_anomaly_count(&mon) == 0,
+                "p999: anomaly count stays 0");
+    TEST_ASSERT(g_p999_alert_calls == 0,
+                "p999: alert callback not fired yet");
+
+    /* Inject a handful of outliers big enough to push P99.9 past
+     * the 4ms threshold (4 outliers at 64ms over 1004 samples ~
+     * 0.4% -> P99.9 lands in the 64ms bucket). */
+    for (int i = 0; i < 4; i++) {
+        lat_monitor_record(&mon, 64ULL * 1000 * 1000);  /* 64ms */
+    }
+    fired = lat_monitor_check_p999_anomaly(&mon);
+    TEST_ASSERT(fired == true,
+                "p999: outliers push P99.9 above threshold");
+    TEST_ASSERT(lat_monitor_p999_anomaly_count(&mon) == 1,
+                "p999: anomaly count == 1 after first breach");
+    TEST_ASSERT(g_p999_alert_calls == 1,
+                "p999: alert callback fired once");
+    TEST_ASSERT(g_p999_last_nsid == 42,
+                "p999: callback received correct nsid");
+    TEST_ASSERT(g_p999_last_reading > 4000,
+                "p999: callback received a P99.9 reading above threshold");
+
+    /* Another check (same state) continues to see the anomaly. */
+    fired = lat_monitor_check_p999_anomaly(&mon);
+    TEST_ASSERT(fired == true,
+                "p999: breach persists until histogram is reset");
+    TEST_ASSERT(lat_monitor_p999_anomaly_count(&mon) == 2,
+                "p999: anomaly count == 2 after repeat check");
+
+    /* Disabling the detector stops further counting, even while the
+     * histogram is still degraded. */
+    ret = lat_monitor_set_p999_anomaly(&mon, 0, NULL, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "p999: detector disabled");
+    fired = lat_monitor_check_p999_anomaly(&mon);
+    TEST_ASSERT(fired == false,
+                "p999: disabled detector reports no breach");
+    TEST_ASSERT(lat_monitor_p999_anomaly_count(&mon) == 2,
+                "p999: counter unchanged when disabled");
+
+    /* NULL safety + disabled-via-NULL-cb path. */
+    TEST_ASSERT(lat_monitor_set_p999_anomaly(NULL, 1000, NULL, NULL)
+                == HFSSS_ERR_INVAL, "p999: NULL monitor rejected");
+    TEST_ASSERT(lat_monitor_check_p999_anomaly(NULL) == false,
+                "p999: NULL monitor check returns false");
+    TEST_ASSERT(lat_monitor_p999_anomaly_count(NULL) == 0,
+                "p999: NULL monitor count returns 0");
+
+    lat_monitor_cleanup(&mon);
+}
+
 /* ---- main ---- */
 
 int main(void)
@@ -640,6 +729,7 @@ int main(void)
     test_latency_monitor_histogram();
     test_latency_sla_violation();
     test_latency_monitor_null();
+    test_latency_p999_anomaly_detector();
 
     /* Deterministic window tests */
     test_det_window_phase();
