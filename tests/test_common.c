@@ -655,6 +655,69 @@ static int test_spsc_ring_contention(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* REQ-085 wrap boundary: u32 head/tail will naturally roll at 2^32
+ * once the ring has shipped enough items. The occupancy compare
+ * `(head - tail)` relies on unsigned modular arithmetic being
+ * correct across the wrap; this test seeds head/tail near
+ * UINT32_MAX and verifies that fill / full / FIFO semantics still
+ * hold when the counters cross the boundary. */
+static int test_spsc_ring_wrap_boundary(void)
+{
+    printf("\n=== SPSC ring: u32 head/tail wrap across UINT32_MAX (REQ-085) ===\n");
+
+    struct spsc_ring r;
+    int rc = spsc_ring_init(&r, sizeof(u32), 8);
+    TEST_ASSERT(rc == HFSSS_OK, "spsc-wrap: init OK");
+
+    /* Seed both counters near the wrap so the first few tryputs
+     * push head past UINT32_MAX. head and tail stay equal so the
+     * ring still looks empty to readers. */
+    atomic_store(&r.head, UINT32_MAX - 3u);
+    atomic_store(&r.tail, UINT32_MAX - 3u);
+    TEST_ASSERT(spsc_ring_empty(&r), "spsc-wrap: empty at seeded counter");
+
+    for (u32 i = 0; i < 8; i++) {
+        TEST_ASSERT(spsc_ring_tryput(&r, &i) == HFSSS_OK,
+                    "spsc-wrap: put across wrap");
+    }
+    TEST_ASSERT(spsc_ring_full(&r), "spsc-wrap: full after capacity puts over wrap");
+
+    for (u32 i = 0; i < 8; i++) {
+        u32 got = 0xFFFFFFFFu;
+        TEST_ASSERT(spsc_ring_tryget(&r, &got) == HFSSS_OK,
+                    "spsc-wrap: get across wrap");
+        TEST_ASSERT(got == i, "spsc-wrap: FIFO preserved across wrap");
+    }
+    TEST_ASSERT(spsc_ring_empty(&r), "spsc-wrap: empty after drain across wrap");
+
+    spsc_ring_cleanup(&r);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-085 PR #95 review guard: spsc_ring_init must reject a
+ * capacity / elem_size pair whose product would overflow size_t.
+ * Left unguarded, the slot-offset arithmetic in tryput/tryget
+ * would silently wrap and corrupt random memory. */
+static int test_spsc_ring_oversized_rejected(void)
+{
+    printf("\n=== SPSC ring: elem_size * capacity overflow rejected (REQ-085) ===\n");
+
+    struct spsc_ring r;
+    /* (SIZE_MAX / 4) * 8 overflows size_t on 32-bit size_t systems
+     * and is unusably large on 64-bit, so we use the largest
+     * power-of-two capacity and an elem_size that certainly
+     * overflows: 2^31 slots * (1 << 16) = 2^47 bytes, which
+     * exceeds what a 32-bit size_t can address. On 64-bit size_t
+     * platforms the overflow only triggers for even larger
+     * pairings; the init guard handles both. */
+    size_t huge_elem = (size_t)-1 / 4u + 1u;  /* > SIZE_MAX/4 */
+    int rc = spsc_ring_init(&r, (u32)huge_elem, 4);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL,
+                "spsc-overflow: oversized product rejected");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* REQ-087: periodic system resource monitor. Tests use a mock CPU
  * time source so the computed cpu_pct is deterministic; wall time
  * comes from the monitor's own clock. Memory + thread count are
@@ -730,6 +793,44 @@ static int test_system_monitor_basic(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* REQ-087 PR #95 review guard: two polls where cpu_ns doesn't
+ * advance must report cpu_pct == 0 — the ring of samples used the
+ * u64 subtraction unconditionally, so a stuck cpu source would
+ * leak a nonsense percentage through the division without the
+ * prev_cpu/wall comparison. */
+static int test_system_monitor_zero_cpu_delta(void)
+{
+    printf("\n=== System monitor: zero cpu delta reports 0%% (REQ-087) ===\n");
+
+    struct sm_mock src = {
+        .cpu_ns = 500ULL * 1000 * 1000,   /* stays frozen */
+        .mem_bytes = 1ULL * 1024 * 1024,
+        .thread_count = 2,
+    };
+    struct system_monitor mon;
+    struct system_monitor_config cfg = {
+        .poll_interval_ms = 0,
+        .get_cpu_time_ns  = mock_cpu_ns,
+        .get_mem_bytes    = mock_mem_bytes,
+        .get_thread_count = mock_thread_cnt,
+        .cb_ctx           = &src,
+    };
+    TEST_ASSERT(system_monitor_init(&mon, &cfg) == HFSSS_OK,
+                "sysmon-zero: init OK");
+
+    system_monitor_poll_once(&mon);   /* seed baseline */
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
+    nanosleep(&ts, NULL);
+    system_monitor_poll_once(&mon);   /* cpu_ns unchanged */
+    TEST_ASSERT(system_monitor_cpu_pct(&mon) == 0.0,
+                "sysmon-zero: cpu_pct == 0 when cpu_delta == 0");
+    TEST_ASSERT(system_monitor_sample_count(&mon) == 2,
+                "sysmon-zero: sample_count advanced despite zero delta");
+
+    system_monitor_cleanup(&mon);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 static int test_system_monitor_thread_lifecycle(void)
 {
     printf("\n=== System monitor: start/stop thread lifecycle (REQ-087) ===\n");
@@ -787,7 +888,10 @@ int main(void)
     test_watchdog();
     test_spsc_ring_basic();
     test_spsc_ring_contention();
+    test_spsc_ring_wrap_boundary();
+    test_spsc_ring_oversized_rejected();
     test_system_monitor_basic();
+    test_system_monitor_zero_cpu_delta();
     test_system_monitor_thread_lifecycle();
 
     printf("\n========================================\n");

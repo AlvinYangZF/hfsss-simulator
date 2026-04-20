@@ -701,6 +701,61 @@ static void test_latency_p999_anomaly_detector(void)
     lat_monitor_cleanup(&mon);
 }
 
+/* REQ-088 PR #95 review guard: lat_monitor_reset must scrub the
+ * histogram and sla counters but preserve the P99.9 detector
+ * (threshold, anomaly counter, installed callback) so an alert
+ * installed at boot survives window-boundary resets. */
+static void test_latency_p999_reset_preservation(void)
+{
+    print_separator();
+    printf("Latency Monitor P99.9 reset preservation (REQ-088)\n");
+    print_separator();
+
+    struct ns_latency_monitor mon;
+    int ret = lat_monitor_init(&mon, 7, 1000);
+    TEST_ASSERT(ret == HFSSS_OK, "p999-reset: lat_monitor_init");
+
+    g_p999_alert_calls = 0;
+    ret = lat_monitor_set_p999_anomaly(&mon, 4000, p999_alert_cb, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "p999-reset: detector installed");
+
+    /* Record enough outliers to trigger a breach, then reset. */
+    for (int i = 0; i < 1000; i++) lat_monitor_record(&mon, 500000);
+    for (int i = 0; i < 4;    i++) lat_monitor_record(&mon, 64ULL * 1000 * 1000);
+    TEST_ASSERT(lat_monitor_check_p999_anomaly(&mon) == true,
+                "p999-reset: baseline breach fires");
+    TEST_ASSERT(lat_monitor_p999_anomaly_count(&mon) == 1,
+                "p999-reset: counter == 1 pre-reset");
+
+    lat_monitor_reset(&mon);
+
+    /* Histogram gone: check should report no breach from zero
+     * samples. But detector config + counter persist. */
+    TEST_ASSERT(mon.total_samples == 0,
+                "p999-reset: histogram scrubbed");
+    TEST_ASSERT(lat_monitor_check_p999_anomaly(&mon) == false,
+                "p999-reset: no breach with empty histogram");
+    TEST_ASSERT(lat_monitor_p999_anomaly_count(&mon) == 1,
+                "p999-reset: anomaly counter preserved across reset");
+    TEST_ASSERT(mon.p999_threshold_us == 4000,
+                "p999-reset: threshold preserved");
+    TEST_ASSERT(mon.p999_cb == p999_alert_cb,
+                "p999-reset: callback preserved");
+
+    /* Re-breach after reset still fires the existing callback. */
+    u32 before = g_p999_alert_calls;
+    for (int i = 0; i < 1000; i++) lat_monitor_record(&mon, 500000);
+    for (int i = 0; i < 4;    i++) lat_monitor_record(&mon, 64ULL * 1000 * 1000);
+    TEST_ASSERT(lat_monitor_check_p999_anomaly(&mon) == true,
+                "p999-reset: post-reset workload breaches again");
+    TEST_ASSERT(g_p999_alert_calls == before + 1,
+                "p999-reset: preserved callback fired after reset");
+    TEST_ASSERT(lat_monitor_p999_anomaly_count(&mon) == 2,
+                "p999-reset: counter continues past reset boundary");
+
+    lat_monitor_cleanup(&mon);
+}
+
 /* ---- main ---- */
 
 int main(void)
@@ -730,6 +785,7 @@ int main(void)
     test_latency_sla_violation();
     test_latency_monitor_null();
     test_latency_p999_anomaly_detector();
+    test_latency_p999_reset_preservation();
 
     /* Deterministic window tests */
     test_det_window_phase();
