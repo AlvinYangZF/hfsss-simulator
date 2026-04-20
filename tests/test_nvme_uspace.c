@@ -1360,6 +1360,121 @@ static int test_smart_monitor_poll_fires_aer_on_threshold_cross(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* PR #93 review Fix-6: a device that enumerates already-degraded
+ * must fire AERs on the very first poll, not stay silent until a
+ * later change. Previously `have_baseline` suppressed the first
+ * event even when the baseline itself was already critical. */
+static int test_smart_monitor_degraded_at_start(void)
+{
+    printf("\n=== SMART monitor: degraded-at-start fires AER on first poll (Fix-6) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    nvme_uspace_config_small(&cfg);
+    int ret = nvme_uspace_dev_init(&dev, &cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "degraded: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    /* Device boots up already hot and worn with low spare. Each axis
+     * is non-nominal vs the init seed (thermal 0 / wear_bucket 0 /
+     * spare_bucket 10), so all three notifiers should fire on the
+     * very first poll. */
+    struct smart_mock_src src = {
+        .thermal = THERMAL_LEVEL_MODERATE,
+        .remaining_life = 50,  /* wear_bucket 5 used */
+        .spare = 5,            /* spare_bucket 0 */
+    };
+    struct smart_monitor mon;
+    struct smart_monitor_config mcfg = {
+        .dev                = &dev,
+        .poll_interval_ms   = 0,
+        .get_thermal        = mock_get_thermal,
+        .get_remaining_life = mock_get_rlp,
+        .get_spare          = mock_get_spare,
+        .cb_ctx             = &src,
+    };
+    ret = smart_monitor_init(&mon, &mcfg);
+    TEST_ASSERT(ret == HFSSS_OK, "degraded: init");
+
+    smart_monitor_poll_once(&mon);
+    TEST_ASSERT(mon.notify_count_thermal == 1,
+                "degraded: thermal AER fired on first poll");
+    TEST_ASSERT(mon.notify_count_wear == 1,
+                "degraded: wear AER fired on first poll");
+    TEST_ASSERT(mon.notify_count_spare == 1,
+                "degraded: spare AER fired on first poll");
+
+    /* Second poll at same values: no duplicate. */
+    smart_monitor_poll_once(&mon);
+    TEST_ASSERT(mon.notify_count_thermal == 1,
+                "degraded: no duplicate thermal on steady state");
+    TEST_ASSERT(mon.notify_count_wear == 1,
+                "degraded: no duplicate wear on steady state");
+    TEST_ASSERT(mon.notify_count_spare == 1,
+                "degraded: no duplicate spare on steady state");
+
+    smart_monitor_cleanup(&mon);
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* PR #93 review Fix-5: the embedded smart_monitor must be
+ * auto-wired into nvme_uspace_dev lifecycle — started by
+ * nvme_uspace_dev_start, stopped by nvme_uspace_dev_stop.
+ * Callers plug in real data sources via
+ * nvme_uspace_dev_set_smart_source without restarting. */
+static int test_smart_monitor_autowired_into_dev(void)
+{
+    printf("\n=== SMART monitor: auto-wired into nvme_uspace_dev (Fix-5) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    nvme_uspace_config_small(&cfg);
+    int ret = nvme_uspace_dev_init(&dev, &cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "autowire: dev_init");
+
+    /* Before start, the embedded monitor is initialized but not
+     * running yet. */
+    TEST_ASSERT(dev.smart_mon.initialized == true,
+                "autowire: embedded monitor initialized by dev_init");
+    TEST_ASSERT(dev.smart_mon.running == false,
+                "autowire: embedded monitor not yet running");
+
+    nvme_uspace_dev_start(&dev);
+    TEST_ASSERT(dev.smart_mon.running == true,
+                "autowire: dev_start spins the monitor thread");
+
+    /* Inject a real data source AFTER start — the running thread
+     * picks up the new callbacks on the next poll. */
+    struct smart_mock_src src = {
+        .thermal = THERMAL_LEVEL_LIGHT,
+        .remaining_life = 90,
+        .spare = 15,
+    };
+    ret = nvme_uspace_dev_set_smart_source(&dev, mock_get_thermal,
+                                           mock_get_rlp, mock_get_spare,
+                                           &src);
+    TEST_ASSERT(ret == HFSSS_OK, "autowire: set_smart_source OK");
+
+    /* Let the thread run at least two poll intervals (default 1s is
+     * too slow for a test — we use the defaults here precisely to
+     * exercise the production path, so accept up to ~2.2s wait). */
+    struct timespec ts = { .tv_sec = 2, .tv_nsec = 200 * 1000 * 1000 };
+    nanosleep(&ts, NULL);
+
+    nvme_uspace_dev_stop(&dev);
+    TEST_ASSERT(dev.smart_mon.running == false,
+                "autowire: dev_stop joins the monitor thread");
+
+    /* Thermal went 0 -> LIGHT at least once. */
+    TEST_ASSERT(dev.smart_mon.notify_count_thermal >= 1,
+                "autowire: thermal AER fired via production path");
+
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 static int test_smart_monitor_thread_lifecycle(void)
 {
     printf("\n=== SMART monitor: start/stop thread lifecycle (REQ-178) ===\n");
@@ -1448,6 +1563,8 @@ int main(void)
     test_opal_default_ns_registered_at_init();
     test_smart_reflects_live_state_after_notify();
     test_smart_monitor_poll_fires_aer_on_threshold_cross();
+    test_smart_monitor_degraded_at_start();
+    test_smart_monitor_autowired_into_dev();
     test_smart_monitor_thread_lifecycle();
 
     print_separator();

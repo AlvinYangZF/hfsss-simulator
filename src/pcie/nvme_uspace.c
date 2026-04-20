@@ -34,6 +34,13 @@ void nvme_uspace_config_default(struct nvme_uspace_config *config)
     config->data_buffer_size = 1 * 1024 * 1024; /* 1 MB - smaller for test */
 }
 
+/* Default smart_monitor callbacks: always report nominal state
+ * (cool / 100% life / 100% spare). Keeps the monitor silent when
+ * no real data source is attached. */
+static u8 default_nominal_thermal(void *ctx) { (void)ctx; return 0; }
+static u8 default_nominal_life   (void *ctx) { (void)ctx; return 100; }
+static u8 default_nominal_spare  (void *ctx) { (void)ctx; return 100; }
+
 int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config *config)
 {
     int ret;
@@ -104,10 +111,29 @@ int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config 
         goto fail_sssim;
     }
 
+    /* REQ-178: embedded SMART monitor with default nominal
+     * callbacks. The monitor stays silent (0 thermal / 100% life /
+     * 100% spare) until a caller injects a real data source via
+     * nvme_uspace_dev_set_smart_source. Kept last so init failures
+     * don't leave a half-started monitor behind. */
+    struct smart_monitor_config smcfg = {
+        .dev                = dev,
+        .poll_interval_ms   = 1000,
+        .get_thermal        = default_nominal_thermal,
+        .get_remaining_life = default_nominal_life,
+        .get_spare          = default_nominal_spare,
+        .cb_ctx             = NULL,
+    };
+    ret = smart_monitor_init(&dev->smart_mon, &smcfg);
+    if (ret != HFSSS_OK) goto fail_data_buffer;
+
     dev->initialized = true;
     dev->running     = false;
     return HFSSS_OK;
 
+fail_data_buffer:
+    free(dev->data_buffer);
+    dev->data_buffer = NULL;
 fail_sssim:
     sssim_cleanup(&dev->sssim);
 fail_qmgr:
@@ -132,6 +158,10 @@ void nvme_uspace_dev_cleanup(struct nvme_uspace_dev *dev)
     if (!dev) {
         return;
     }
+
+    /* Ensure the monitor thread is joined before tearing down any
+     * of the state it may still be reading (dev->aer, etc.). */
+    smart_monitor_cleanup(&dev->smart_mon);
 
     if (dev->data_buffer) {
         free(dev->data_buffer);
@@ -329,6 +359,17 @@ int nvme_uspace_dev_start(struct nvme_uspace_dev *dev)
     dev->running = true;
     mutex_unlock(&dev->lock);
 
+    /* REQ-178: spin up the smart_monitor background thread. With
+     * default nominal callbacks this is a no-op producer; real
+     * callers plug in live sources afterwards via
+     * nvme_uspace_dev_set_smart_source. */
+    int sm_rc = smart_monitor_start(&dev->smart_mon);
+    if (sm_rc != HFSSS_OK) {
+        mutex_lock(&dev->lock, 0);
+        dev->running = false;
+        mutex_unlock(&dev->lock);
+        return sm_rc;
+    }
     return HFSSS_OK;
 }
 
@@ -338,9 +379,34 @@ void nvme_uspace_dev_stop(struct nvme_uspace_dev *dev)
         return;
     }
 
+    /* Stop the monitor before marking the dev un-running so any
+     * in-flight poll cycle completes against still-valid state. */
+    smart_monitor_stop(&dev->smart_mon);
+
     mutex_lock(&dev->lock, 0);
     dev->running = false;
     mutex_unlock(&dev->lock);
+}
+
+int nvme_uspace_dev_set_smart_source(struct nvme_uspace_dev *dev,
+                                     smart_thermal_level_fn  get_thermal,
+                                     smart_remaining_life_fn get_remaining_life,
+                                     smart_spare_fn          get_spare,
+                                     void                   *cb_ctx)
+{
+    if (!dev || !dev->initialized) {
+        return HFSSS_ERR_INVAL;
+    }
+    /* Any NULL leaves the current callback in place so callers
+     * can override just one axis. The monitor config is written
+     * outside the lock because callbacks are plain fn-pointers
+     * — the running thread reads them atomically on each poll. */
+    struct smart_monitor_config *c = &dev->smart_mon.cfg;
+    if (get_thermal)        c->get_thermal        = get_thermal;
+    if (get_remaining_life) c->get_remaining_life = get_remaining_life;
+    if (get_spare)          c->get_spare          = get_spare;
+    c->cb_ctx = cb_ctx;
+    return HFSSS_OK;
 }
 
 int nvme_uspace_identify_ctrl(struct nvme_uspace_dev *dev, struct nvme_identify_ctrl *id)

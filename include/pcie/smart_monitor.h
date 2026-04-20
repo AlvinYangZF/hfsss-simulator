@@ -4,7 +4,12 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include "common/common.h"
-#include "pcie/nvme_uspace.h"
+
+/* Forward decl to avoid the smart_monitor.h <-> nvme_uspace.h cycle
+ * that would otherwise block embedding a monitor directly inside
+ * struct nvme_uspace_dev. Callers carry the pointer opaquely and
+ * smart_monitor.c includes nvme_uspace.h where real calls happen. */
+struct nvme_uspace_dev;
 
 /*
  * REQ-178: SMART monitor runtime producer.
@@ -26,8 +31,6 @@
  * skip the thread and call smart_monitor_poll_once() directly for
  * deterministic single-cycle behavior.
  */
-
-struct nvme_uspace_dev;
 
 typedef u8 (*smart_thermal_level_fn)(void *ctx);
 typedef u8 (*smart_remaining_life_fn)(void *ctx);
@@ -56,11 +59,15 @@ struct smart_monitor {
     bool            initialized;
 
     /* Last values we emitted AERs for. Buckets are integer-divided
-     * by 10 so we only fire on 10%-granularity watermark crossings. */
+     * by 10 so we only fire on 10%-granularity watermark crossings.
+     * Init seeds these to the nominal "healthy" baseline (level=0,
+     * wear_bucket=0, spare_bucket=10) so the first poll still fires
+     * if the device enumerates already-degraded — the host needs
+     * the event to know it's looking at a device that came up hot
+     * or worn rather than one that drifted there mid-run. */
     u8   last_thermal;
     u8   last_wear_bucket;  /* (100 - remaining_life) / 10 */
     u8   last_spare_bucket; /* avail_spare / 10 */
-    bool have_baseline;     /* first poll seeds last_* without emit */
 
     u64 notify_count_thermal;
     u64 notify_count_wear;

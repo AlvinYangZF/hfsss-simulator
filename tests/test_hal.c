@@ -851,6 +851,114 @@ static int test_hal_pci_cfg_capability_find(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* PR #93 review Fix-1: guard against uint32_t `offset + size`
+ * wrapping past PCI_EXT_CFG_SPACE_SIZE. Previously the bounds
+ * check was `offset + size > 4096` which 0xFFFFFFFC + 4 bypasses.
+ * All wraparound offsets must now return all-ones on read and
+ * HFSSS_ERR_INVAL on write. */
+static int test_hal_pci_cfg_u32_wraparound(void)
+{
+    printf("\n=== HAL PCI cfg: u32 wraparound rejected (Fix-1) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    TEST_ASSERT(hal_pci_cfg_read8 (&cfg, 0xFFFFFFFFu) == 0xFF,
+                "wrap: read8 at UINT32_MAX -> 0xFF");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0xFFFFFFFEu) == 0xFFFF,
+                "wrap: read16 near UINT32_MAX -> 0xFFFF");
+    TEST_ASSERT(hal_pci_cfg_read32(&cfg, 0xFFFFFFFCu) == 0xFFFFFFFFu,
+                "wrap: read32 near UINT32_MAX -> 0xFFFFFFFF");
+
+    int ret;
+    ret = hal_pci_cfg_write8 (&cfg, 0xFFFFFFFFu, 0xAA);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "wrap: write8 at UINT32_MAX rejected");
+    ret = hal_pci_cfg_write16(&cfg, 0xFFFFFFFEu, 0xAAAA);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "wrap: write16 near UINT32_MAX rejected");
+    ret = hal_pci_cfg_write32(&cfg, 0xFFFFFFFCu, 0xDEADBEEFu);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "wrap: write32 near UINT32_MAX rejected");
+
+    /* Boundary case: offset exactly at size — still invalid. */
+    ret = hal_pci_cfg_write8(&cfg, PCI_EXT_CFG_SPACE_SIZE, 0xBB);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "wrap: write8 at exactly 4KB rejected");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* PR #93 review Fix-2: writes to read-only Type-0 header fields
+ * must be silently dropped (PCIe §7.5.1.1) while still returning
+ * OK — a real bus ACKs RO writes without mutating the register. */
+static int test_hal_pci_cfg_readonly_fields_rejected(void)
+{
+    printf("\n=== HAL PCI cfg: RO header fields silently drop writes (Fix-2) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    /* Vendor ID: try to rewrite, verify unchanged. */
+    int ret = hal_pci_cfg_write16(&cfg, 0x00, 0xBEEF);
+    TEST_ASSERT(ret == HFSSS_OK, "ro: write to vendor_id returns OK");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0x00) == HFSSS_VENDOR_ID,
+                "ro: vendor_id preserved after write");
+
+    /* Class code byte 0x0B (base class = storage). */
+    ret = hal_pci_cfg_write8(&cfg, 0x0B, 0x00);
+    TEST_ASSERT(ret == HFSSS_OK, "ro: write to class_code returns OK");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x0B) == PCI_CLASS_CODE_STORAGE,
+                "ro: class_code preserved");
+
+    /* Capabilities pointer at 0x34: stays at 0x40 after write. */
+    ret = hal_pci_cfg_write8(&cfg, 0x34, 0x00);
+    TEST_ASSERT(ret == HFSSS_OK, "ro: write to cap_ptr returns OK");
+    TEST_ASSERT(hal_pci_cfg_read8(&cfg, 0x34) == 0x40,
+                "ro: cap_ptr preserved");
+
+    /* Subsystem IDs at 0x2C..0x2F. */
+    ret = hal_pci_cfg_write32(&cfg, 0x2C, 0x00000000);
+    TEST_ASSERT(ret == HFSSS_OK, "ro: write to subsystem IDs returns OK");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0x2C) == HFSSS_SUBSYSTEM_VENDOR_ID,
+                "ro: subsystem_vendor_id preserved");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0x2E) == HFSSS_SUBSYSTEM_ID,
+                "ro: subsystem_id preserved");
+
+    /* Writable peer-test: Command at 0x04 is RW — make sure the RO
+     * guard isn't over-blocking legitimate writes. */
+    ret = hal_pci_cfg_write16(&cfg, 0x04, 0x0006);
+    TEST_ASSERT(ret == HFSSS_OK, "ro: write to Command (RW) OK");
+    TEST_ASSERT(hal_pci_cfg_read16(&cfg, 0x04) == 0x0006,
+                "ro: Command register written correctly");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* PR #93 review Fix-3: MSI-X table/PBA offsets must encode BIR
+ * bits so the advertised BAR matches the comment. */
+static int test_hal_pci_cfg_msix_bir(void)
+{
+    printf("\n=== HAL PCI cfg: MSI-X BIR bits encoded correctly (Fix-3) ===\n");
+
+    struct hal_pci_cfg cfg;
+    hal_pci_cfg_init(&cfg);
+
+    uint32_t table = hal_pci_cfg_read32(&cfg, 0x74);
+    uint32_t pba   = hal_pci_cfg_read32(&cfg, 0x78);
+
+    TEST_ASSERT((table & 0x7u) == 2,
+                "msix: table BIR == 2 (BAR2)");
+    TEST_ASSERT((table & ~0x7u) == 0x4000,
+                "msix: table offset within BAR == 0x4000");
+    TEST_ASSERT((pba & 0x7u) == 4,
+                "msix: PBA BIR == 4 (BAR4)");
+    TEST_ASSERT((pba & ~0x7u) == 0x8000,
+                "msix: PBA offset within BAR == 0x8000");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 static int test_hal_pci_cfg_write_roundtrip(void)
 {
     printf("\n=== HAL PCI cfg: write roundtrip + ext region (REQ-069) ===\n");
@@ -915,6 +1023,9 @@ int main(void)
     test_pcie_link_aspm_policy_gates_entry();
     test_hal_pci_cfg_init_defaults();
     test_hal_pci_cfg_out_of_range_reads();
+    test_hal_pci_cfg_u32_wraparound();
+    test_hal_pci_cfg_readonly_fields_rejected();
+    test_hal_pci_cfg_msix_bir();
     test_hal_pci_cfg_write_roundtrip();
     test_hal_pci_cfg_cap_chain_layout();
     test_hal_pci_cfg_capability_find();

@@ -8,18 +8,45 @@
  *
  * Internal helper: classify an access request. Returns true if the
  * (offset, size) pair is serviceable; false on any of:
- *   - offset + size wraps past PCI_EXT_CFG_SPACE_SIZE
+ *   - offset is outside the 4 KB window
+ *   - the remaining bytes at `offset` can't fit `size`
  *   - 16/32-bit access that isn't naturally aligned
- * Out-of-range or misaligned requests translate at the public API
- * to a PCIe "all-ones" response on read, and HFSSS_ERR_INVAL on
- * write, mirroring an unresponsive device.
+ *
+ * Bounds are checked BEFORE `offset + size` so a u32 near UINT32_MAX
+ * can't silently wrap back into the valid range and index the
+ * backing buffer far past the 4 KB window.
  * ------------------------------------------------------------------ */
 static inline bool cfg_access_ok(uint32_t offset, uint32_t size)
 {
     if (size == 2 && (offset & 0x1)) return false;
     if (size == 4 && (offset & 0x3)) return false;
-    if (offset + size > PCI_EXT_CFG_SPACE_SIZE) return false;
+    if (offset >= PCI_EXT_CFG_SPACE_SIZE) return false;
+    if (PCI_EXT_CFG_SPACE_SIZE - offset < size) return false;
     return true;
+}
+
+/* PCI Type 0 header fields that are read-only from the host side.
+ * Matches `src/pcie/pci.c::pci_dev_cfg_write` so both config-space
+ * surfaces enforce the same spec-level invariants. A write landing
+ * on any byte of a RO field is silently dropped (PCIe §7.5.1.1:
+ * "Writes to Read-Only registers shall complete normally without
+ * modifying the register"). Returns true if [off, off+size) overlaps
+ * any read-only byte. */
+static bool cfg_range_is_readonly(uint32_t offset, uint32_t size)
+{
+    for (uint32_t i = 0; i < size; i++) {
+        uint32_t b = offset + i;
+        if (b == 0x00 || b == 0x01) return true; /* Vendor ID */
+        if (b == 0x02 || b == 0x03) return true; /* Device ID */
+        if (b == 0x08)              return true; /* Revision ID */
+        if (b >= 0x09 && b <= 0x0B) return true; /* Class code */
+        if (b == 0x0E)              return true; /* Header type */
+        if (b == 0x2C || b == 0x2D) return true; /* Subsystem Vendor ID */
+        if (b == 0x2E || b == 0x2F) return true; /* Subsystem ID */
+        if (b == 0x34)              return true; /* Capabilities pointer */
+        if (b >= 0x3D && b <= 0x3F) return true; /* Interrupt pin / GNT / LAT */
+    }
+    return false;
 }
 
 int hal_pci_cfg_init(struct hal_pci_cfg *cfg)
@@ -81,15 +108,18 @@ int hal_pci_cfg_init(struct hal_pci_cfg *cfg)
     cfg->cfg[0x51] = 0x70;
     cfg->cfg[0x52] = 0x80; cfg->cfg[0x53] = 0x00;
 
-    /* MSI-X @ 0x70: Message Control = 0x001F (32 vectors),
-     * Table Offset = 0x00004000 (BAR2 + 0x0000),
-     * PBA Offset   = 0x00008000. */
+    /* MSI-X @ 0x70: Message Control = 0x001F (32 vectors).
+     * Table Offset / BIR (cap+0x04): bits [2:0] = BIR, [31:3] = offset.
+     *   Table = BAR2 + 0x4000  -> 0x00004002
+     *   PBA   = BAR4 + 0x8000  -> 0x00008004
+     * Previously both had BIR=0 which pointed at BAR0 despite the
+     * "BAR2/BAR4" comment — caught by the PR #93 self-review. */
     cfg->cfg[0x70] = PCI_CAP_ID_MSIX;
     cfg->cfg[0x71] = 0x90;
     cfg->cfg[0x72] = 0x1F; cfg->cfg[0x73] = 0x00;
-    cfg->cfg[0x74] = 0x00; cfg->cfg[0x75] = 0x40;
+    cfg->cfg[0x74] = 0x02; cfg->cfg[0x75] = 0x40;
     cfg->cfg[0x76] = 0x00; cfg->cfg[0x77] = 0x00;
-    cfg->cfg[0x78] = 0x00; cfg->cfg[0x79] = 0x80;
+    cfg->cfg[0x78] = 0x04; cfg->cfg[0x79] = 0x80;
     cfg->cfg[0x7A] = 0x00; cfg->cfg[0x7B] = 0x00;
 
     /* PCI Express @ 0x90: PCIE_CAP = 0x0002 (Express Endpoint v2),
@@ -121,7 +151,10 @@ uint8_t hal_pci_capability_find(const struct hal_pci_cfg *cfg, uint8_t cap_id)
         if (off == 0 || off == 0xFF) {
             return 0;
         }
-        if (off < 0x40 || off >= PCI_CFG_SPACE_SIZE) {
+        /* Standard caps live in [0x40, 0x100). `off` is 1 byte so
+         * the upper bound is enforced by its type; we only need to
+         * reject pointers that land in the PCI header region. */
+        if (off < 0x40) {
             return 0;
         }
         if (hal_pci_cfg_read8(cfg, off) == cap_id) {
@@ -167,6 +200,9 @@ int hal_pci_cfg_write8(struct hal_pci_cfg *cfg, uint32_t offset, uint8_t val)
     if (!cfg || !cfg_access_ok(offset, 1)) {
         return HFSSS_ERR_INVAL;
     }
+    if (cfg_range_is_readonly(offset, 1)) {
+        return HFSSS_OK;  /* silent drop per PCIe §7.5.1.1 */
+    }
     cfg->cfg[offset] = val;
     return HFSSS_OK;
 }
@@ -175,6 +211,9 @@ int hal_pci_cfg_write16(struct hal_pci_cfg *cfg, uint32_t offset, uint16_t val)
 {
     if (!cfg || !cfg_access_ok(offset, 2)) {
         return HFSSS_ERR_INVAL;
+    }
+    if (cfg_range_is_readonly(offset, 2)) {
+        return HFSSS_OK;
     }
     cfg->cfg[offset]     = (uint8_t)(val & 0xFF);
     cfg->cfg[offset + 1] = (uint8_t)(val >> 8);
@@ -185,6 +224,9 @@ int hal_pci_cfg_write32(struct hal_pci_cfg *cfg, uint32_t offset, uint32_t val)
 {
     if (!cfg || !cfg_access_ok(offset, 4)) {
         return HFSSS_ERR_INVAL;
+    }
+    if (cfg_range_is_readonly(offset, 4)) {
+        return HFSSS_OK;
     }
     cfg->cfg[offset]     = (uint8_t)(val & 0xFF);
     cfg->cfg[offset + 1] = (uint8_t)((val >> 8) & 0xFF);

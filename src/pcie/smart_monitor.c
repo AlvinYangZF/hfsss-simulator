@@ -4,6 +4,7 @@
  */
 
 #include "pcie/smart_monitor.h"
+#include "pcie/nvme_uspace.h"
 #include "common/thermal.h"
 #include <string.h>
 #include <time.h>
@@ -22,6 +23,16 @@ int smart_monitor_init(struct smart_monitor *mon,
     memset(mon, 0, sizeof(*mon));
     mon->cfg = *cfg;
     atomic_store(&mon->stop, false);
+
+    /* Seed previous values to the nominal baseline (level=0, worn
+     * 0%, spare 100%). A device that enumerates already-degraded
+     * will differ on the first poll and correctly fire the AER —
+     * previously a `have_baseline` latch suppressed the first event
+     * and masked degraded-at-start conditions from the host. */
+    mon->last_thermal      = 0;
+    mon->last_wear_bucket  = 0;
+    mon->last_spare_bucket = 10;
+
     mon->initialized = true;
     return HFSSS_OK;
 }
@@ -40,17 +51,6 @@ void smart_monitor_poll_once(struct smart_monitor *mon)
     /* Derive buckets so same-bucket fluctuations don't fire AERs. */
     u8 wear_bucket  = (u8)((100 - rlp) / 10);
     u8 spare_bucket = (u8)(spare / 10);
-
-    /* First poll: seed baseline without firing. This mirrors "host
-     * just enumerated the device" — the initial reading isn't a
-     * surprise to the host. */
-    if (!mon->have_baseline) {
-        mon->last_thermal      = thermal;
-        mon->last_wear_bucket  = wear_bucket;
-        mon->last_spare_bucket = spare_bucket;
-        mon->have_baseline     = true;
-        return;
-    }
 
     /* Thermal: any level change (up or down) fires. Cool-down is
      * interesting too because the host may want to drop throttling. */
