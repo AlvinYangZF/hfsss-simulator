@@ -191,7 +191,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
 |--------|---------------------|-------------|---------------|---------------|----------------|----------------------|
-| REQ-132 | NAND media fault injection | 8.1.1 | HLD_03 | LLD_08 | TEST_LLD_03 | Partial |
+| REQ-132 | NAND media fault injection | 8.1.1 | HLD_03 | LLD_08 | TEST_LLD_03 | Implemented |
 | REQ-133 | Power fault injection (Sudden Power Off) | 8.1.2 | HLD_05 | LLD_08 | TEST_LLD_05 | Implemented |
 | REQ-134 | Controller fault injection | 8.1.3 | HLD_02 | LLD_08 | TEST_LLD_02 | Partial |
 ### 10. System Reliability and Stability (REQ-135 through REQ-138)
@@ -280,7 +280,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 0 | 2 | 86.4% |
 | Performance Requirements | 8 | 0 | 5 | 0 | 3 | 0.0% |
 | Product Interfaces | 8 | 4 | 3 | 0 | 1 | 50.0% |
-| Fault Injection Framework | 3 | 1 | 2 | 0 | 0 | 33.3% |
+| Fault Injection Framework | 3 | 2 | 1 | 0 | 0 | 66.7% |
 | System Reliability/Stability | 4 | 2 | 1 | 0 | 1 | 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100.0% |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% |
@@ -288,7 +288,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Enterprise: Security | 7 | 5 | 2 | 0 | 0 | 71.4% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Thermal/Telemetry | 8 | 7 | 1 | 0 | 0 | 87.5% |
-| **Total** | **178** | **124** | **30** | **1** | **23** | **69.7%** |
+| **Total** | **178** | **125** | **29** | **1** | **23** | **70.2%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 

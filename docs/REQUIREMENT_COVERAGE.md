@@ -35,9 +35,9 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 2 | 0 | 86.4% | ↑ +6 (cmd state machine, retries, flow ctl, wear monitor, Error Log Page) |
 | Performance Requirements | 8 | 0 | 5 | 3 | 0 | 0% (62.5% partial) | ↑ framework landed, targets not enforced |
 | Product Interfaces | 8 | 4 | 3 | 1 | 0 | 50.0% | ↑ +4 (/proc, hfsss-ctrl, YAML, persistence) |
-| Fault Injection | 3 | 1 | 2 | 0 | 0 | 33.3% (100% partial) | ↑ registry + power hook landed; NAND wiring pending |
+| Fault Injection | 3 | 2 | 1 | 0 | 0 | 66.7% (100% partial) | ↑ registry + power hook + NAND read/program/erase fault gates landed |
 | System Reliability | 4 | 2 | 1 | 1 | 0 | 50.0% | -- |
-| **Core Subtotal** | **138** | **92** | **22** | **23** | **1** | **66.7%** (82.6% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **93** | **21** | **23** | **1** | **67.4%** (82.6% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 2 | 5 | 0 | 0 | 28.6% (100% partial) | ↑ DWRR + partial wiring |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 7 | 1 | 0 | 0 | 87.5% (100% partial) | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch; AER (REQ-178) still ⚠️ pending REQ-063 |
 | **Enterprise Subtotal** | **40** | **32** | **8** | **0** | **0** | **80.0%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **124** | **30** | **23** | **1** | **69.7%** (86.5% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **125** | **29** | **23** | **1** | **70.2%** (86.5% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -228,7 +228,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 
 | ID | Requirement Description | Status | Notes |
 |----|------------------------|--------|-------|
-| REQ-132 | NAND Media Fault Injection | ⚠️ | Fault registry + bit-flip/disturb/aging APIs in `src/common/fault_inject.c`; `tests/test_fault_inject.c` exercises the registry in isolation. NAND / HAL I/O path does not yet consult the registry, so injected faults do not surface at the media layer — per-hop wiring pending. |
+| REQ-132 | NAND Media Fault Injection | ✅ | Fault registry in `src/common/fault_inject.c`; `struct media_ctx.faults` + `media_attach_fault_registry()` plug it into the NAND I/O path. `media_nand_read/program/erase` consult `fault_check()` early and surface hits as `HFSSS_ERR_IO` (FAULT_READ_ERROR / FAULT_PROGRAM_ERROR / FAULT_ERASE_ERROR). Per-address targeting + wildcards validated by `tests/test_media.c::test_fault_injection_nand_path`. |
 | REQ-133 | Power Fault Injection | ✅ | UPLP test hooks `uplp_inject_power_fail`/`uplp_inject_at_phase` in `src/common/uplp.c`; `tests/test_uplp.c` |
 | REQ-134 | Controller Fault Injection | ⚠️ | Some controller-level fault hooks via `fault_inject.c`; comprehensive panic / pool-exhaustion / timeout-storm scenarios not all wired |
 

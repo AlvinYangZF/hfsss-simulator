@@ -2,6 +2,7 @@
 #include "media/cmd_engine.h"
 #include "media/cmd_state.h"
 #include "sssim.h"
+#include "common/fault_inject.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -177,8 +178,43 @@ void media_cleanup(struct media_ctx *ctx)
     }
 
     ctx->initialized = false;
+    ctx->faults      = NULL;
 
     mutex_cleanup(&ctx->lock);
+}
+
+void media_attach_fault_registry(struct media_ctx *ctx,
+                                 struct fault_registry *reg)
+{
+    if (!ctx) {
+        return;
+    }
+    ctx->faults = reg;
+}
+
+/* Consult the attached fault registry (if any) for the given NAND
+ * op. Returns HFSSS_ERR_IO when a one-shot/sticky fault of `type`
+ * matches and should abort the op, HFSSS_OK otherwise. No-op when
+ * no registry is attached. */
+static int media_fault_gate(struct media_ctx *ctx, enum fault_type type,
+                            u32 ch, u32 chip, u32 die, u32 plane,
+                            u32 block, u32 page)
+{
+    if (!ctx->faults) {
+        return HFSSS_OK;
+    }
+    struct fault_addr addr = {
+        .channel = ch,
+        .chip    = chip,
+        .die     = die,
+        .plane   = plane,
+        .block   = block,
+        .page    = page,
+    };
+    if (fault_check(ctx->faults, type, &addr)) {
+        return HFSSS_ERR_IO;
+    }
+    return HFSSS_OK;
 }
 
 static void media_inject_bit_errors(struct media_ctx *ctx, struct nand_page *page, void *data, void *spare,
@@ -275,6 +311,15 @@ int media_nand_read(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane,
 
     if (bbt_is_bad(ctx->bbt, ch, chip, die, plane, block) == 1) {
         return HFSSS_ERR_IO;
+    }
+
+    /* Injected FAULT_READ_ERROR (REQ-132) — abort before reaching
+     * the NAND command engine so the host sees an uncorrectable
+     * read at the media boundary. */
+    int fault_rc = media_fault_gate(ctx, FAULT_READ_ERROR,
+                                    ch, chip, die, plane, block, page);
+    if (fault_rc != HFSSS_OK) {
+        return fault_rc;
     }
 
     struct read_cb_ctx cbc = {
@@ -382,6 +427,13 @@ int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 pla
         return HFSSS_ERR_INVAL;
     }
 
+    /* Injected FAULT_PROGRAM_ERROR (REQ-132). */
+    int fault_rc = media_fault_gate(ctx, FAULT_PROGRAM_ERROR,
+                                    ch, chip, die, plane, block, page);
+    if (fault_rc != HFSSS_OK) {
+        return fault_rc;
+    }
+
     struct prog_cb_ctx cbc = {
         .ctx = ctx,
         .ch = ch,
@@ -485,6 +537,14 @@ int media_nand_erase(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 plane
     }
     if (is_bad == -1) {
         return HFSSS_ERR_INVAL;
+    }
+
+    /* Injected FAULT_ERASE_ERROR (REQ-132). page=0 since erase is
+     * block-granular; wildcard fault entries match regardless. */
+    int fault_rc = media_fault_gate(ctx, FAULT_ERASE_ERROR,
+                                    ch, chip, die, plane, block, 0);
+    if (fault_rc != HFSSS_OK) {
+        return fault_rc;
     }
 
     struct erase_cb_ctx cbc = {

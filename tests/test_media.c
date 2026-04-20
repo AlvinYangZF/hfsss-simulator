@@ -4,6 +4,7 @@
 #include <string.h>
 #include <assert.h>
 #include "common/log.h"
+#include "common/fault_inject.h"
 #include "media/cmd_engine.h"
 #include "media/cmd_legality.h"
 #include "media/cmd_state.h"
@@ -1779,6 +1780,127 @@ static int test_nand_profile_phase6(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Fault injection integration with the NAND I/O path (REQ-132).
+ *
+ * The fault_registry already exists in src/common/fault_inject.c but
+ * the NAND path never consulted it. These tests attach a registry to
+ * media_ctx, inject a fault, drive the op through media_nand_*, and
+ * assert the op surfaces HFSSS_ERR_IO at the media layer. */
+static int test_fault_injection_nand_path(void)
+{
+    printf("\n=== Fault Injection on NAND Path (REQ-132) ===\n");
+
+    struct media_ctx ctx;
+    struct media_config config;
+    memset(&config, 0, sizeof(config));
+    config.channel_count       = 1;
+    config.chips_per_channel   = 1;
+    config.dies_per_chip       = 1;
+    config.planes_per_die      = 1;
+    config.blocks_per_plane    = 10;
+    config.pages_per_block     = 8;
+    config.page_size           = 4096;
+    config.spare_size          = 64;
+    config.nand_type           = NAND_TYPE_TLC;
+    config.enable_multi_plane  = false;
+    config.enable_die_interleaving = false;
+
+    int ret = media_init(&ctx, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "fault-media: media_init");
+    TEST_ASSERT(ctx.faults == NULL,
+                "fault-media: faults starts NULL (no registry)");
+
+    struct fault_registry reg;
+    fault_registry_init(&reg);
+
+    u8 page_data[4096];
+    u8 page_spare[64];
+    memset(page_data, 0xAA, sizeof(page_data));
+    memset(page_spare, 0x55, sizeof(page_spare));
+
+    /* Seed: program page 0 so reads have something to fetch. */
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 0, 0, page_data, page_spare);
+    TEST_ASSERT(ret == HFSSS_OK, "fault-media: seed program OK before attach");
+
+    /* With no registry attached, reads and erases succeed even if
+     * the (unattached) registry has matching fault entries. */
+    u8 buf[4096];
+    u8 sbuf[64];
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 0, 0, buf, sbuf);
+    TEST_ASSERT(ret == HFSSS_OK,
+                "fault-media: read OK when no registry attached");
+
+    /* Attach registry; no faults registered yet -> ops still pass. */
+    media_attach_fault_registry(&ctx, &reg);
+    TEST_ASSERT(ctx.faults == &reg, "fault-media: registry attached");
+
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 0, 0, buf, sbuf);
+    TEST_ASSERT(ret == HFSSS_OK,
+                "fault-media: read OK when registry is empty");
+
+    /* Inject a read error at block=5 page=3, one-shot. */
+    struct fault_addr at_5_3 = { 0, 0, 0, 0, 5, 3 };
+    int read_fault_id = fault_inject_add(&reg, FAULT_READ_ERROR, &at_5_3,
+                                         FAULT_PERSIST_STICKY, 1.0);
+    TEST_ASSERT(read_fault_id > 0, "fault-media: added READ_ERROR fault");
+
+    /* Program some data at block 5, page 3 so the fault gate fires
+     * on a real page (otherwise NOENT would hide the IO error). */
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 5, 3, page_data, page_spare);
+    TEST_ASSERT(ret == HFSSS_OK, "fault-media: program OK before read fault");
+
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 5, 3, buf, sbuf);
+    TEST_ASSERT(ret == HFSSS_ERR_IO,
+                "fault-media: read at faulted addr returns HFSSS_ERR_IO");
+
+    /* Different addr should still work. */
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 0, 0, buf, sbuf);
+    TEST_ASSERT(ret == HFSSS_OK,
+                "fault-media: read at other addr unaffected");
+
+    /* Detach registry -> the previously faulted addr reads normally. */
+    media_attach_fault_registry(&ctx, NULL);
+    ret = media_nand_read(&ctx, 0, 0, 0, 0, 5, 3, buf, sbuf);
+    TEST_ASSERT(ret == HFSSS_OK,
+                "fault-media: read OK again after registry detach");
+
+    /* Re-attach and test PROGRAM fault. Wildcard address this time. */
+    media_attach_fault_registry(&ctx, &reg);
+    struct fault_addr any = {
+        FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
+        FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD
+    };
+    /* Remove the stale read fault first so it doesn't trip the
+     * subsequent program/erase paths. */
+    fault_inject_remove(&reg, read_fault_id);
+    int prog_fault_id = fault_inject_add(&reg, FAULT_PROGRAM_ERROR, &any,
+                                         FAULT_PERSIST_STICKY, 1.0);
+    TEST_ASSERT(prog_fault_id > 0, "fault-media: added PROGRAM_ERROR fault");
+
+    /* Erase a fresh block so program has a clean page to aim at, then
+     * inject. Program should surface HFSSS_ERR_IO. */
+    ret = media_nand_erase(&ctx, 0, 0, 0, 0, 6);
+    TEST_ASSERT(ret == HFSSS_OK, "fault-media: erase OK before prog fault");
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 6, 0, page_data, page_spare);
+    TEST_ASSERT(ret == HFSSS_ERR_IO,
+                "fault-media: program fails with HFSSS_ERR_IO under fault");
+
+    /* Test ERASE fault (swap out prog fault). */
+    fault_inject_remove(&reg, prog_fault_id);
+    int erase_fault_id = fault_inject_add(&reg, FAULT_ERASE_ERROR, &any,
+                                          FAULT_PERSIST_STICKY, 1.0);
+    TEST_ASSERT(erase_fault_id > 0, "fault-media: added ERASE_ERROR fault");
+    ret = media_nand_erase(&ctx, 0, 0, 0, 0, 7);
+    TEST_ASSERT(ret == HFSSS_ERR_IO,
+                "fault-media: erase fails with HFSSS_ERR_IO under fault");
+
+    /* Cleanup */
+    fault_registry_cleanup(&reg);
+    media_cleanup(&ctx);
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 /* Main */
 int main(void)
 {
@@ -1804,6 +1926,7 @@ int main(void)
     test_pr75_review_fixes();
     test_cmd_phase5_cache();
     test_nand_profile_phase6();
+    test_fault_injection_nand_path();
 
     printf("\n========================================\n");
     printf("Test Summary\n");
