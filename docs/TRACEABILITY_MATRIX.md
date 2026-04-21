@@ -278,7 +278,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Hardware Abstraction Layer | 12 | 12 | 0 | 0 | 0 | 100.0% |
 | Common Services | 24 | 20 | 2 | 0 | 2 | 83.3% |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 0 | 2 | 86.4% |
-| Performance Requirements | 8 | 5 | 0 | 0 | 3 | 62.5% |
+| Performance Requirements | 8 | 7 | 0 | 0 | 1 | 87.5% |
 | Product Interfaces | 8 | 4 | 3 | 0 | 1 | 50.0% |
 | Fault Injection Framework | 3 | 2 | 1 | 0 | 0 | 66.7% |
 | System Reliability/Stability | 4 | 3 | 0 | 0 | 1 | 75.0% |
@@ -288,7 +288,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100.0% |
-| **Total** | **178** | **144** | **14** | **0** | **20** | **80.9%** |
+| **Total** | **178** | **146** | **14** | **0** | **18** | **82.0%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 

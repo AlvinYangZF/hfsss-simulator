@@ -38,6 +38,31 @@
 #include "ftl/ftl_worker.h"
 #include "vhost/nbd_async.h"
 #include "common/trace.h"
+#include "common/system_monitor.h"
+
+/* REQ-087 wiring glue. The NBD server doesn't keep a live thread
+ * registry, so surface the caller's best guess via a u32 ctx —
+ * getrusage covers CPU + memory already. On process exit we call
+ * system_monitor_cleanup via atexit so the background thread
+ * joins cleanly regardless of which early-return path the server
+ * main takes. */
+static struct system_monitor g_nbd_sysmon;
+static bool                  g_nbd_sysmon_started;
+static u32                   g_nbd_sysmon_threads = 1;
+
+static u32 nbd_server_thread_count_cb(void *ctx)
+{
+    if (!ctx) return 1;
+    return *(u32 *)ctx;
+}
+
+static void nbd_sysmon_atexit(void)
+{
+    if (g_nbd_sysmon_started) {
+        system_monitor_cleanup(&g_nbd_sysmon);
+        g_nbd_sysmon_started = false;
+    }
+}
 
 /* -------------------------------------------------------------------------
  * Portable 64-bit byte-swap helpers
@@ -794,6 +819,29 @@ int main(int argc, char *argv[])
         fprintf(stderr, "ERROR: nvme_uspace_dev_start failed\n");
         nvme_uspace_dev_cleanup(&dev);
         return 1;
+    }
+
+    /* REQ-087: spin up a process-wide resource sampler so CPU / RSS
+     * stats are collected while the NBD server serves traffic.
+     * Default POSIX callbacks (getrusage) cover CPU + memory;
+     * thread-count comes from g_nbd_sysmon_threads which the
+     * server updates as worker pools scale. 1s polling interval
+     * is light overhead and sufficient for periodic reads.
+     * atexit() handles the teardown so the many early-return
+     * paths below don't each need a local stop+cleanup call. */
+    struct system_monitor_config smcfg = {
+        .poll_interval_ms = 1000,
+        .get_cpu_time_ns  = system_monitor_default_cpu_time_ns,
+        .get_mem_bytes    = system_monitor_default_mem_bytes,
+        .get_thread_count = nbd_server_thread_count_cb,
+        .cb_ctx           = &g_nbd_sysmon_threads,
+    };
+    if (system_monitor_init(&g_nbd_sysmon, &smcfg) == HFSSS_OK) {
+        if (system_monitor_start(&g_nbd_sysmon) == HFSSS_OK) {
+            g_nbd_sysmon_started = true;
+            atexit(nbd_sysmon_atexit);
+            fprintf(stderr, "Monitor:  system_monitor running (1s interval)\n");
+        }
     }
 
     /* Exercise the NVMe admin command processing path through the full

@@ -372,6 +372,22 @@ static void test_validation_run_all(void)
     TEST_ASSERT(r122 != NULL, "report: REQ-122 present (parallel efficiency)");
     TEST_ASSERT(r123 != NULL, "report: REQ-123 present (CPU utilization)");
 
+    /* REQ-121/122/123 must not only appear in the report but pass
+     * their respective gates. Without this a future regression on
+     * the NAND timing model, the scalability Amdahl model, or the
+     * CPU-utilization probe would stay green as long as the rows
+     * stayed present. */
+    TEST_ASSERT(r121->passed, "report: REQ-121 passes (NAND timing error < 5%)");
+    TEST_ASSERT(r122->passed, "report: REQ-122 passes (scalability >= 70%)");
+    TEST_ASSERT(r123->passed, "report: REQ-123 passes (CPU util <= 50%)");
+
+    /* Pin REQ-121/122/123 targets alongside the REQ-116..120
+     * constants below so a target dilution on any perf row
+     * surfaces as a regression. */
+    TEST_ASSERT(r121->target == 5.0,  "report: REQ-121 target == 5% timing error");
+    TEST_ASSERT(r122->target == 70.0, "report: REQ-122 target == 70% efficiency");
+    TEST_ASSERT(r123->target == 50.0, "report: REQ-123 target == 50% CPU util");
+
     /* Pin the per-REQ target values so a target dilution ("lowered
      * gate to 500K to make CI green") surfaces as a test failure.
      * Values mirror the PRD-aligned thresholds encoded in
