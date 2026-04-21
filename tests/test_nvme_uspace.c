@@ -1726,12 +1726,15 @@ static int test_qos_per_ns_iops_cap_engages(void)
      * on the CQE so an NVMe host sees a retryable status rather
      * than a generic device error. */
     struct ns_qos_policy pol_tight = pol;
-    pol_tight.iops_limit = 100;   /* drain quickly */
+    pol_tight.iops_limit = 1000;  /* spec lower bound — drains fast on a tight loop */
     TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, 1, &pol_tight) == HFSSS_OK,
                 "iops: tighten cap for dispatch CQE check");
 
+    /* Bucket starts at max = iops_limit = 1000. Dispatch enough
+     * commands to drain it plus some headroom for refill during
+     * the loop. */
     u16 throttled_sc = 0;
-    for (int i = 0; i < 500; i++) {
+    for (int i = 0; i < 3000; i++) {
         struct nvme_sq_entry sq; struct nvme_cq_entry cpl;
         memset(&sq, 0, sizeof(sq)); memset(&cpl, 0, sizeof(cpl));
         sq.opcode = NVME_NVM_READ; sq.nsid = 1;
@@ -1754,13 +1757,28 @@ static int test_qos_per_ns_iops_cap_engages(void)
     TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, 1, &hi) == HFSSS_OK,
                 "iops: 2M IOPS (spec upper bound) accepted");
 
-    /* nsid out of range rejected. */
+    /* nsid validation: only the advertised namespace (NN=1) is
+     * accepted. Phantom namespaces (2..QOS_MAX_NAMESPACES) are
+     * rejected so the setter mirrors what the I/O path honors. */
     TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, 0, &pol)
                 == HFSSS_ERR_INVAL,
                 "iops: nsid=0 rejected");
+    TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, 2, &pol)
+                == HFSSS_ERR_INVAL,
+                "iops: phantom nsid=2 rejected (above advertised NN)");
     TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, QOS_MAX_NAMESPACES + 1,
                                                &pol) == HFSSS_ERR_INVAL,
                 "iops: nsid past max rejected");
+
+    /* Range validation: reject sub-1K and super-2M IOPS limits. */
+    struct ns_qos_policy under = pol; under.iops_limit = 999;
+    struct ns_qos_policy over  = pol; over.iops_limit  = 2000001;
+    TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, 1, &under)
+                == HFSSS_ERR_INVAL,
+                "iops: 999 IOPS below spec lower bound rejected");
+    TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, 1, &over)
+                == HFSSS_ERR_INVAL,
+                "iops: 2000001 IOPS above spec upper bound rejected");
 
     nvme_uspace_dev_stop(&dev);
     nvme_uspace_dev_cleanup(&dev);
@@ -1824,6 +1842,36 @@ static int test_qos_per_ns_bw_cap_engages(void)
     TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, 1, &hi) == HFSSS_OK,
                 "bw: 14 GB/s (spec upper) accepted");
 
+    /* Out-of-range BW rejected. */
+    struct ns_qos_policy under = pol; under.bw_limit_mbps = 49;
+    struct ns_qos_policy over  = pol; over.bw_limit_mbps  = 14001;
+    TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, 1, &under)
+                == HFSSS_ERR_INVAL,
+                "bw: 49 MB/s below spec lower bound rejected");
+    TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, 1, &over)
+                == HFSSS_ERR_INVAL,
+                "bw: 14001 MB/s above spec upper bound rejected");
+
+    /* Combined IOPS + BW policy: both buckets must engage. With a
+     * tight IOPS cap and an unlimited BW cap, IOPS throttling
+     * dominates. Flip the ratio and BW dominates. Prove both
+     * paths through qos_acquire_tokens fire under combined
+     * enforcement. */
+    struct ns_qos_policy combined = {
+        .nsid = 1, .iops_limit = 1000, .bw_limit_mbps = 14000,
+        .latency_target_us = 0, .burst_allowance = 0, .enforced = true,
+    };
+    TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, 1, &combined) == HFSSS_OK,
+                "bw+iops: combined policy accepted");
+    u32 busy_iops_dom = 0;
+    for (int i = 0; i < 5000; i++) {
+        if (nvme_uspace_read(&dev, 1, 0, 1, rbuf) == HFSSS_ERR_BUSY) {
+            busy_iops_dom++;
+        }
+    }
+    TEST_ASSERT(busy_iops_dom > 0,
+                "bw+iops: IOPS-dominated combined policy throttles");
+
     nvme_uspace_dev_stop(&dev);
     nvme_uspace_dev_cleanup(&dev);
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
@@ -1849,15 +1897,19 @@ static int test_qos_hot_reconfigure_live(void)
 
     /* Tight initial cap — most reads throttle. */
     struct ns_qos_policy tight = {
-        .nsid = 1, .iops_limit = 100, .bw_limit_mbps = 0,
+        .nsid = 1, .iops_limit = 1000, .bw_limit_mbps = 0,
         .latency_target_us = 0, .burst_allowance = 0, .enforced = true,
     };
     TEST_ASSERT(nvme_uspace_dev_set_qos_policy(&dev, 1, &tight) == HFSSS_OK,
-                "hotrc: arm tight 100 IOPS policy");
+                "hotrc: arm tight 1K IOPS (spec lower) policy");
 
+    /* Bucket starts at 1000 tokens. Drive enough traffic to drain
+     * the bucket + outrun the wall-clock refill (~1us per token
+     * at 1M/s equivalent; but the bucket refills only at the cap
+     * rate so it still throttles across 3000 reads). */
     u8 rbuf[4096];
     u32 busy_before = 0;
-    for (int i = 0; i < 500; i++) {
+    for (int i = 0; i < 3000; i++) {
         int rc = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
         if (rc == HFSSS_ERR_BUSY) busy_before++;
     }
@@ -1985,6 +2037,110 @@ static int test_qos_sla_rollback(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* Callback that re-arms the rollback from inside itself. Without
+ * the snapshot-before-fire fix this would race qos_lock against
+ * the trailing slot update in check_sla and could clobber the new
+ * registration. */
+static u32 g_reentrant_calls = 0;
+static struct nvme_uspace_dev *g_reentrant_dev = NULL;
+static void reentrant_cb(u32 nsid, u64 p99_us, void *ctx)
+{
+    (void)p99_us; (void)ctx;
+    g_reentrant_calls++;
+    /* Re-install with a bigger trigger_count so the second window
+     * has fresh semantics — this validates the header's
+     * "callback may reconfigure" guarantee. */
+    (void)nvme_uspace_dev_set_sla_rollback(g_reentrant_dev, nsid,
+                                           1000, 5, reentrant_cb, NULL);
+}
+
+static int test_qos_sla_rollback_callback_reentrancy(void)
+{
+    printf("\n=== QoS: SLA rollback callback can reinstall itself (REQ-150) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    nvme_uspace_config_small(&cfg);
+    int ret = nvme_uspace_dev_init(&dev, &cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "reent: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    g_reentrant_calls = 0;
+    g_reentrant_dev = &dev;
+    ret = nvme_uspace_dev_set_sla_rollback(&dev, 1, 1000, 2,
+                                           reentrant_cb, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "reent: initial rollback installed");
+
+    for (int i = 0; i < 1000; i++) {
+        nvme_uspace_dev_record_latency(&dev, 1, 100000);
+    }
+    for (int i = 0; i < 50; i++) {
+        nvme_uspace_dev_record_latency(&dev, 1, 64ULL * 1000 * 1000);
+    }
+    /* Two consecutive breaches -> first callback fires. Inside the
+     * callback we re-install with trigger=5, so the next fire
+     * needs 5 more breaches, not 2. */
+    (void)nvme_uspace_dev_check_sla(&dev, 1);
+    (void)nvme_uspace_dev_check_sla(&dev, 1);
+    TEST_ASSERT(g_reentrant_calls == 1,
+                "reent: first callback fired exactly once");
+    TEST_ASSERT(dev.sla_by_ns[0].trigger_count == 5,
+                "reent: callback's re-install survived post-fire updates");
+
+    /* 4 more breaches still below the new trigger=5. */
+    for (int i = 0; i < 4; i++) (void)nvme_uspace_dev_check_sla(&dev, 1);
+    TEST_ASSERT(g_reentrant_calls == 1,
+                "reent: 4 breaches below new trigger stay silent");
+    (void)nvme_uspace_dev_check_sla(&dev, 1);  /* 5th breach */
+    TEST_ASSERT(g_reentrant_calls == 2,
+                "reent: 5th breach fires under the re-installed policy");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* Full-path wire-in: nvme_uspace_dispatch_io_cmd must stamp the
+ * completion into the per-NS latency monitor. Without this REQ-150
+ * would stay helper-only and check_sla would never see real data. */
+static int test_qos_dispatch_records_latency(void)
+{
+    printf("\n=== QoS: dispatch_io_cmd records completion latency (REQ-150) ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    nvme_uspace_config_small(&cfg);
+    int ret = nvme_uspace_dev_init(&dev, &cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "wire: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    u64 before = dev.lat_by_ns[0].total_samples;
+    u8 buf[4096];
+
+    /* Run a write + read through the full dispatch path so the
+     * latency hook in nvme_uspace_dispatch_io_cmd fires. */
+    struct nvme_sq_entry sq; struct nvme_cq_entry cpl;
+    memset(&sq, 0, sizeof(sq)); memset(&cpl, 0, sizeof(cpl));
+    sq.opcode     = NVME_NVM_WRITE;
+    sq.nsid       = 1;
+    sq.command_id = 0x01;
+    (void)nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl, buf, sizeof(buf));
+
+    memset(&sq, 0, sizeof(sq)); memset(&cpl, 0, sizeof(cpl));
+    sq.opcode     = NVME_NVM_READ;
+    sq.nsid       = 1;
+    sq.command_id = 0x02;
+    (void)nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl, buf, sizeof(buf));
+
+    u64 after = dev.lat_by_ns[0].total_samples;
+    TEST_ASSERT(after >= before + 2,
+                "wire: dispatch path recorded >= 2 latency samples");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     print_separator();
@@ -2019,6 +2175,8 @@ int main(void)
     test_qos_per_ns_bw_cap_engages();
     test_qos_hot_reconfigure_live();
     test_qos_sla_rollback();
+    test_qos_sla_rollback_callback_reentrancy();
+    test_qos_dispatch_records_latency();
 
     print_separator();
     printf("Test Summary\n");

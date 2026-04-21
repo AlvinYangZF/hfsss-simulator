@@ -75,8 +75,11 @@ int nvme_uspace_dev_init(struct nvme_uspace_dev *dev, struct nvme_uspace_config 
     ret = mutex_init(&dev->keys_lock);
     if (ret != HFSSS_OK) goto fail_error_log_lock;
 
-    ret = mutex_init(&dev->telemetry_lock);
+    ret = mutex_init(&dev->qos_lock);
     if (ret != HFSSS_OK) goto fail_keys_lock;
+
+    ret = mutex_init(&dev->telemetry_lock);
+    if (ret != HFSSS_OK) goto fail_qos_lock;
 
     ret = telemetry_init(&dev->telemetry);
     if (ret != HFSSS_OK) goto fail_telemetry_lock;
@@ -159,6 +162,8 @@ fail_telemetry:
     telemetry_cleanup(&dev->telemetry);
 fail_telemetry_lock:
     mutex_cleanup(&dev->telemetry_lock);
+fail_qos_lock:
+    mutex_cleanup(&dev->qos_lock);
 fail_keys_lock:
     mutex_cleanup(&dev->keys_lock);
 fail_error_log_lock:
@@ -195,6 +200,7 @@ void nvme_uspace_dev_cleanup(struct nvme_uspace_dev *dev)
     hal_aer_cleanup(&dev->aer);
     telemetry_cleanup(&dev->telemetry);
     mutex_cleanup(&dev->telemetry_lock);
+    mutex_cleanup(&dev->qos_lock);
     mutex_cleanup(&dev->keys_lock);
     mutex_cleanup(&dev->error_log_lock);
     mutex_cleanup(&dev->lock);
@@ -646,11 +652,17 @@ int nvme_uspace_read(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count, 
 
     /* REQ-148 / REQ-149: per-NS QoS gate. An unenforced policy
      * passes through; an enforced one throttles the command with
-     * HFSSS_ERR_BUSY when the token bucket is exhausted. */
+     * HFSSS_ERR_BUSY when the token bucket is exhausted. qos_lock
+     * serializes refill/acquire against a concurrent
+     * nvme_uspace_dev_set_qos_policy so a hot-reconfigure can't
+     * tear the bucket mid-check. */
     struct ns_qos_ctx *qctx = &dev->qos_by_ns[nsid - 1];
-    qos_refill_tokens(qctx, get_time_ns());
     u32 io_bytes = count * (u32)dev->sssim.config.lba_size;
-    if (!qos_acquire_tokens(qctx, /*is_write=*/false, io_bytes)) {
+    mutex_lock(&dev->qos_lock, 0);
+    qos_refill_tokens(qctx, get_time_ns());
+    bool admitted = qos_acquire_tokens(qctx, /*is_write=*/false, io_bytes);
+    mutex_unlock(&dev->qos_lock);
+    if (!admitted) {
         mutex_unlock(&dev->keys_lock);
         return HFSSS_ERR_BUSY;
     }
@@ -685,11 +697,15 @@ int nvme_uspace_write(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count,
     }
 
     /* REQ-148 / REQ-149: per-NS QoS gate. Write costs 2 IOPS tokens
-     * per the existing qos_acquire_tokens contract. */
+     * per the existing qos_acquire_tokens contract. See the read
+     * path for why qos_lock sits inside keys_lock. */
     struct ns_qos_ctx *qctx = &dev->qos_by_ns[nsid - 1];
-    qos_refill_tokens(qctx, get_time_ns());
     u32 io_bytes = count * (u32)dev->sssim.config.lba_size;
-    if (!qos_acquire_tokens(qctx, /*is_write=*/true, io_bytes)) {
+    mutex_lock(&dev->qos_lock, 0);
+    qos_refill_tokens(qctx, get_time_ns());
+    bool admitted = qos_acquire_tokens(qctx, /*is_write=*/true, io_bytes);
+    mutex_unlock(&dev->qos_lock);
+    if (!admitted) {
         mutex_unlock(&dev->keys_lock);
         return HFSSS_ERR_BUSY;
     }
@@ -699,6 +715,30 @@ int nvme_uspace_write(struct nvme_uspace_dev *dev, u32 nsid, u64 lba, u32 count,
     return rc;
 }
 
+/* Spec-aligned QoS policy validation: REQ-148 advertises 1K..2M
+ * IOPS, REQ-149 advertises 50 MB/s..14 GB/s. A zero value on
+ * either axis means "unlimited" and is always legal. Any non-zero
+ * value outside the advertised range is rejected at the edge so
+ * the bucket math is never asked to represent an unsupported rate. */
+#define QOS_IOPS_MIN   1000u
+#define QOS_IOPS_MAX   2000000u
+#define QOS_BW_MIN_MBPS 50u
+#define QOS_BW_MAX_MBPS 14000u
+
+static bool qos_policy_within_spec(const struct ns_qos_policy *p)
+{
+    if (p->iops_limit != 0 &&
+        (p->iops_limit < QOS_IOPS_MIN || p->iops_limit > QOS_IOPS_MAX)) {
+        return false;
+    }
+    if (p->bw_limit_mbps != 0 &&
+        (p->bw_limit_mbps < QOS_BW_MIN_MBPS ||
+         p->bw_limit_mbps > QOS_BW_MAX_MBPS)) {
+        return false;
+    }
+    return true;
+}
+
 int nvme_uspace_dev_set_qos_policy(struct nvme_uspace_dev *dev,
                                    u32 nsid,
                                    const struct ns_qos_policy *policy)
@@ -706,7 +746,13 @@ int nvme_uspace_dev_set_qos_policy(struct nvme_uspace_dev *dev,
     if (!dev || !dev->initialized || !policy) {
         return HFSSS_ERR_INVAL;
     }
-    if (nsid == 0 || nsid > QOS_MAX_NAMESPACES) {
+    /* Identify Controller advertises NN=1; reject anything else so
+     * the API mirrors what the I/O path accepts and callers can't
+     * successfully arm phantom namespaces. */
+    if (nsid != 1) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (!qos_policy_within_spec(policy)) {
         return HFSSS_ERR_INVAL;
     }
     struct ns_qos_ctx *qctx = &dev->qos_by_ns[nsid - 1];
@@ -714,10 +760,13 @@ int nvme_uspace_dev_set_qos_policy(struct nvme_uspace_dev *dev,
         return HFSSS_ERR_NOENT;
     }
     /* qos_set_policy rebuilds the token buckets with current time
-     * so a hot-reconfig takes effect on the very next acquire —
-     * no need to stop or drain traffic. keys_lock isn't taken
-     * because qos state is independent of the Opal key table. */
-    return qos_set_policy(qctx, policy);
+     * so a hot-reconfig takes effect on the very next acquire.
+     * qos_lock serializes against the in-flight I/O path so a
+     * concurrent read/write can't observe a torn bucket state. */
+    mutex_lock(&dev->qos_lock, 0);
+    int rc = qos_set_policy(qctx, policy);
+    mutex_unlock(&dev->qos_lock);
+    return rc;
 }
 
 int nvme_uspace_dev_set_sla_rollback(struct nvme_uspace_dev *dev,
@@ -728,49 +777,58 @@ int nvme_uspace_dev_set_sla_rollback(struct nvme_uspace_dev *dev,
                                      void *cb_ctx)
 {
     if (!dev || !dev->initialized) return HFSSS_ERR_INVAL;
-    if (nsid == 0 || nsid > QOS_MAX_NAMESPACES) return HFSSS_ERR_INVAL;
+    /* Match the I/O path: only the advertised namespace is valid. */
+    if (nsid != 1) return HFSSS_ERR_INVAL;
 
     struct ns_latency_monitor *mon = &dev->lat_by_ns[nsid - 1];
     struct nvme_sla_slot      *slot = &dev->sla_by_ns[nsid - 1];
 
+    mutex_lock(&dev->qos_lock, 0);
     /* Update the target_us on the underlying monitor so
      * lat_monitor_check_sla knows what to compare against. */
     mon->target_us = target_us;
-
     slot->cb            = cb;
     slot->cb_ctx        = cb_ctx;
     slot->trigger_count = trigger_count;
     slot->fire_count    = 0;
+    mutex_unlock(&dev->qos_lock);
     return HFSSS_OK;
 }
 
 bool nvme_uspace_dev_check_sla(struct nvme_uspace_dev *dev, u32 nsid)
 {
     if (!dev || !dev->initialized) return false;
-    if (nsid == 0 || nsid > QOS_MAX_NAMESPACES) return false;
+    if (nsid != 1) return false;
 
     struct ns_latency_monitor *mon  = &dev->lat_by_ns[nsid - 1];
     struct nvme_sla_slot      *slot = &dev->sla_by_ns[nsid - 1];
 
-    /* check_sla bumps consecutive_violations on breach and clears
-     * it otherwise — we just need to fold the trigger-count
-     * threshold on top. */
+    /* Evaluate + snapshot the slot inside qos_lock so a concurrent
+     * nvme_uspace_dev_set_sla_rollback (e.g. from inside a
+     * running callback) can't tear slot->cb/ctx/trigger. The
+     * callback itself runs outside the lock so it can legally
+     * re-install a rollback without deadlocking. */
+    mutex_lock(&dev->qos_lock, 0);
     bool breached = lat_monitor_check_sla(mon);
-    if (!breached || slot->trigger_count == 0) {
+    if (!breached || slot->trigger_count == 0 ||
+        mon->consecutive_violations < slot->trigger_count) {
+        mutex_unlock(&dev->qos_lock);
         return false;
     }
-    if (mon->consecutive_violations < slot->trigger_count) {
-        return false;
-    }
-    if (slot->cb) {
-        u64 p99_us = lat_monitor_percentile(mon, 990);
-        slot->cb(nsid, p99_us, slot->cb_ctx);
-    }
-    slot->fire_count++;
+    sla_rollback_fn local_cb = slot->cb;
+    void           *local_ctx = slot->cb_ctx;
+    u64             p99_us   = lat_monitor_percentile(mon, 990);
     /* Reset consecutive_violations so the next N breaches are
-     * treated as a fresh window; otherwise a single burst would
-     * fire the callback every check. */
+     * treated as a fresh window; without this a sustained P99
+     * breach would fire every check. Callers wanting a "new
+     * samples required" gate can lat_monitor_reset on fire. */
     mon->consecutive_violations = 0;
+    slot->fire_count++;
+    mutex_unlock(&dev->qos_lock);
+
+    if (local_cb) {
+        local_cb(nsid, p99_us, local_ctx);
+    }
     return true;
 }
 
@@ -778,8 +836,10 @@ void nvme_uspace_dev_record_latency(struct nvme_uspace_dev *dev,
                                     u32 nsid, u64 latency_ns)
 {
     if (!dev || !dev->initialized) return;
-    if (nsid == 0 || nsid > QOS_MAX_NAMESPACES) return;
+    if (nsid != 1) return;
+    mutex_lock(&dev->qos_lock, 0);
     lat_monitor_record(&dev->lat_by_ns[nsid - 1], latency_ns);
+    mutex_unlock(&dev->qos_lock);
 }
 
 int nvme_uspace_flush(struct nvme_uspace_dev *dev, u32 nsid)
@@ -1276,6 +1336,11 @@ int nvme_uspace_dispatch_io_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_entr
     u32 nlb = (cmd->cdw12 & 0xFFFF) + 1;
     int result = HFSSS_OK;
 
+    /* REQ-150: stamp completion latency on every LBA-bearing I/O so
+     * nvme_uspace_dev_check_sla sees real data. Caller-driven polls
+     * (or a future QoS daemon) evaluate the rolled-up P99. */
+    u64 io_start_ns = get_time_ns();
+
     switch (cmd->opcode) {
     case NVME_NVM_READ:
         if (!data || data_len < (u64)nlb * dev->sssim.config.lba_size) {
@@ -1343,9 +1408,16 @@ int nvme_uspace_dispatch_io_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_entr
         if (result == HFSSS_ERR_AUTH) {
             sc = NVME_SC_OP_DENIED;
         } else if (result == HFSSS_ERR_BUSY) {
-            /* REQ-148 / REQ-149: token bucket exhausted. NVMe §4.4
-             * Namespace Not Ready (0x81) is the closest retryable
-             * code — hosts treat it as "try again later". */
+            /* REQ-148 / REQ-149: token bucket exhausted. NVMe Base
+             * Spec Rev 2.0b §5 lists no dedicated "rate limited"
+             * status code; the closest retryable generic is
+             * "Namespace Not Ready" (0x81, DNR=0 means transient).
+             * A real host should retry after a short delay rather
+             * than mark the namespace as faulted — the simulator
+             * leans on that interpretation with explicit DNR=0
+             * semantics. If future integration shows a real host
+             * treats 0x81 as a hard NS fault we'd switch to a
+             * command-specific "Capacity Exceeded"-shaped code. */
             sc = NVME_SC_NAMESPACE_NOT_READY;
         } else {
             sc = NVME_SC_INTERNAL_DEVICE_ERROR;
@@ -1366,6 +1438,19 @@ int nvme_uspace_dispatch_io_cmd(struct nvme_uspace_dev *dev, struct nvme_sq_entr
             nvme_uspace_report_error(dev, 0, cmd->command_id, status_field,
                                      0, nsid);
         }
+    }
+
+    /* REQ-150: record completion latency on the I/O path. Only
+     * fold LBA-bearing opcodes into the histogram so admin
+     * flow-control events don't skew the P99 reading. */
+    if (cmd->opcode == NVME_NVM_READ ||
+        cmd->opcode == NVME_NVM_WRITE ||
+        cmd->opcode == NVME_NVM_WRITE_ZEROES ||
+        cmd->opcode == NVME_NVM_FLUSH) {
+        u64 io_end_ns = get_time_ns();
+        u64 latency_ns = (io_end_ns > io_start_ns)
+            ? (io_end_ns - io_start_ns) : 0;
+        nvme_uspace_dev_record_latency(dev, nsid, latency_ns);
     }
 
     return HFSSS_OK;

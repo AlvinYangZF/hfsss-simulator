@@ -130,13 +130,16 @@ struct nvme_uspace_dev {
     /* REQ-148 / REQ-149 / REQ-151: per-namespace QoS. Indexed by
      * nsid-1 (Identify advertises NN=1 so only slot 0 is used today,
      * but the table size matches the spec's QOS_MAX_NAMESPACES so
-     * future multi-NS work has room). `qos_by_ns[i].initialized`
-     * gates the acquire-tokens check on the I/O path; an
-     * unenforced policy passes through cleanly. */
+     * future multi-NS work has room). All runtime accesses go under
+     * `qos_lock`; the setter takes the same lock so a hot-reconfigure
+     * can't corrupt an in-flight acquire_tokens call. Leaf lock —
+     * never acquire another lock while holding it. */
     struct ns_qos_ctx         qos_by_ns[QOS_MAX_NAMESPACES];
+    struct mutex              qos_lock;
 
     /* REQ-150: latency monitor used for P99 SLA tracking +
-     * rollback callback registered by the caller. */
+     * rollback callback registered by the caller. Guarded by
+     * `qos_lock` alongside the QoS state. */
     struct ns_latency_monitor lat_by_ns[QOS_MAX_NAMESPACES];
     struct nvme_sla_slot      sla_by_ns[QOS_MAX_NAMESPACES];
 };
