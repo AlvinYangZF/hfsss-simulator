@@ -315,6 +315,32 @@ find_req_row(const struct perf_validation_report *r, const char *id)
     return NULL;
 }
 
+/* Direct assertion on bench_run's cpu_util_pct field so a future
+ * refactor that re-zeros the number (reverting REQ-123's real
+ * measurement) surfaces here, not silently through the run_all
+ * gate. The value is a raw getrusage delta over wall — a
+ * single-thread bench on a non-idle host must read > 0. */
+static void test_bench_run_populates_cpu_util(void)
+{
+    separator("bench_run populates cpu_util_pct (REQ-123)");
+
+    struct bench_cfg cfg = {
+        .workload = BENCH_RAND_READ,
+        .block_size = 4096,
+        .queue_depth = 1,
+        .op_count = 5000,
+        .num_threads = 1,
+        .capacity_bytes = 64ULL * 1024 * 1024,
+    };
+    struct bench_result res;
+    int rc = bench_run(&cfg, &res);
+    TEST_ASSERT(rc == HFSSS_OK, "bench_run returns OK");
+    TEST_ASSERT(res.cpu_util_pct > 0.0,
+                "bench_run fills cpu_util_pct with a non-zero reading");
+    TEST_ASSERT(res.cpu_util_pct < 100.0 * 64.0,
+                "cpu_util_pct stays within a sane upper bound (< 64 cores)");
+}
+
 /* ------------------------------------------------------------------
  * Test 12: perf_validation_run_all returns a report AND each perf
  * target (REQ-116..120) is individually marked passed in the report.
@@ -361,10 +387,11 @@ static void test_validation_run_all(void)
 
     /* Pin the full report inventory so a future run_all refactor
      * that drops rows (or adds ones under a different ID) can't
-     * silently regress. The 11-row contract mirrors what
+     * silently regress. The 12-row contract mirrors what
      * perf_validation_run_all adds today: REQ-116..120 (8 rows
-     * with the RD/WR/P50/P99/P999 sub-IDs) plus REQ-121/122/123. */
-    TEST_ASSERT(report.count == 11, "report: exactly 11 requirement rows");
+     * with the RD/WR/P50/P99/P999 sub-IDs), REQ-121, REQ-122,
+     * REQ-123, and REQ-123-DRAM. */
+    TEST_ASSERT(report.count == 12, "report: exactly 12 requirement rows");
     const struct perf_req_result *r121 = find_req_row(&report, "REQ-121");
     const struct perf_req_result *r122 = find_req_row(&report, "REQ-122");
     const struct perf_req_result *r123 = find_req_row(&report, "REQ-123");
@@ -374,19 +401,23 @@ static void test_validation_run_all(void)
 
     /* REQ-121/122/123 must not only appear in the report but pass
      * their respective gates. Without this a future regression on
-     * the NAND timing model, the scalability Amdahl model, or the
-     * CPU-utilization probe would stay green as long as the rows
-     * stayed present. */
+     * the NAND timing model, the scalability measurement, or the
+     * CPU/DRAM probes would stay green as long as the rows stayed
+     * present. */
+    const struct perf_req_result *r123dram = find_req_row(&report, "REQ-123-DRAM");
+    TEST_ASSERT(r123dram != NULL, "report: REQ-123-DRAM present (memory budget)");
     TEST_ASSERT(r121->passed, "report: REQ-121 passes (NAND timing error < 5%)");
-    TEST_ASSERT(r122->passed, "report: REQ-122 passes (scalability >= 70%)");
+    TEST_ASSERT(r122->passed, "report: REQ-122 passes (measured scalability >= 70%)");
     TEST_ASSERT(r123->passed, "report: REQ-123 passes (CPU util <= 50%)");
+    TEST_ASSERT(r123dram->passed, "report: REQ-123-DRAM passes (RSS <= 1024 MB)");
 
-    /* Pin REQ-121/122/123 targets alongside the REQ-116..120
-     * constants below so a target dilution on any perf row
-     * surfaces as a regression. */
-    TEST_ASSERT(r121->target == 5.0,  "report: REQ-121 target == 5% timing error");
-    TEST_ASSERT(r122->target == 70.0, "report: REQ-122 target == 70% efficiency");
-    TEST_ASSERT(r123->target == 50.0, "report: REQ-123 target == 50% CPU util");
+    /* Pin targets alongside the REQ-116..120 constants below so a
+     * target dilution on any perf row surfaces as a regression. */
+    TEST_ASSERT(r121->target == 5.0,     "report: REQ-121 target == 5% timing error");
+    TEST_ASSERT(r122->target == 70.0,    "report: REQ-122 target == 70% efficiency");
+    TEST_ASSERT(r123->target == 50.0,    "report: REQ-123 target == 50% CPU util");
+    TEST_ASSERT(r123dram->target == 1024.0,
+                "report: REQ-123-DRAM target == 1024 MB RSS");
 
     /* Pin the per-REQ target values so a target dilution ("lowered
      * gate to 500K to make CI green") surfaces as a test failure.
@@ -639,6 +670,7 @@ int main(void)
     printf("\n");
     test_scalability_sanity();
     printf("\n");
+    test_bench_run_populates_cpu_util();
     test_validation_run_all();
     printf("\n");
     test_json_report_format();

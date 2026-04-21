@@ -53,7 +53,10 @@ static u32                   g_nbd_sysmon_threads = 1;
 static u32 nbd_server_thread_count_cb(void *ctx)
 {
     if (!ctx) return 1;
-    return *(u32 *)ctx;
+    /* Relaxed load pairs with the relaxed store from the mt init
+     * site; the thread count is a gauge, not a synchronization
+     * variable, so no acquire/release is required. */
+    return __atomic_load_n((u32 *)ctx, __ATOMIC_RELAXED);
 }
 
 static void nbd_sysmon_atexit(void)
@@ -839,8 +842,21 @@ int main(int argc, char *argv[])
     if (system_monitor_init(&g_nbd_sysmon, &smcfg) == HFSSS_OK) {
         if (system_monitor_start(&g_nbd_sysmon) == HFSSS_OK) {
             g_nbd_sysmon_started = true;
-            atexit(nbd_sysmon_atexit);
-            fprintf(stderr, "Monitor:  system_monitor running (1s interval)\n");
+            if (atexit(nbd_sysmon_atexit) != 0) {
+                /* atexit can fail when the slot table is full.
+                 * Without the exit hook the background thread
+                 * would leak; tear down synchronously instead. */
+                system_monitor_stop(&g_nbd_sysmon);
+                system_monitor_cleanup(&g_nbd_sysmon);
+                g_nbd_sysmon_started = false;
+                fprintf(stderr, "Monitor:  atexit() refused, sampler skipped\n");
+            } else {
+                fprintf(stderr, "Monitor:  system_monitor running (1s interval)\n");
+            }
+        } else {
+            /* Init succeeded but start failed — the monitor holds
+             * an initialized mutex that must be released. */
+            system_monitor_cleanup(&g_nbd_sysmon);
         }
     }
 
@@ -888,6 +904,13 @@ int main(int argc, char *argv[])
             return 1;
         }
         g_mt = &mt_ctx;
+        /* Update the system_monitor's thread-count source once the
+         * MT FTL pool is up. __atomic_store so the sampler thread
+         * sees the new value coherently without a full lock — the
+         * value is just a gauge, not a control signal. */
+        __atomic_store_n(&g_nbd_sysmon_threads,
+                         (u32)(1 + FTL_NUM_WORKERS + 2 /* GC + WL */),
+                         __ATOMIC_RELAXED);
         fprintf(stderr, "Mode:     MULTI-THREADED (%d FTL workers + GC + WL)\n", FTL_NUM_WORKERS);
     } else {
         fprintf(stderr, "Mode:     SINGLE-THREADED\n");

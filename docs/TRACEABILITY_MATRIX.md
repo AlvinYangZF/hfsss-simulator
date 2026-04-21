@@ -173,8 +173,8 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-119 | Sequential bandwidth (6.5/3.5 GB/s) | 6.2 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Implemented |
 | REQ-120 | Latency targets (P50/P99/P99.9) | 6.3 | HLD_01, HLD_02 | LLD_10 | TEST_LLD_01, TEST_LLD_02 | Implemented |
 | REQ-121 | Simulation accuracy (<5% error) | 6.4 | HLD_03 | LLD_10 | TEST_LLD_03 | Not Implemented |
-| REQ-122 | Scalability (32 ch, 4096 NS) | 6.5 | HLD_01, HLD_06 | LLD_10 | TEST_LLD_01, TEST_LLD_06 | Not Implemented |
-| REQ-123 | Resource utilization targets | 6.6 | HLD_05 | LLD_10 | TEST_LLD_05 | Not Implemented |
+| REQ-122 | Scalability (32 ch, 4096 NS) | 6.5 | HLD_01, HLD_06 | LLD_10 | TEST_LLD_01, TEST_LLD_06 | Implemented |
+| REQ-123 | Resource utilization targets | 6.6 | HLD_05 | LLD_10 | TEST_LLD_05 | Implemented |
 ### 8. Product Interfaces (REQ-124 through REQ-131)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
