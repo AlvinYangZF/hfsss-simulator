@@ -38,6 +38,34 @@
 #include "ftl/ftl_worker.h"
 #include "vhost/nbd_async.h"
 #include "common/trace.h"
+#include "common/system_monitor.h"
+
+/* REQ-087 wiring glue. The NBD server doesn't keep a live thread
+ * registry, so surface the caller's best guess via a u32 ctx —
+ * getrusage covers CPU + memory already. On process exit we call
+ * system_monitor_cleanup via atexit so the background thread
+ * joins cleanly regardless of which early-return path the server
+ * main takes. */
+static struct system_monitor g_nbd_sysmon;
+static bool                  g_nbd_sysmon_started;
+static u32                   g_nbd_sysmon_threads = 1;
+
+static u32 nbd_server_thread_count_cb(void *ctx)
+{
+    if (!ctx) return 1;
+    /* Relaxed load pairs with the relaxed store from the mt init
+     * site; the thread count is a gauge, not a synchronization
+     * variable, so no acquire/release is required. */
+    return __atomic_load_n((u32 *)ctx, __ATOMIC_RELAXED);
+}
+
+static void nbd_sysmon_atexit(void)
+{
+    if (g_nbd_sysmon_started) {
+        system_monitor_cleanup(&g_nbd_sysmon);
+        g_nbd_sysmon_started = false;
+    }
+}
 
 /* -------------------------------------------------------------------------
  * Portable 64-bit byte-swap helpers
@@ -796,6 +824,42 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    /* REQ-087: spin up a process-wide resource sampler so CPU / RSS
+     * stats are collected while the NBD server serves traffic.
+     * Default POSIX callbacks (getrusage) cover CPU + memory;
+     * thread-count comes from g_nbd_sysmon_threads which the
+     * server updates as worker pools scale. 1s polling interval
+     * is light overhead and sufficient for periodic reads.
+     * atexit() handles the teardown so the many early-return
+     * paths below don't each need a local stop+cleanup call. */
+    struct system_monitor_config smcfg = {
+        .poll_interval_ms = 1000,
+        .get_cpu_time_ns  = system_monitor_default_cpu_time_ns,
+        .get_mem_bytes    = system_monitor_default_mem_bytes,
+        .get_thread_count = nbd_server_thread_count_cb,
+        .cb_ctx           = &g_nbd_sysmon_threads,
+    };
+    if (system_monitor_init(&g_nbd_sysmon, &smcfg) == HFSSS_OK) {
+        if (system_monitor_start(&g_nbd_sysmon) == HFSSS_OK) {
+            g_nbd_sysmon_started = true;
+            if (atexit(nbd_sysmon_atexit) != 0) {
+                /* atexit can fail when the slot table is full.
+                 * Without the exit hook the background thread
+                 * would leak; tear down synchronously instead. */
+                system_monitor_stop(&g_nbd_sysmon);
+                system_monitor_cleanup(&g_nbd_sysmon);
+                g_nbd_sysmon_started = false;
+                fprintf(stderr, "Monitor:  atexit() refused, sampler skipped\n");
+            } else {
+                fprintf(stderr, "Monitor:  system_monitor running (1s interval)\n");
+            }
+        } else {
+            /* Init succeeded but start failed — the monitor holds
+             * an initialized mutex that must be released. */
+            system_monitor_cleanup(&g_nbd_sysmon);
+        }
+    }
+
     /* Exercise the NVMe admin command processing path through the full
      * dispatch layer.  This generates E2E coverage for admin commands
      * (identify, get/set features, log pages, queue management) that
@@ -840,6 +904,13 @@ int main(int argc, char *argv[])
             return 1;
         }
         g_mt = &mt_ctx;
+        /* Update the system_monitor's thread-count source once the
+         * MT FTL pool is up. __atomic_store so the sampler thread
+         * sees the new value coherently without a full lock — the
+         * value is just a gauge, not a control signal. */
+        __atomic_store_n(&g_nbd_sysmon_threads,
+                         (u32)(1 + FTL_NUM_WORKERS + 2 /* GC + WL */),
+                         __ATOMIC_RELAXED);
         fprintf(stderr, "Mode:     MULTI-THREADED (%d FTL workers + GC + WL)\n", FTL_NUM_WORKERS);
     } else {
         fprintf(stderr, "Mode:     SINGLE-THREADED\n");
