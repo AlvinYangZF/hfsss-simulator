@@ -29,7 +29,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 |--------|------:|---:|---:|---:|---:|-----------:|--------|
 | PCIe/NVMe Device Emulation | 22 | 13 | 1 | 8 | 0 | 59.1% | ↑ REQ-002 PCIe cap linked-list walk flipped after REQ-069 config space landed |
 | Controller Thread | 15 | 12 | 1 | 2 | 0 | 80.0% | -- |
-| Media Threads | 20 | 15 | 4 | 1 | 0 | 75.0% | ↑ +4 (NOR full) |
+| Media Threads | 20 | 18 | 2 | 0 | 0 | 90.0% | ↑ REQ-042 multi-plane concurrency + REQ-044 per-channel worker + REQ-045 async completion |
 | HAL | 12 | 12 | 0 | 0 | 0 | 100% | ↑ REQ-063 AER + REQ-064 PCIe link state + REQ-069 byte-level config space (LLD_13) |
 | Common Services | 24 | 20 | 2 | 2 | 0 | 83.3% | ↑ REQ-085 SPSC ring + REQ-087 system resource monitor on top of boot/power/OOB/SMART/trace |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 2 | 0 | 86.4% | ↑ +6 (cmd state machine, retries, flow ctl, wear monitor, Error Log Page) |
@@ -37,7 +37,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Product Interfaces | 8 | 4 | 3 | 1 | 0 | 50.0% | ↑ +4 (/proc, hfsss-ctrl, YAML, persistence) |
 | Fault Injection | 3 | 2 | 1 | 0 | 0 | 66.7% (100% partial) | ↑ registry + power hook + NAND read/program/erase fault gates landed |
 | System Reliability | 4 | 3 | 0 | 1 | 0 | 75.0% | ↑ REQ-088 P99.9 latency anomaly detector |
-| **Core Subtotal** | **138** | **107** | **13** | **18** | **0** | **77.5%** (87.0% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **110** | **11** | **17** | **0** | **79.7%** (87.7% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 6 | 1 | 0 | 0 | 85.7% (100% partial) | ↑ DWRR + per-NS IOPS/BW caps + SLA rollback + hot-reconfig |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
 | **Enterprise Subtotal** | **40** | **39** | **1** | **0** | **0** | **97.5%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **146** | **14** | **18** | **0** | **82.0%** (89.9% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **149** | **12** | **17** | **0** | **83.7%** (90.4% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -108,10 +108,10 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-039 | NAND Flash Hierarchy - Total Capacity Calculation | ✅ | Capacity calculation implemented |
 | REQ-040 | NAND Media Timing Model - Basic Timing Parameters | ✅ | Timing model in `timing.h/c` |
 | REQ-041 | NAND Media Timing Model - Timing Model Implementation | ✅ | EAT engine in `eat.h/c` |
-| REQ-042 | NAND Media Timing Model - Multi-Plane Concurrency | ⚠️ | Basic EAT, but not full multi-plane |
+| REQ-042 | NAND Media Timing Model - Multi-Plane Concurrency | ✅ | Per-plane EAT iteration in `cmd_engine.c` runs N planes in parallel; `tests/test_media_multi_plane_concurrency.c` proves 2/4-plane ops land within 1.5x single-plane wall-clock and per-plane EAT independence |
 | REQ-043 | NAND Media Command Execution Engine - NAND Command Support | ⚠️ | Basic read/program/erase, not full ONFI command set |
-| REQ-044 | NAND Media Command Execution Engine - Command Queue Design | ⚠️ | Basic structures, no per-channel thread |
-| REQ-045 | NAND Media Command Execution Engine - Completion Notification | ❌ | No async completion notifications |
+| REQ-044 | NAND Media Command Execution Engine - Command Queue Design | ✅ | `channel_worker` runtime (`include/controller/channel_worker.h`, `src/controller/channel_worker.c`) provides one pthread per channel with an SPSC request ring; `tests/test_channel_worker.c` exercises single/multi-cmd submit, back-pressure and isolation across channels |
+| REQ-045 | NAND Media Command Execution Engine - Completion Notification | ✅ | `channel_cmd` carries an `on_complete` callback and an atomic `done` flag; `channel_cmd_wait` provides the poll-style barrier. Fired from the worker thread after the synchronous media dispatch returns |
 | REQ-046 | NAND Reliability Modeling - P/E Cycle Degradation Model | ✅ | Reliability model in `reliability.h/c` |
 | REQ-047 | NAND Reliability Modeling - Read Disturb Model | ✅ | Read disturb implemented |
 | REQ-048 | NAND Reliability Modeling - Data Retention Model | ⚠️ | Basic model, no time acceleration |
@@ -375,9 +375,9 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 Current position: **core + enterprise features largely landed; polish and gap-closure in progress.**
 
 Near-term priorities:
-1. Core gaps: REQ-010 PRP/SGL, REQ-025 dispatch FSM, REQ-042 multi-plane concurrency, REQ-044 per-channel thread, REQ-096 Format NVM OP%.
+1. Core gaps: REQ-010 PRP/SGL, REQ-025 dispatch FSM, REQ-096 Format NVM OP%, REQ-048 data retention time acceleration, REQ-074 task binding.
 2. Wire **real producers** for `system_monitor` (REQ-087) and the QoS hot-reconfig entry point into the NBD / vhost / exporter mains — hooks exist, callers still need to attach real sensors + config surfaces.
-3. Core gaps: REQ-010 PRP/SGL full, REQ-025 cmd dispatch FSM, REQ-042 multi-plane concurrency, REQ-044 per-channel thread, REQ-096 Format NVM OP%.
+3. Retarget FTL / GC on top of the new `channel_worker` runtime to realise the async NAND-completion benefit in the hot path (scaffold and tests already in place).
 
 Mid-term:
 4. Broaden QoS coverage — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).

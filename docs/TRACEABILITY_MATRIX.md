@@ -77,10 +77,10 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-039 | Total capacity calculation (~4TB raw) | 5.3.2 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
 | REQ-040 | Base timing parameters (tR/tPROG/tERS) | 5.3.3 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
 | REQ-041 | EAT timing model | 5.3.3 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
-| REQ-042 | Multi-plane concurrency | 5.3.3 | HLD_03 | LLD_03 | TEST_LLD_03 | Partial |
+| REQ-042 | Multi-plane concurrency | 5.3.3 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
 | REQ-043 | NAND command set (ONFI) | 5.3.4 | HLD_03 | LLD_03 | TEST_LLD_03 | Partial |
-| REQ-044 | Command queue (per-channel, 128 entries) | 5.3.4 | HLD_03 | LLD_03 | TEST_LLD_03 | Partial |
-| REQ-045 | Completion notification (lock-free) | 5.3.4 | HLD_03 | LLD_03 | TEST_LLD_03 | Not Implemented |
+| REQ-044 | Command queue (per-channel, 128 entries) | 5.3.4 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
+| REQ-045 | Completion notification (lock-free) | 5.3.4 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
 | REQ-046 | P/E cycle degradation model | 5.3.5 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
 | REQ-047 | Read disturb model | 5.3.5 | HLD_03 | LLD_03 | TEST_LLD_03 | Implemented |
 | REQ-048 | Data retention model | 5.3.5 | HLD_03 | LLD_03 | TEST_LLD_03 | Partial |
@@ -274,7 +274,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 |--------|-----------|-------------|---------|------|-----------------|------------|
 | PCIe/NVMe Device Emulation | 22 | 13 | 1 | 0 | 8 | 59.1% |
 | Controller Thread | 15 | 12 | 1 | 0 | 2 | 80.0% |
-| Media Threads | 20 | 15 | 4 | 0 | 1 | 75.0% |
+| Media Threads | 20 | 18 | 2 | 0 | 0 | 90.0% |
 | Hardware Abstraction Layer | 12 | 12 | 0 | 0 | 0 | 100.0% |
 | Common Services | 24 | 20 | 2 | 0 | 2 | 83.3% |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 0 | 2 | 86.4% |
@@ -288,7 +288,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100.0% |
-| **Total** | **178** | **146** | **14** | **0** | **18** | **82.0%** |
+| **Total** | **178** | **149** | **12** | **0** | **17** | **83.7%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 
