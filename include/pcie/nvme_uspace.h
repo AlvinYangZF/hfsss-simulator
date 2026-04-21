@@ -7,7 +7,22 @@
 #include "sssim.h"
 #include "common/telemetry.h"
 #include "controller/security.h"
+#include "controller/qos.h"
 #include "hal/hal_aer.h"
+
+/* REQ-150: callback fired when the latency monitor observes
+ * `trigger_count` consecutive P99 SLA violations on a namespace.
+ * Receives the nsid, the current P99 reading (microseconds), and
+ * the caller ctx. Declared here so struct nvme_uspace_dev below
+ * can embed a per-ns slot without a forward-decl dance. */
+typedef void (*sla_rollback_fn)(u32 nsid, u64 p99_us, void *ctx);
+
+struct nvme_sla_slot {
+    sla_rollback_fn cb;
+    void           *cb_ctx;
+    u32             trigger_count;   /* 0 disables the rollback */
+    u32             fire_count;      /* total times cb has fired */
+};
 
 /* Simulator Opal command frame layout used on Security Send / Recv
  * data buffers (REQ-161). 37 bytes total:
@@ -111,6 +126,22 @@ struct nvme_uspace_dev {
      * 100) so the monitor is silent until a real data source is
      * attached via nvme_uspace_dev_set_smart_source(). */
     struct smart_monitor smart_mon;
+
+    /* REQ-148 / REQ-149 / REQ-151: per-namespace QoS. Indexed by
+     * nsid-1 (Identify advertises NN=1 so only slot 0 is used today,
+     * but the table size matches the spec's QOS_MAX_NAMESPACES so
+     * future multi-NS work has room). All runtime accesses go under
+     * `qos_lock`; the setter takes the same lock so a hot-reconfigure
+     * can't corrupt an in-flight acquire_tokens call. Leaf lock —
+     * never acquire another lock while holding it. */
+    struct ns_qos_ctx         qos_by_ns[QOS_MAX_NAMESPACES];
+    struct mutex              qos_lock;
+
+    /* REQ-150: latency monitor used for P99 SLA tracking +
+     * rollback callback registered by the caller. Guarded by
+     * `qos_lock` alongside the QoS state. */
+    struct ns_latency_monitor lat_by_ns[QOS_MAX_NAMESPACES];
+    struct nvme_sla_slot      sla_by_ns[QOS_MAX_NAMESPACES];
 };
 
 /* User-space NVMe Configuration */
@@ -207,6 +238,43 @@ int nvme_uspace_dev_set_smart_source(struct nvme_uspace_dev *dev,
                                      smart_remaining_life_fn get_remaining_life,
                                      smart_spare_fn          get_spare,
                                      void                   *cb_ctx);
+
+/* REQ-151: hot-reconfigure the per-namespace QoS policy at runtime.
+ * Applies `policy` to `nsid` without stopping or draining the I/O
+ * path; the next qos_acquire_tokens call sees the new caps. Pass
+ * policy->enforced=false to disable throttling without tearing
+ * down the ctx. Returns HFSSS_ERR_INVAL for nsid outside the
+ * advertised range, HFSSS_ERR_NOENT if the slot hasn't been armed
+ * yet. */
+int nvme_uspace_dev_set_qos_policy(struct nvme_uspace_dev *dev,
+                                   u32 nsid,
+                                   const struct ns_qos_policy *policy);
+
+/* REQ-150: install a P99 SLA rollback callback for a namespace.
+ * The existing ns_latency_monitor counts consecutive_violations on
+ * every SLA breach; when that counter reaches `trigger_count`, the
+ * callback fires with the offending nsid + the current P99 reading
+ * so the caller can tighten caps, flip to a stricter deterministic
+ * window, or log a telemetry event. `trigger_count == 0` disables
+ * the rollback without touching the monitor. */
+int nvme_uspace_dev_set_sla_rollback(struct nvme_uspace_dev *dev,
+                                     u32 nsid,
+                                     u32 target_us,
+                                     u32 trigger_count,
+                                     sla_rollback_fn cb,
+                                     void *cb_ctx);
+
+/* Drive the SLA check for `nsid`. Usually called after recording a
+ * batch of latency samples via lat_monitor_record; on the sim test
+ * path it's invoked synchronously. Returns true if the rollback
+ * callback fired on this call. */
+bool nvme_uspace_dev_check_sla(struct nvme_uspace_dev *dev, u32 nsid);
+
+/* Record a single completion latency into the per-ns monitor so the
+ * P99 / P99.9 detectors have data. Used by the dispatch wiring + by
+ * tests. */
+void nvme_uspace_dev_record_latency(struct nvme_uspace_dev *dev,
+                                    u32 nsid, u64 latency_ns);
 int nvme_uspace_get_features(struct nvme_uspace_dev *dev, u8 fid, u32 *value);
 int nvme_uspace_set_features(struct nvme_uspace_dev *dev, u8 fid, u32 value);
 
