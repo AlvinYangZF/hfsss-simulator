@@ -271,11 +271,12 @@ static void test_randrw_mix(void)
         uint64_t r = xorshift64();
         uint64_t lba = r % seeded;
         if ((r >> 32) % 100 < 70) {
-            /* 70% reads — any outcome that isn't a crash is OK
-             * because rand-write above may have left some LBAs
-             * trimmed or overwritten. */
-            int rc = nvme_uspace_read(&dev, 1, lba, 1, rbuf);
-            if (rc != HFSSS_OK && rc != HFSSS_ERR_NOENT) { ok = false; break; }
+            /* 70% reads. Every LBA in [0, seeded) was pre-written and
+             * is only ever overwritten by the 30% branch below (never
+             * trimmed), so a well-behaved device must return OK. A
+             * NOENT here would mean a prior write silently dropped
+             * its mapping — treat that as failure. */
+            if (nvme_uspace_read(&dev, 1, lba, 1, rbuf) != HFSSS_OK) { ok = false; break; }
             reads++;
         } else {
             fill_pattern(wbuf, lba ^ i ^ 0xFEEDu, TEST_PAGE_SIZE);

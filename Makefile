@@ -633,7 +633,7 @@ stress-long: all
 
 # System-level tests (Tier 1)
 .PHONY: systest
-systest: directories $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR)
+systest: directories $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR) $(SYSTEST_NVME_CLI) $(SYSTEST_FIO_COMPAT)
 	@echo "========================================"
 	@echo "Running system-level tests..."
 	@echo "========================================"
@@ -648,6 +648,10 @@ systest: directories $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(S
 	@$(SYSTEST_WG)
 	@echo ""
 	@$(SYSTEST_PR)
+	@echo ""
+	@$(SYSTEST_NVME_CLI)
+	@echo ""
+	@$(SYSTEST_FIO_COMPAT)
 	@echo ""
 	@echo "========================================"
 	@echo "All system-level tests complete!"

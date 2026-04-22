@@ -173,13 +173,20 @@ static void test_smart_log(void)
 }
 
 /*
- * `nvme error-log` (LID=0x01) and `nvme fw-log` (LID=0x03). Both CLI
- * commands read small structured buffers and pretty-print. Same
- * admin-returns-OK / buffer-populated contract as smart-log.
+ * `nvme error-log` (LID=0x01). CLI reads the structured buffer and
+ * pretty-prints the error ring. Same admin-returns-OK / buffer-
+ * populated contract as smart-log.
+ *
+ * `nvme fw-log` (LID=0x03) is intentionally omitted. The underlying
+ * get_log_page handler currently returns NOTSUPP for LID=0x03, which
+ * means the CLI cannot consume a real firmware slot buffer from this
+ * simulator. Claiming wire-compat on a NOTSUPP reply would overstate
+ * coverage, so REQ-125 stays Partial until the fw-log handler is
+ * wired.
  */
-static void test_error_and_fw_log(void)
+static void test_error_log(void)
 {
-    printf("\n[nvme-cli error-log + fw-log] log pages 0x01 and 0x03 wire compat\n");
+    printf("\n[nvme-cli error-log] log page 0x01 wire compat\n");
     struct nvme_uspace_dev dev;
     struct nvme_uspace_config cfg;
     if (setup_device(&dev, &cfg) != 0) { TEST_ASSERT(false, "setup"); return; }
@@ -188,17 +195,6 @@ static void test_error_and_fw_log(void)
     memset(errbuf, 0, sizeof(errbuf));
     int rc = nvme_uspace_get_log_page(&dev, 0xFFFFFFFF, NVME_LID_ERROR_INFO, errbuf, sizeof(errbuf));
     TEST_ASSERT(rc == HFSSS_OK, "error-log: admin returns OK");
-
-    /* fw-log LID=0x03 may legitimately return NOTSUPP when the
-     * simulator has no firmware slot metadata to expose; nvme-cli
-     * handles that by printing "not supported" rather than crashing.
-     * Both outcomes are wire-compatible so long as a crash or garbage
-     * write to the caller buffer does not occur. */
-    uint8_t fwbuf[512];
-    memset(fwbuf, 0xEE, sizeof(fwbuf));
-    rc = nvme_uspace_get_log_page(&dev, 0xFFFFFFFF, NVME_LID_FW_SLOT, fwbuf, sizeof(fwbuf));
-    TEST_ASSERT(rc == HFSSS_OK || rc == HFSSS_ERR_NOTSUPP,
-                "fw-log: admin returns OK or NOTSUPP (wire-compat either way)");
 
     teardown_device(&dev);
 }
@@ -319,7 +315,7 @@ int main(void)
     test_id_ctrl();
     test_id_ns();
     test_smart_log();
-    test_error_and_fw_log();
+    test_error_log();
     test_format_nvm();
     test_sanitize();
     test_fw_download_commit();

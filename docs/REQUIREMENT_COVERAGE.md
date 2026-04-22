@@ -34,10 +34,10 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Common Services | 24 | 20 | 2 | 2 | 0 | 83.3% | ↑ REQ-085 SPSC ring + REQ-087 system resource monitor on top of boot/power/OOB/SMART/trace |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 2 | 0 | 86.4% | ↑ +6 (cmd state machine, retries, flow ctl, wear monitor, Error Log Page) |
 | Performance Requirements | 8 | 7 | 0 | 1 | 0 | 87.5% (87.5% partial) | ↑ REQ-116..120 + REQ-122 Amdahl scalability + REQ-123 bursty-load CPU probe gated by regression suite |
-| Product Interfaces | 8 | 7 | 0 | 1 | 0 | 87.5% | ↑ REQ-125 nvme-cli + REQ-126 fio direct compat systests + REQ-131 LLD_15 persistence format spec |
+| Product Interfaces | 8 | 4 | 3 | 1 | 0 | 50.0% (87.5% partial) | -- REQ-125/126/131 retain ⚠️ pending LLD_16 host-path evidence and LLD_15 ↔ shipping-code reconciliation |
 | Fault Injection | 3 | 2 | 1 | 0 | 0 | 66.7% (100% partial) | ↑ registry + power hook + NAND read/program/erase fault gates landed |
 | System Reliability | 4 | 3 | 0 | 1 | 0 | 75.0% | ↑ REQ-088 P99.9 latency anomaly detector |
-| **Core Subtotal** | **138** | **112** | **9** | **17** | **0** | **81.2%** (87.7% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **109** | **12** | **17** | **0** | **79.0%** (87.7% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 6 | 1 | 0 | 0 | 85.7% (100% partial) | ↑ DWRR + per-NS IOPS/BW caps + SLA rollback + hot-reconfig |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
 | **Enterprise Subtotal** | **40** | **39** | **1** | **0** | **0** | **97.5%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **151** | **10** | **17** | **0** | **84.8%** (90.4% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **148** | **13** | **17** | **0** | **83.1%** (90.4% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -216,13 +216,13 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | ID | Requirement Description | Status | Notes |
 |----|------------------------|--------|-------|
 | REQ-124 | Host Interface - Block Device Node | ❌ | Requires kernel module; covered by NBD bridge + QEMU (indirect). Phase 7 deferral |
-| REQ-125 | nvme-cli Compatibility | ✅ | Direct wire-compat evidence in `tests/systest_nvme_cli_compat.c` — each test mirrors an `nvme-cli` subcommand (`id-ctrl`, `id-ns`, `smart-log`, `error-log`, `fw-log`, `format`, `sanitize`, `fw-download`+`fw-commit`, `get-feature`) against the same uspace admin entry points the CLI reaches through the guest driver. End-to-end coverage via QEMU blackbox under `scripts/qemu_blackbox/cases/nvme/` is preserved. |
-| REQ-126 | fio Test Tool Compatibility | ✅ | Direct workload-pattern evidence in `tests/systest_fio_compat.c` covering fio's canonical shapes (seq-write, seq-read-verify, rand-write, rand-read-verify, 70/30 randrw mix, 128 KiB large-block) with payload fidelity checks on the verify paths. QEMU-guest fio coverage preserved under `scripts/qemu_blackbox/cases/fio/`. |
+| REQ-125 | nvme-cli Compatibility | ⚠️ | Complementary uspace admin evidence in `tests/systest_nvme_cli_compat.c` mirrors `nvme-cli` subcommands (`id-ctrl`, `id-ns`, `smart-log`, `error-log`, `format`, `sanitize`, `fw-download`+`fw-commit`, `get-feature`) against the uspace entry points the CLI would reach through the guest driver. `fw-log` (LID=0x03) is **not** included because the handler returns NOTSUPP — that would be an unimplemented subcommand, not wire-compat. The PRD's traced definition (LLD_16) calls for real `nvme-cli` execution on `/dev/nvmeXnY` via the kernel / NBD host path; that evidence still lives in the QEMU blackbox under `scripts/qemu_blackbox/cases/nvme/` and is not yet a gating systest here. REQ-125 stays Partial until both surfaces meet in one place. |
+| REQ-126 | fio Test Tool Compatibility | ⚠️ | Complementary workload-shape evidence in `tests/systest_fio_compat.c` covers fio's canonical shapes (seq-write, seq-read-verify, rand-write, rand-read-verify, 70/30 randrw mix, 128 KiB large-block) with payload-fidelity checks on the verify paths. This is a direct test of the simulator's uspace read/write API, not of the `fio` binary itself. The PRD's traced definition (LLD_16) calls for actual `fio` invocation on `/dev/nvmeXnY` with `io_uring`, `direct=1`, `iodepth=128`, `numjobs=32`; that evidence lives in `scripts/qemu_blackbox/cases/fio/` and is not yet a gating systest. REQ-126 stays Partial pending the host-path integration. |
 | REQ-127 | OOB Socket Interface | ✅ | Same JSON-RPC Unix socket as REQ-082 |
 | REQ-128 | /proc Filesystem Interface | ✅ | `src/common/proc_interface.c` emits `proc_write_status`/`proc_write_perf_counters`/`proc_write_ftl_stats`; `tests/test_proc_interface.c` |
 | REQ-129 | Command Line Interface - hfsss-ctrl | ✅ | `src/tools/hfsss_ctrl.c` CLI speaking to OOB socket |
 | REQ-130 | Configuration File Interface - YAML | ✅ | `src/common/hfsss_config.c` YAML loader; `tests/test_config.c` |
-| REQ-131 | Persistence Data Format Interface | ✅ | Format spec published as `docs/LLD_15_PERSISTENCE_FORMAT_EN.md` / `.md` covering NAND-data / L2P checkpoint / WAL / panic-dump headers, magic numbers, versioning, cross-compat rules, flow diagrams, and per-format test plan. Implementations in `src/ftl/superblock.c`, `src/ftl/wal.c`, and `src/media/media.c` with persistence tests in `tests/test_sb.c` / `tests/test_power_cycle.c`. |
+| REQ-131 | Persistence Data Format Interface | ⚠️ | Spec published as `docs/LLD_15_PERSISTENCE_FORMAT_EN.md` (covers NAND-data / L2P checkpoint / WAL / panic-dump header layouts, magic numbers, versioning, cross-compat rules, flow diagrams, per-format test plan). Shipping-code implementations live in `src/ftl/superblock.c`, `src/ftl/wal.c`, and `src/media/media.c` with persistence tests in `tests/test_superblock.c` / `tests/test_power_cycle.c`. REQ-131 stays Partial because LLD_15 currently diverges from the shipping on-disk artifacts in several places (e.g. the spec's WAL header layout does not match `include/ftl/wal.h`; the spec names per-plane / per-sequence checkpoint files while media persistence writes a single `checkpoint.bin`; and the spec references an `include/common/persistence_fmt.h` that does not exist). Reconciliation — either rewriting the spec to match code or bringing code into conformance with the spec — is outstanding. |
 
 ### 9. Fault Injection Framework (REQ-132 to REQ-134)
 
@@ -363,7 +363,7 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 | LLD_12_REALTIME_SERVICES.md | REQ-074, REQ-085..088, REQ-171..178 | Implemented except IPC ring + resource sampling + P99 anomaly alert |
 | LLD_13_HAL_ADVANCED.md | REQ-063, REQ-064, REQ-069 | AER + PCIe link state + PCI config space (byte-level 256B/4KB) all implemented |
 | LLD_14_NOR_FLASH.md | REQ-053..056 | Implemented |
-| LLD_15_PERSISTENCE_FORMAT.md | REQ-131 | Spec published (EN + CN) covering NAND-data / L2P checkpoint / WAL / panic-dump formats + versioning |
+| LLD_15_PERSISTENCE_FORMAT.md | REQ-131 | Spec published (EN + CN); reconciliation with shipping checkpoint/WAL/media layouts still outstanding |
 | LLD_17_POWER_LOSS_PROTECTION.md | REQ-139..146 | Implemented |
 | LLD_18_QOS_DETERMINISM.md | REQ-147..153 | DWRR + latency monitor landed; per-NS caps + SLA enforcement partial |
 | LLD_19_SECURITY_ENCRYPTION.md | REQ-159..165 | Implemented (all 7) |
