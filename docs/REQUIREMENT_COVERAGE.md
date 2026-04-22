@@ -34,10 +34,10 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Common Services | 24 | 20 | 2 | 2 | 0 | 83.3% | ↑ REQ-085 SPSC ring + REQ-087 system resource monitor on top of boot/power/OOB/SMART/trace |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 2 | 0 | 86.4% | ↑ +6 (cmd state machine, retries, flow ctl, wear monitor, Error Log Page) |
 | Performance Requirements | 8 | 7 | 0 | 1 | 0 | 87.5% (87.5% partial) | ↑ REQ-116..120 + REQ-122 Amdahl scalability + REQ-123 bursty-load CPU probe gated by regression suite |
-| Product Interfaces | 8 | 4 | 3 | 1 | 0 | 50.0% (87.5% partial) | -- REQ-125/126/131 retain ⚠️ pending LLD_16 host-path evidence and LLD_15 ↔ shipping-code reconciliation |
+| Product Interfaces | 8 | 5 | 2 | 1 | 0 | 62.5% (87.5% partial) | ↑ REQ-131 LLD_15 reconciled with shipping code (V1.1); REQ-125/126 retain ⚠️ pending LLD_16 host-path evidence |
 | Fault Injection | 3 | 2 | 1 | 0 | 0 | 66.7% (100% partial) | ↑ registry + power hook + NAND read/program/erase fault gates landed |
 | System Reliability | 4 | 3 | 0 | 1 | 0 | 75.0% | ↑ REQ-088 P99.9 latency anomaly detector |
-| **Core Subtotal** | **138** | **109** | **12** | **17** | **0** | **79.0%** (87.7% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **110** | **11** | **17** | **0** | **79.7%** (87.7% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 6 | 1 | 0 | 0 | 85.7% (100% partial) | ↑ DWRR + per-NS IOPS/BW caps + SLA rollback + hot-reconfig |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
 | **Enterprise Subtotal** | **40** | **39** | **1** | **0** | **0** | **97.5%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **148** | **13** | **17** | **0** | **83.1%** (90.4% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **149** | **12** | **17** | **0** | **83.7%** (90.4% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -222,7 +222,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-128 | /proc Filesystem Interface | ✅ | `src/common/proc_interface.c` emits `proc_write_status`/`proc_write_perf_counters`/`proc_write_ftl_stats`; `tests/test_proc_interface.c` |
 | REQ-129 | Command Line Interface - hfsss-ctrl | ✅ | `src/tools/hfsss_ctrl.c` CLI speaking to OOB socket |
 | REQ-130 | Configuration File Interface - YAML | ✅ | `src/common/hfsss_config.c` YAML loader; `tests/test_config.c` |
-| REQ-131 | Persistence Data Format Interface | ⚠️ | Spec published as `docs/LLD_15_PERSISTENCE_FORMAT_EN.md` (covers NAND-data / L2P checkpoint / WAL / panic-dump header layouts, magic numbers, versioning, cross-compat rules, flow diagrams, per-format test plan). Shipping-code implementations live in `src/ftl/superblock.c`, `src/ftl/wal.c`, and `src/media/media.c` with persistence tests in `tests/test_superblock.c` / `tests/test_power_cycle.c`. REQ-131 stays Partial because LLD_15 currently diverges from the shipping on-disk artifacts in several places (e.g. the spec's WAL header layout does not match `include/ftl/wal.h`; the spec names per-plane / per-sequence checkpoint files while media persistence writes a single `checkpoint.bin`; and the spec references an `include/common/persistence_fmt.h` that does not exist). Reconciliation — either rewriting the spec to match code or bringing code into conformance with the spec — is outstanding. |
+| REQ-131 | Persistence Data Format Interface | ✅ | Format spec `docs/LLD_15_PERSISTENCE_FORMAT_EN.md` / `.md` (V1.1, 2026-04-22) reconciled with shipping on-disk layouts: Media checkpoint (`struct media_file_header`, `MEDIA_FILE_MAGIC = 0x48465353`, V2 with FULL / INCREMENTAL flags, single `checkpoint.bin`), Superblock L2P checkpoint + journal (`SB_*_MAGIC`, `sb_page_header`, `ckpt_entry`, `journal_entry` in `include/ftl/superblock.h`), and WAL (`WAL_RECORD_MAGIC = 0x12345678`, `WAL_COMMIT_MARKER = 0xDEADBEEF`, 64-byte `struct wal_record` in `include/ftl/wal.h`). Panic-dump file format moved to §3.5 "Future Work" — current boot flow emits `[PANIC]` via the standard log sink. Persistence paths covered by `tests/test_superblock.c` (superblock / checkpoint / journal) and `tests/test_power_cycle.c` (end-to-end crash recovery). |
 
 ### 9. Fault Injection Framework (REQ-132 to REQ-134)
 
@@ -325,7 +325,7 @@ Phases 0 through 6 are substantially landed, plus the Enterprise V3.0 UPLP / Mul
 - **FTL Layer**: 81.8% (Cost-Benefit GC + wear leveling + WAF + command state machine + read/write retry with voltage offsets + multi-level flow control + T10 PI CRC-16)
 - **PCIe/NVMe User-Space**: 54.5% (admin / IO / DSM / identify / doorbell / CQ; kernel-side DMA/MSI-X/IOMMU remain Phase 7)
 - **Common Services**: 75% (mutex/semaphore/msgqueue/mempool, boot 6-stage + dual-slot firmware, power mgmt, OOB JSON-RPC, SMART, trace ring, watchdog, UPLP, thermal, telemetry, secure boot, security key table)
-- **Product Interfaces**: 50% — `/proc`, `hfsss-ctrl`, YAML config landed; block-device REQ-124 remains Phase 7
+- **Product Interfaces**: 62.5% — `/proc`, `hfsss-ctrl`, YAML config, LLD_15 persistence format landed; REQ-124 (block device) remains Phase 7; REQ-125/126 retain ⚠️ pending LLD_16 host-path evidence
 - **Fault Injection**: 66.7% (NAND registry + power-fail hooks; controller-wide hooks partial)
 - **Enterprise UPLP / Multi-NS / Security / Thermal-Telemetry**: 100% / 100% / 85.7% / 75%
 
@@ -363,7 +363,7 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 | LLD_12_REALTIME_SERVICES.md | REQ-074, REQ-085..088, REQ-171..178 | Implemented except IPC ring + resource sampling + P99 anomaly alert |
 | LLD_13_HAL_ADVANCED.md | REQ-063, REQ-064, REQ-069 | AER + PCIe link state + PCI config space (byte-level 256B/4KB) all implemented |
 | LLD_14_NOR_FLASH.md | REQ-053..056 | Implemented |
-| LLD_15_PERSISTENCE_FORMAT.md | REQ-131 | Spec published (EN + CN); reconciliation with shipping checkpoint/WAL/media layouts still outstanding |
+| LLD_15_PERSISTENCE_FORMAT.md | REQ-131 | Spec published (EN + CN) V1.1 — reconciled with shipping Media / Superblock / WAL layouts; panic-dump deferred to future work |
 | LLD_17_POWER_LOSS_PROTECTION.md | REQ-139..146 | Implemented |
 | LLD_18_QOS_DETERMINISM.md | REQ-147..153 | DWRR + latency monitor landed; per-NS caps + SLA enforcement partial |
 | LLD_19_SECURITY_ENCRYPTION.md | REQ-159..165 | Implemented (all 7) |
