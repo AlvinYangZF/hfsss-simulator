@@ -239,7 +239,6 @@ static void test_di_002(void) {
     /* 50000 random overwrites within filled range (triggers GC) */
     uint32_t rng = 0xDEAD1234u;
     uint64_t overwrite_ok = 0;
-    uint64_t overwrite_fail __attribute__((unused)) = 0;
 
     for (uint64_t i = 0; i < 50000; i++) {
         rng = lcg(rng);
@@ -250,8 +249,6 @@ static void test_di_002(void) {
         if (rc == HFSSS_OK) {
             lba_gen[lba] = gen;
             overwrite_ok++;
-        } else {
-            overwrite_fail++;
         }
 
         /* Periodic verify of 100 random LBAs every 5000 overwrites */
@@ -779,22 +776,34 @@ static void test_di_006(void) {
 /* ---------------------------------------------------------------
  * DI-007: Sanitize completeness (all sanact values)
  *
- * Exercises the four NVMe §5.22 Sanitize Action codes and asserts the
- * per-spec observable state after each. The SANACT semantics differ
- * meaningfully, so the expected read outcome differs per action:
+ * Exercises the four NVMe §5.22 Sanitize Action codes. The spec's
+ * post-state language is intentionally loose — BLOCK_ERASE/CRYPTO_ERASE
+ * leave deallocated/indeterminate data, OVERWRITE writes a host-
+ * supplied pattern (OVRPAT) — so the assertions below pin the
+ * *simulator-modeled* outcomes that together satisfy the spec's
+ * underlying guarantee (old data is no longer recoverable for
+ * BLOCK_ERASE / CRYPTO_ERASE; OVERWRITE replaces data with the
+ * simulator's default zero pattern; EXIT_FAILURE is a no-op):
  *
- *  sanact=1 EXIT_FAILURE : not a sanitize operation. The controller
- *                          exits failure mode; user data is NOT
- *                          altered. Reads return the pre-sanitize
- *                          pattern.
- *  sanact=2 BLOCK_ERASE  : all user data erased. Simulator drops the
- *                          L2P mapping so reads return NOENT.
- *  sanact=3 OVERWRITE    : user data is rewritten with the overwrite
- *                          pattern (default all-zeros). Reads return
- *                          OK with zero-filled payload, NOT NOENT.
- *  sanact=4 CRYPTO_ERASE : encryption keys destroyed; user data
- *                          unrecoverable. Simulator drops mapping so
- *                          reads return NOENT.
+ *  sanact=1 EXIT_FAILURE : not a sanitize operation. Controller exits
+ *                          failure mode; user data is NOT altered.
+ *                          Reads return OK with the pre-sanitize
+ *                          pattern intact.
+ *  sanact=2 BLOCK_ERASE  : simulator drops the L2P mapping so reads
+ *                          return NOENT — one of the legal
+ *                          deallocated-read outcomes permitted by
+ *                          the spec.
+ *  sanact=3 OVERWRITE    : simulator fills every LBA with zeros
+ *                          (default when no OVRPAT is surfaced).
+ *                          Reads return OK with a zero-filled
+ *                          payload, NOT NOENT.
+ *  sanact=4 CRYPTO_ERASE : simulator models "keys destroyed" by
+ *                          dropping the mapping, so reads return
+ *                          NOENT. A real device would return
+ *                          indeterminate ciphertext-as-garbage;
+ *                          dropping the mapping is a stronger
+ *                          observable that also satisfies the
+ *                          "unrecoverable" guarantee.
  * ------------------------------------------------------------- */
 enum sanact_expect {
     SANACT_EXPECT_PRESERVE,    /* read OK, original pattern intact */
