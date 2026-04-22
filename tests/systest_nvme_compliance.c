@@ -716,27 +716,51 @@ static void test_nc013(void)
     int rc;
     uint8_t wbuf[TEST_PAGE_SIZE];
     uint8_t rbuf[TEST_PAGE_SIZE];
+    uint8_t zbuf[TEST_PAGE_SIZE];
+    memset(zbuf, 0, TEST_PAGE_SIZE);
 
-    /* Write data, sanitize with sanact=1, verify erasure */
+    /* sanact=1 EXIT_FAILURE: per NVMe §5.22 this is NOT a data
+     * sanitization action — the controller exits a prior failure mode
+     * and user data is left intact. Write a pattern, issue SANACT=1,
+     * and confirm the same pattern is still readable. */
     memset(wbuf, 0xDD, TEST_PAGE_SIZE);
     rc = nvme_uspace_write(&dev, 1, 0, 1, wbuf);
-    TEST_ASSERT(rc == HFSSS_OK, "write LBA 0 before sanitize");
+    TEST_ASSERT(rc == HFSSS_OK, "write LBA 0 before sanact=1");
     rc = nvme_uspace_sanitize(&dev, 1);
-    TEST_ASSERT(rc == HFSSS_OK, "sanitize sanact=1 (block erase) OK");
+    TEST_ASSERT(rc == HFSSS_OK, "sanitize sanact=1 (exit-failure) OK");
     rc = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
-    TEST_ASSERT(rc == HFSSS_ERR_NOENT, "read after sanact=1 returns HFSSS_ERR_NOENT");
+    TEST_ASSERT(rc == HFSSS_OK, "read after sanact=1 returns OK (data preserved)");
+    TEST_ASSERT(memcmp(rbuf, wbuf, TEST_PAGE_SIZE) == 0, "sanact=1 leaves pattern intact");
 
-    /* Write again, sanitize with sanact=2 (overwrite) */
+    /* sanact=2 BLOCK_ERASE: all user data erased; simulator drops the
+     * L2P mapping so reads return NOENT. */
     memset(wbuf, 0xCC, TEST_PAGE_SIZE);
     nvme_uspace_write(&dev, 1, 0, 1, wbuf);
     rc = nvme_uspace_sanitize(&dev, 2);
-    TEST_ASSERT(rc == HFSSS_OK, "sanitize sanact=2 (overwrite) OK");
+    TEST_ASSERT(rc == HFSSS_OK, "sanitize sanact=2 (block-erase) OK");
     rc = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
     TEST_ASSERT(rc == HFSSS_ERR_NOENT, "read after sanact=2 returns HFSSS_ERR_NOENT");
 
-    /* sanact=3 (crypto erase) on already-empty device */
+    /* sanact=3 OVERWRITE: user data is rewritten with the overwrite
+     * pattern (simulator uses all-zeros). Reads return OK with a
+     * zero-filled payload, NOT NOENT. */
+    memset(wbuf, 0xBB, TEST_PAGE_SIZE);
+    nvme_uspace_write(&dev, 1, 0, 1, wbuf);
     rc = nvme_uspace_sanitize(&dev, 3);
-    TEST_ASSERT(rc == HFSSS_OK, "sanitize sanact=3 (crypto erase) OK");
+    TEST_ASSERT(rc == HFSSS_OK, "sanitize sanact=3 (overwrite) OK");
+    rc = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
+    TEST_ASSERT(rc == HFSSS_OK, "read after sanact=3 returns OK (overwrite pattern)");
+    TEST_ASSERT(memcmp(rbuf, zbuf, TEST_PAGE_SIZE) == 0, "sanact=3 payload is zero-filled");
+
+    /* sanact=4 CRYPTO_ERASE: encryption keys destroyed; simulator
+     * drops the mapping so reads return NOENT. */
+    memset(wbuf, 0xAA, TEST_PAGE_SIZE);
+    nvme_uspace_write(&dev, 1, 0, 1, wbuf);
+    rc = nvme_uspace_sanitize(&dev, 4);
+    TEST_ASSERT(rc == HFSSS_OK, "sanitize sanact=4 (crypto-erase) OK");
+    rc = nvme_uspace_read(&dev, 1, 0, 1, rbuf);
+    TEST_ASSERT(rc == HFSSS_ERR_NOENT, "read after sanact=4 returns HFSSS_ERR_NOENT");
+
     teardown_device(&dev);
 }
 
