@@ -7,6 +7,14 @@
 
 static int dispatch_one(struct channel_worker *w, struct channel_cmd *cmd)
 {
+    /* Refuse any command addressed to a channel this worker does not
+     * own. Without this guard a worker for channel 0 would happily
+     * drive media ops against channel 5, corrupting the per-channel
+     * execution boundary that REQ-044 exists to establish. */
+    if (cmd->ch != w->channel_id) {
+        return HFSSS_ERR_INVAL;
+    }
+
     switch (cmd->op) {
     case CHANNEL_CMD_READ:
         return media_nand_read(w->media, cmd->ch, cmd->chip, cmd->die, cmd->plane, cmd->block, cmd->page,
@@ -21,31 +29,42 @@ static int dispatch_one(struct channel_worker *w, struct channel_cmd *cmd)
     }
 }
 
+static void complete_one(struct channel_worker *w, struct channel_cmd *cmd)
+{
+    /* Publish completion BEFORE invoking the user callback. This lets
+     * a callback safely reclaim the command (including cb_ctx) without
+     * racing the worker's subsequent publication of done. Waiters and
+     * callbacks are therefore alternative completion paths: a caller
+     * that both polls via channel_cmd_wait AND installs a reclaiming
+     * callback is responsible for serialising them. */
+    atomic_store_explicit(&cmd->done, 1, memory_order_release);
+    atomic_fetch_add_explicit(&w->completed, 1, memory_order_relaxed);
+    if (cmd->on_complete) {
+        cmd->on_complete(cmd, cmd->cb_ctx);
+    }
+}
+
 static void *channel_worker_loop(void *arg)
 {
     struct channel_worker *w = (struct channel_worker *)arg;
 
     for (;;) {
-        if (atomic_load_explicit(&w->stop, memory_order_acquire)) {
-            break;
-        }
-
         struct channel_cmd *cmd = NULL;
         int rc = spsc_ring_tryget(&w->ring, &cmd);
-        if (rc != HFSSS_OK || cmd == NULL) {
-            sched_yield();
+        if (rc == HFSSS_OK && cmd != NULL) {
+            cmd->status = dispatch_one(w, cmd);
+            complete_one(w, cmd);
             continue;
         }
 
-        cmd->status = dispatch_one(w, cmd);
-        if (cmd->on_complete) {
-            cmd->on_complete(cmd, cmd->cb_ctx);
+        /* Ring is empty. Only exit once stop is set AND the ring stayed
+         * empty on this pass — this drains anything the producer racily
+         * pushed before observing stop, so no submitted command is left
+         * orphaned when the worker shuts down. */
+        if (atomic_load_explicit(&w->stop, memory_order_acquire)) {
+            break;
         }
-        /* Publish done AFTER on_complete so a waiter that wakes on done
-         * observes the effects of the completion callback. Release
-         * ordering pairs with acquire in channel_cmd_wait. */
-        atomic_store_explicit(&cmd->done, 1, memory_order_release);
-        atomic_fetch_add_explicit(&w->completed, 1, memory_order_relaxed);
+        sched_yield();
     }
 
     return NULL;
@@ -104,6 +123,17 @@ int channel_worker_submit(struct channel_worker *w, struct channel_cmd *cmd)
     if (!w || !cmd) {
         return HFSSS_ERR_INVAL;
     }
+
+    /* Reject submits once stop has been signalled. The acquire load
+     * pairs with the release store in channel_worker_stop; together
+     * they close the window in which a late submit could land in the
+     * ring just as the consumer is exiting. A caller that races submit
+     * against stop must coordinate externally — this check only shrinks
+     * the window, it does not eliminate a pathological TOCTOU. */
+    if (atomic_load_explicit(&w->stop, memory_order_acquire)) {
+        return HFSSS_ERR_BUSY;
+    }
+
     atomic_store_explicit(&cmd->done, 0, memory_order_relaxed);
     cmd->status = 0;
 

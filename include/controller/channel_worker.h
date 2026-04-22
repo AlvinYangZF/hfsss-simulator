@@ -12,32 +12,44 @@ struct media_ctx;
 struct channel_cmd;
 
 /*
- * REQ-044 / REQ-045: Per-channel worker runtime.
+ * REQ-044 per-channel worker runtime (REQ-045 scaffolding for async
+ * completion; see REQUIREMENT_COVERAGE notes for the gap to a full
+ * lock-free completion queue).
  *
- * A channel_worker owns one pthread pinned to a single logical channel id
- * and a single-producer single-consumer ring of channel_cmd pointers. The
- * producer side is any thread that calls channel_worker_submit; the
- * consumer is the worker thread which dequeues commands, dispatches them
- * through the synchronous media_nand_* API, and fires the caller-supplied
- * completion callback. Completion also sets an atomic done flag on the
- * command for poll-style waiters.
+ * A channel_worker owns one pthread pinned to a single logical channel
+ * id and a single-producer single-consumer ring of channel_cmd
+ * pointers. The producer side is any thread that calls
+ * channel_worker_submit; the consumer is the worker thread which
+ * dequeues commands, validates the target channel, dispatches them
+ * through the synchronous media_nand_* API, publishes the done flag,
+ * and finally fires the caller-supplied completion callback.
  *
- * This runtime is additive: it does not replace or retarget the existing
- * synchronous media call path. Callers that want async submission opt in
- * by constructing a channel_cmd and handing it to submit. Existing sync
- * callers are untouched.
+ * This runtime is additive: it does not replace or retarget the
+ * existing synchronous media call path. Callers that want async
+ * submission opt in by constructing a channel_cmd and handing it to
+ * submit. Existing sync callers are untouched.
  *
  * Thread-safety contract:
  *   - Exactly one thread may call channel_worker_submit per worker at a
  *     time. If multiple producers are required, the caller wraps submit
  *     with its own mutex. This matches the SPSC ring constraint.
  *   - The worker thread is the only consumer. cleanup() joins it.
- *   - Commands must remain addressable (and writable) until their
- *     done flag is set or their on_complete callback has fired.
+ *   - Submits are rejected (HFSSS_ERR_BUSY) once stop has begun so late
+ *     producers do not land commands on a shutting-down ring.
+ *   - Commands addressed to a channel other than the worker's own
+ *     channel_id are failed at dispatch with HFSSS_ERR_INVAL; they
+ *     still complete via the normal callback/done path.
+ *
+ * Completion model — callers pick ONE of these patterns, not both:
+ *   - Poll with channel_cmd_wait: the waiter blocks until done == 1
+ *     and reads status. Waiter owns reclamation of the cmd afterwards.
+ *   - Install on_complete: the callback fires AFTER done is published
+ *     and is the authoritative reclamation hook; the waiter path must
+ *     not run concurrently with a reclaiming callback on the same cmd.
  *
  * Ordering: commands are dispatched in submit order because the SPSC
- * ring is FIFO. But in-flight media ops can themselves be reordered by
- * the NAND engine's EAT model, so FIFO at the worker boundary does not
+ * ring is FIFO. In-flight media ops can themselves be reordered by the
+ * NAND engine's EAT model, so FIFO at the worker boundary does not
  * imply FIFO at media-completion time.
  */
 
@@ -86,10 +98,15 @@ struct channel_worker {
     bool thread_started;
     _Atomic int stop;
 
-    /* Lifetime stats (monotonic counters). submitted is advanced by the
-     * producer on every successful tryput; completed is advanced by the
-     * worker after each dispatch (regardless of media success/failure).
-     * The delta submitted - completed is the current in-flight depth. */
+    /* Monotonic lifetime counters. submitted is advanced by the
+     * producer after each successful tryput; completed is advanced by
+     * the worker after each dispatch (regardless of media success or
+     * failure). They are published independently so their delta is NOT
+     * a reliable instantaneous in-flight depth — a fast consumer can
+     * complete before the producer's submitted store lands, which
+     * momentarily makes submitted - completed underflow. Use the
+     * counters for aggregate rate monitoring, not for gauging
+     * saturation. */
     _Atomic u64 submitted;
     _Atomic u64 completed;
 };

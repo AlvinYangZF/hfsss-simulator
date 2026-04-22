@@ -181,20 +181,17 @@ static int test_erase_program_read_roundtrip(void)
 }
 
 /*
- * Ring-full back-pressure: when the SPSC ring is saturated,
- * channel_worker_submit returns HFSSS_ERR_BUSY rather than blocking.
- * Uses a small ring (capacity 2) and submits faster than the worker
- * can drain by pre-filling before yielding.
- *
- * The worker thread is running and draining, so we can't deterministically
- * hit "full" via a timing race. Instead we spoof: stop the worker, fill
- * the ring, and assert the (N+1)th submit fails. Worker is never
- * restarted; cleanup drains the ring via free (not dispatch) which is
- * acceptable for this test.
+ * Ring-full back-pressure under load: flood a live worker with a burst
+ * of synchronous ERASE ops (each drains ~one tBERS worth of wall-clock
+ * in the media engine) and confirm at least one submit is refused with
+ * HFSSS_ERR_BUSY, i.e. the producer observes real ring pressure rather
+ * than a manipulated lifecycle. Every accepted command is then awaited
+ * so no leaked work remains when cleanup joins the worker.
  */
+#define BURST_COUNT 64u
 static int test_full_ring_returns_busy(void)
 {
-    printf("\n=== channel_worker: submit returns BUSY when ring is full ===\n");
+    printf("\n=== channel_worker: submit returns BUSY under real ring pressure ===\n");
 
     struct media_config cfg = make_cfg();
     struct media_ctx media;
@@ -205,25 +202,119 @@ static int test_full_ring_returns_busy(void)
     rc = channel_worker_init(&w, 0, &media, 2);
     TEST_ASSERT(rc == HFSSS_OK, "channel_worker_init OK (cap=2)");
 
-    /* Signal stop so the worker stops dequeuing. It may still drain one
-     * command that was already pulled; we accept that and overshoot. */
-    channel_worker_stop(&w);
-    pthread_join(w.thread, NULL);
-    w.thread_started = false;
+    static struct channel_cmd burst[BURST_COUNT];
+    memset(burst, 0, sizeof(burst));
 
-    struct channel_cmd c1, c2, c3;
-    memset(&c1, 0, sizeof(c1));
-    memset(&c2, 0, sizeof(c2));
-    memset(&c3, 0, sizeof(c3));
-    c1.op = CHANNEL_CMD_ERASE;
-    c2.op = CHANNEL_CMD_ERASE;
-    c3.op = CHANNEL_CMD_ERASE;
+    u32 accepted = 0;
+    u32 busy = 0;
+    for (u32 i = 0; i < BURST_COUNT; i++) {
+        burst[i].op = CHANNEL_CMD_ERASE;
+        burst[i].ch = 0;
+        burst[i].block = i % cfg.blocks_per_plane;
+        int r = channel_worker_submit(&w, &burst[i]);
+        if (r == HFSSS_OK) {
+            accepted++;
+        } else if (r == HFSSS_ERR_BUSY) {
+            busy++;
+        } else {
+            TEST_ASSERT(false, "unexpected submit return code");
+        }
+    }
 
-    TEST_ASSERT(channel_worker_submit(&w, &c1) == HFSSS_OK, "submit 1 OK (slot 1/2)");
-    TEST_ASSERT(channel_worker_submit(&w, &c2) == HFSSS_OK, "submit 2 OK (slot 2/2)");
-    TEST_ASSERT(channel_worker_submit(&w, &c3) == HFSSS_ERR_BUSY, "submit 3 returns BUSY (full)");
+    TEST_ASSERT(busy > 0, "at least one submit refused with BUSY under flood");
+    TEST_ASSERT(accepted + busy == BURST_COUNT, "every submit returned OK or BUSY");
+
+    /* Drain every accepted command so cleanup does not join over
+     * in-flight work. */
+    for (u32 i = 0; i < BURST_COUNT; i++) {
+        if (atomic_load(&burst[i].done) || burst[i].status != 0) {
+            continue;
+        }
+    }
+    u32 drained = 0;
+    for (u32 i = 0; i < BURST_COUNT; i++) {
+        /* Any cmd not accepted never had its done flag flipped from 0;
+         * cmds not placed in the ring are simply skipped by waiting on
+         * a bounded number of accepted ones. Walk the whole array; for
+         * never-submitted entries the wait would spin forever, so gate
+         * the wait on whether the worker's submitted counter surpasses
+         * the submission index. */
+        (void)drained;
+    }
+    /* Simpler drain: poll until the worker's completed counter catches
+     * up with accepted. */
+    while (atomic_load(&w.completed) < accepted) {
+        sched_yield();
+    }
+
+    TEST_ASSERT(atomic_load(&w.completed) == accepted, "worker completed exactly the accepted submits");
 
     channel_worker_cleanup(&w);
+    media_cleanup(&media);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/*
+ * Stop-lifecycle: once channel_worker_stop has been signalled, any
+ * further submit is rejected with HFSSS_ERR_BUSY. Rejects closes the
+ * window in which a late producer could orphan a command on a ring
+ * the consumer is about to abandon.
+ */
+static int test_submit_after_stop_returns_busy(void)
+{
+    printf("\n=== channel_worker: submit rejected after stop ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx media;
+    int rc = media_init(&media, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
+
+    struct channel_worker w;
+    rc = channel_worker_init(&w, 0, &media, 16);
+    TEST_ASSERT(rc == HFSSS_OK, "channel_worker_init OK");
+
+    channel_worker_stop(&w);
+
+    struct channel_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.op = CHANNEL_CMD_ERASE;
+
+    TEST_ASSERT(channel_worker_submit(&w, &cmd) == HFSSS_ERR_BUSY, "submit after stop returns BUSY");
+
+    channel_worker_cleanup(&w);
+    media_cleanup(&media);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/*
+ * Cross-channel cmd rejection: a worker bound to channel 0 refuses to
+ * drive commands addressed to channel 1. The command still completes
+ * via the normal path with status == HFSSS_ERR_INVAL so the submitter
+ * can detect the misrouting.
+ */
+static int test_cross_channel_cmd_rejected(void)
+{
+    printf("\n=== channel_worker: cross-channel command rejected ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx media;
+    int rc = media_init(&media, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "media_init OK (2 channels)");
+
+    struct channel_worker w0;
+    rc = channel_worker_init(&w0, 0, &media, 8);
+    TEST_ASSERT(rc == HFSSS_OK, "worker 0 init");
+
+    struct channel_cmd miscmd;
+    memset(&miscmd, 0, sizeof(miscmd));
+    miscmd.op = CHANNEL_CMD_ERASE;
+    miscmd.ch = 1; /* wrong channel for worker 0 */
+    miscmd.block = 0;
+
+    TEST_ASSERT(channel_worker_submit(&w0, &miscmd) == HFSSS_OK, "submit cross-channel cmd");
+    TEST_ASSERT(channel_cmd_wait(&miscmd) == HFSSS_ERR_INVAL, "cross-channel cmd fails with INVAL");
+
+    channel_worker_cleanup(&w0);
     media_cleanup(&media);
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
@@ -296,6 +387,8 @@ int main(void)
     test_submit_wait_completion_cb();
     test_erase_program_read_roundtrip();
     test_full_ring_returns_busy();
+    test_submit_after_stop_returns_busy();
+    test_cross_channel_cmd_rejected();
     test_two_workers_isolated();
     test_null_inputs();
 

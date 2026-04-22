@@ -281,10 +281,12 @@ static int test_profile_plane_cap_enforcement(void)
 
 /*
  * Multi-plane READ path. The engine does not drain wall-clock for READ
- * (array-busy spin runs only for PROG/ERASE); READ parallelism shows up
- * in per-plane EAT advancement, not in wall-clock. Assert that both
- * targeted planes' EAT advance by the same amount after a 2-plane READ,
- * and that payload reaches every plane's destination buffer.
+ * (array-busy spin runs only for PROG/ERASE), so READ parallelism shows
+ * up in per-plane EAT deltas rather than wall-clock. To keep the delta
+ * comparison honest, both planes' pre-read EATs are first aligned by
+ * doing the pre-program via a single multi-plane PROG op — that way the
+ * two targeted planes start the READ from the same EAT floor and any
+ * skew in their deltas is attributable to the READ charge itself.
  */
 static int test_multi_plane_read_eat_and_payload(void)
 {
@@ -295,18 +297,23 @@ static int test_multi_plane_read_eat_and_payload(void)
     int rc = media_init(&ctx, &cfg);
     TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
-    /* Erase + PROG two planes so read targets are VALID. */
+    /* Erase planes 0 and 1 block 0. Multi-plane PROG into the same
+     * block aligns both planes' EATs exactly — they are charged the
+     * same stage_ns from the same current_time inside the engine. */
     u8 *src = (u8 *)malloc(cfg.page_size);
     fill_pattern(src, cfg.page_size, 17);
-    for (u32 p = 0; p < 2; p++) {
-        TEST_ASSERT(media_nand_erase(&ctx, 0, 0, 0, p, 0) == HFSSS_OK, "erase for read test");
-        TEST_ASSERT(media_nand_program(&ctx, 0, 0, 0, p, 0, 0, src, NULL) == HFSSS_OK, "pre-prog for read test");
-    }
+    TEST_ASSERT(media_nand_erase(&ctx, 0, 0, 0, 0, 0) == HFSSS_OK, "erase plane 0 block 0");
+    TEST_ASSERT(media_nand_erase(&ctx, 0, 0, 0, 1, 0) == HFSSS_OK, "erase plane 1 block 0");
 
-    /* Snapshot pre-read plane EATs. Both have the same value post-PROG
-     * because PROG was run back-to-back on distinct planes. */
+    const void *src_mp[2] = {src, src};
+    TEST_ASSERT(media_nand_multi_plane_program(&ctx, 0, 0, 0, 0x3, 0, 0, src_mp, NULL) == HFSSS_OK,
+                "multi-plane PROG aligns both plane EATs");
+
+    /* Confirm the alignment landed. If it didn't, the delta comparison
+     * below loses meaning — fail loudly instead of silently passing. */
     u64 plane0_before = eat_get_for_plane(ctx.eat, 0, 0, 0, 0);
     u64 plane1_before = eat_get_for_plane(ctx.eat, 0, 0, 0, 1);
+    TEST_ASSERT(plane0_before == plane1_before, "pre-read EATs aligned via multi-plane PROG");
 
     /* Multi-plane 2-plane READ. */
     u8 *r1 = (u8 *)malloc(cfg.page_size);
@@ -327,6 +334,8 @@ static int test_multi_plane_read_eat_and_payload(void)
     TEST_ASSERT(plane1_after > plane1_before, "2-plane READ advances plane 1 EAT");
     TEST_ASSERT(plane0_after == plane1_after,
                 "both targeted planes share the same post-read EAT (parallel charge)");
+    TEST_ASSERT(plane0_delta == plane1_delta,
+                "both planes charged the exact same READ delta (proves parallel, not serial)");
 
     /* Verify payload fidelity: each plane got the seed-17 pattern back. */
     TEST_ASSERT(memcmp(r1, src, cfg.page_size) == 0, "multi-plane read plane 0 payload matches");
