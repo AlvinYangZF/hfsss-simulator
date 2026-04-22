@@ -239,7 +239,6 @@ static void test_di_002(void) {
     /* 50000 random overwrites within filled range (triggers GC) */
     uint32_t rng = 0xDEAD1234u;
     uint64_t overwrite_ok = 0;
-    uint64_t overwrite_fail = 0;
 
     for (uint64_t i = 0; i < 50000; i++) {
         rng = lcg(rng);
@@ -250,8 +249,6 @@ static void test_di_002(void) {
         if (rc == HFSSS_OK) {
             lba_gen[lba] = gen;
             overwrite_ok++;
-        } else {
-            overwrite_fail++;
         }
 
         /* Periodic verify of 100 random LBAs every 5000 overwrites */
@@ -778,11 +775,60 @@ static void test_di_006(void) {
 
 /* ---------------------------------------------------------------
  * DI-007: Sanitize completeness (all sanact values)
+ *
+ * Exercises the four NVMe §5.22 Sanitize Action codes. The spec's
+ * post-state language is intentionally loose — BLOCK_ERASE/CRYPTO_ERASE
+ * leave deallocated/indeterminate data, OVERWRITE writes a host-
+ * supplied pattern (OVRPAT) — so the assertions below pin the
+ * *simulator-modeled* outcomes that together satisfy the spec's
+ * underlying guarantee (old data is no longer recoverable for
+ * BLOCK_ERASE / CRYPTO_ERASE; OVERWRITE replaces data with the
+ * simulator's default zero pattern; EXIT_FAILURE is a no-op):
+ *
+ *  sanact=1 EXIT_FAILURE : not a sanitize operation. Controller exits
+ *                          failure mode; user data is NOT altered.
+ *                          Reads return OK with the pre-sanitize
+ *                          pattern intact.
+ *  sanact=2 BLOCK_ERASE  : simulator drops the L2P mapping so reads
+ *                          return NOENT — one of the legal
+ *                          deallocated-read outcomes permitted by
+ *                          the spec.
+ *  sanact=3 OVERWRITE    : simulator fills every LBA with zeros
+ *                          (default when no OVRPAT is surfaced).
+ *                          Reads return OK with a zero-filled
+ *                          payload, NOT NOENT.
+ *  sanact=4 CRYPTO_ERASE : simulator models "keys destroyed" by
+ *                          dropping the mapping, so reads return
+ *                          NOENT. A real device would return
+ *                          indeterminate ciphertext-as-garbage;
+ *                          dropping the mapping is a stronger
+ *                          observable that also satisfies the
+ *                          "unrecoverable" guarantee.
  * ------------------------------------------------------------- */
+enum sanact_expect {
+    SANACT_EXPECT_PRESERVE,    /* read OK, original pattern intact */
+    SANACT_EXPECT_NOENT,       /* read returns HFSSS_ERR_NOENT */
+    SANACT_EXPECT_ZERO_FILL,   /* read OK, payload all zeros */
+};
+
+struct sanact_case {
+    uint32_t sanact;
+    const char *name;
+    enum sanact_expect expect;
+};
+
 static void test_di_007(void) {
     printf("\n--- DI-007: Sanitize completeness (all sanact values) ---\n");
 
-    for (uint32_t sanact = 1; sanact <= 3; sanact++) {
+    static const struct sanact_case cases[] = {
+        {1, "exit-failure", SANACT_EXPECT_PRESERVE},
+        {2, "block-erase",  SANACT_EXPECT_NOENT},
+        {3, "overwrite",    SANACT_EXPECT_ZERO_FILL},
+        {4, "crypto-erase", SANACT_EXPECT_NOENT},
+    };
+
+    for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ci++) {
+        const struct sanact_case *c = &cases[ci];
         char label[128];
 
         struct nvme_uspace_config cfg;
@@ -791,49 +837,97 @@ static void test_di_007(void) {
 
         if (dev_setup(&dev, &cfg, &total_lbas) != 0) {
             snprintf(label, sizeof(label),
-                     "DI-007: device setup for sanact=%u", sanact);
+                     "DI-007: device setup for sanact=%u (%s)", c->sanact, c->name);
             TEST_ASSERT(false, label);
             continue;
         }
 
         uint8_t *wbuf = malloc(LBA_SIZE);
         uint8_t *rbuf = malloc(LBA_SIZE);
+        uint8_t *expected = malloc(LBA_SIZE);
         bool ok = true;
 
-        /* Write all LBAs */
+        /* Write all LBAs with a deterministic pattern keyed to sanact
+         * so the PRESERVE check can later reproduce the exact bytes it
+         * expects to see back. */
         for (uint64_t lba = 0; lba < total_lbas; lba++) {
-            fill_pattern(wbuf, (uint32_t)lba, sanact);
+            fill_pattern(wbuf, (uint32_t)lba, c->sanact);
             int rc = nvme_uspace_write(&dev, 1, lba, 1, wbuf);
             if (rc != HFSSS_OK) { ok = false; break; }
         }
         snprintf(label, sizeof(label),
-                 "DI-007: write all LBAs (sanact=%u)", sanact);
+                 "DI-007: write all LBAs (sanact=%u %s)", c->sanact, c->name);
         TEST_ASSERT(ok, label);
 
-        /* Sanitize */
-        int rc = nvme_uspace_sanitize(&dev, sanact);
+        int rc = nvme_uspace_sanitize(&dev, c->sanact);
         snprintf(label, sizeof(label),
-                 "DI-007: sanitize sanact=%u succeeds", sanact);
+                 "DI-007: sanitize sanact=%u (%s) succeeds", c->sanact, c->name);
         TEST_ASSERT(rc == HFSSS_OK, label);
 
-        /* Verify all NOENT */
+        /* Post-sanitize verification. The assertion shape depends on
+         * the per-action spec semantics above. */
         ok = true;
         for (uint64_t lba = 0; lba < total_lbas; lba++) {
             rc = nvme_uspace_read(&dev, 1, lba, 1, rbuf);
-            if (rc != HFSSS_ERR_NOENT) {
-                ok = false;
-                fprintf(stderr,
-                        "  DI-007: LBA=%llu rc=%d after sanitize sanact=%u\n",
-                        (unsigned long long)lba, rc, sanact);
+            switch (c->expect) {
+            case SANACT_EXPECT_PRESERVE:
+                if (rc != HFSSS_OK) {
+                    ok = false;
+                    fprintf(stderr,
+                            "  DI-007[%s]: LBA=%llu rc=%d (want OK)\n",
+                            c->name, (unsigned long long)lba, rc);
+                    break;
+                }
+                fill_pattern(expected, (uint32_t)lba, c->sanact);
+                if (memcmp(rbuf, expected, LBA_SIZE) != 0) {
+                    ok = false;
+                    fprintf(stderr,
+                            "  DI-007[%s]: LBA=%llu data mismatch vs pre-sanitize\n",
+                            c->name, (unsigned long long)lba);
+                    break;
+                }
+                break;
+            case SANACT_EXPECT_NOENT:
+                if (rc != HFSSS_ERR_NOENT) {
+                    ok = false;
+                    fprintf(stderr,
+                            "  DI-007[%s]: LBA=%llu rc=%d (want NOENT)\n",
+                            c->name, (unsigned long long)lba, rc);
+                    break;
+                }
+                break;
+            case SANACT_EXPECT_ZERO_FILL:
+                if (rc != HFSSS_OK) {
+                    ok = false;
+                    fprintf(stderr,
+                            "  DI-007[%s]: LBA=%llu rc=%d (want OK)\n",
+                            c->name, (unsigned long long)lba, rc);
+                    break;
+                }
+                memset(expected, 0, LBA_SIZE);
+                if (memcmp(rbuf, expected, LBA_SIZE) != 0) {
+                    ok = false;
+                    fprintf(stderr,
+                            "  DI-007[%s]: LBA=%llu payload not zero-filled\n",
+                            c->name, (unsigned long long)lba);
+                    break;
+                }
+                break;
+            }
+            if (!ok) {
                 break;
             }
         }
+        const char *expect_tag = (c->expect == SANACT_EXPECT_PRESERVE)   ? "data preserved"
+                                 : (c->expect == SANACT_EXPECT_NOENT)    ? "all NOENT"
+                                                                         : "all zero-filled";
         snprintf(label, sizeof(label),
-                 "DI-007: all LBAs NOENT after sanact=%u", sanact);
+                 "DI-007: sanact=%u (%s) post-read: %s", c->sanact, c->name, expect_tag);
         TEST_ASSERT(ok, label);
 
         free(wbuf);
         free(rbuf);
+        free(expected);
         dev_teardown(&dev);
     }
 }
