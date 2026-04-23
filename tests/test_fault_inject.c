@@ -2,6 +2,7 @@
  * Tests for the fault injection framework (REQ-132, REQ-133, REQ-134).
  */
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,14 @@
 #include "common.h"
 #include "controller/resource.h"
 #include "controller/arbiter.h"
+
+/*
+ * type_present is an _Atomic field (see fault_inject.h). Production
+ * reads use atomic_load_explicit; mirror that here so the test obeys
+ * the same read discipline it asserts against.
+ */
+#define TP_LOAD(reg) \
+    atomic_load_explicit(&(reg).type_present, memory_order_acquire)
 
 /* -------------------------------------------------------------------------
  * Minimal test harness
@@ -53,7 +62,7 @@ static void test_init_cleanup(void)
     TEST_ASSERT(rc == HFSSS_OK,          "init returns OK");
     TEST_ASSERT(reg.initialized == true, "initialized flag set");
     TEST_ASSERT(reg.count == 0,          "count is 0 after init");
-    TEST_ASSERT(reg.type_present == 0,   "type_present is 0 after init");
+    TEST_ASSERT(TP_LOAD(reg) == 0,   "type_present is 0 after init");
 
     fault_registry_cleanup(&reg);
     TEST_ASSERT(reg.initialized == false, "initialized flag cleared after cleanup");
@@ -70,7 +79,7 @@ static void test_add_returns_id(void)
                                FAULT_PERSIST_STICKY, 1.0);
     TEST_ASSERT(id > 0, "returned id > 0");
     TEST_ASSERT(reg.count == 1, "count is 1");
-    TEST_ASSERT((reg.type_present & FAULT_READ_ERROR) != 0, "type_present updated");
+    TEST_ASSERT((TP_LOAD(reg) & FAULT_READ_ERROR) != 0, "type_present updated");
 
     fault_registry_cleanup(&reg);
 }
@@ -87,9 +96,9 @@ static void test_add_multiple(void)
     fault_inject_add(&reg, FAULT_PROGRAM_ERROR, &ANY_ADDR, FAULT_PERSIST_STICKY, 1.0);
 
     TEST_ASSERT(reg.count == 3, "count is 3");
-    TEST_ASSERT((reg.type_present & FAULT_BAD_BLOCK)     != 0, "BAD_BLOCK present");
-    TEST_ASSERT((reg.type_present & FAULT_READ_ERROR)    != 0, "READ_ERROR present");
-    TEST_ASSERT((reg.type_present & FAULT_PROGRAM_ERROR) != 0, "PROGRAM_ERROR present");
+    TEST_ASSERT((TP_LOAD(reg) & FAULT_BAD_BLOCK)     != 0, "BAD_BLOCK present");
+    TEST_ASSERT((TP_LOAD(reg) & FAULT_READ_ERROR)    != 0, "READ_ERROR present");
+    TEST_ASSERT((TP_LOAD(reg) & FAULT_PROGRAM_ERROR) != 0, "PROGRAM_ERROR present");
 
     fault_registry_cleanup(&reg);
 }
@@ -384,7 +393,7 @@ static void test_remove_by_id(void)
     int rc = fault_inject_remove(&reg, (uint32_t)id);
     TEST_ASSERT(rc == HFSSS_OK, "remove returns OK");
     TEST_ASSERT(reg.count == 0, "count == 0 after remove");
-    TEST_ASSERT((reg.type_present & FAULT_PROGRAM_ERROR) == 0,
+    TEST_ASSERT((TP_LOAD(reg) & FAULT_PROGRAM_ERROR) == 0,
                 "type_present cleared");
 
     struct fault_entry *e = fault_check(&reg, FAULT_PROGRAM_ERROR, &ADDR_1);
@@ -411,7 +420,7 @@ static void test_clear_all(void)
     fault_inject_clear_all(&reg);
 
     TEST_ASSERT(reg.count == 0,          "count == 0 after clear_all");
-    TEST_ASSERT(reg.type_present == 0,   "type_present == 0 after clear_all");
+    TEST_ASSERT(TP_LOAD(reg) == 0,   "type_present == 0 after clear_all");
     TEST_ASSERT(fault_check(&reg, FAULT_BAD_BLOCK, &ADDR_1) == NULL,
                 "check after clear_all returns NULL");
 
