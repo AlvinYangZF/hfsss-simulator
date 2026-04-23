@@ -36,6 +36,8 @@
 #include "media/nand_profile.h"
 #include "pcie/nvme_uspace.h"
 #include "ftl/ftl_worker.h"
+#include "ftl/gc.h"
+#include "controller/qos.h"
 #include "vhost/nbd_async.h"
 #include "common/trace.h"
 #include "common/system_monitor.h"
@@ -134,6 +136,24 @@ static int g_verbose = 0;
 static int g_multithread = 0;
 static int g_async = 0;
 static struct ftl_mt_ctx *g_mt = NULL;
+
+/*
+ * REQ-153 deterministic-latency window. When enabled the server
+ * attaches det_window_gc_admit_adapter as the GC admit callback so
+ * gc_run_mt skips page moves during the HOST_IO phase. Configured
+ * via environment variables:
+ *
+ *   HFSSS_DET_WINDOW_HOST_PCT       (0..100, default 0 → disabled)
+ *   HFSSS_DET_WINDOW_GC_ALLOWED_PCT (0..100, default 0)
+ *   HFSSS_DET_WINDOW_GC_ONLY_PCT    (0..100, default 0)
+ *   HFSSS_DET_WINDOW_CYCLE_MS       (>0,     default 1000)
+ *
+ * The three percentages must sum to exactly 100 to enable the gate;
+ * otherwise det_window_init rejects the config and the server runs
+ * with the callback detached (current default behavior).
+ */
+static struct det_window_config g_det_window;
+static bool                     g_det_window_attached = false;
 
 /* NBD error codes (errno-compatible subset) */
 #define NBD_EIO 5u
@@ -912,6 +932,37 @@ int main(int argc, char *argv[])
                          (u32)(1 + FTL_NUM_WORKERS + 2 /* GC + WL */),
                          __ATOMIC_RELAXED);
         fprintf(stderr, "Mode:     MULTI-THREADED (%d FTL workers + GC + WL)\n", FTL_NUM_WORKERS);
+
+        /*
+         * REQ-153: wire the deterministic-latency window if the
+         * operator enabled it. Missing / zeroed / malformed env vars
+         * leave the GC callback detached, which matches the previous
+         * behaviour (unconstrained GC).
+         */
+        const char *e_host = getenv("HFSSS_DET_WINDOW_HOST_PCT");
+        const char *e_gca  = getenv("HFSSS_DET_WINDOW_GC_ALLOWED_PCT");
+        const char *e_gco  = getenv("HFSSS_DET_WINDOW_GC_ONLY_PCT");
+        const char *e_cyc  = getenv("HFSSS_DET_WINDOW_CYCLE_MS");
+        if (e_host && e_gca && e_gco) {
+            u32 host_pct = (u32)atoi(e_host);
+            u32 gca_pct  = (u32)atoi(e_gca);
+            u32 gco_pct  = (u32)atoi(e_gco);
+            u32 cycle_ms = e_cyc ? (u32)atoi(e_cyc) : 1000u;
+            int dw_rc = det_window_init(&g_det_window, host_pct, gca_pct,
+                                        gco_pct, cycle_ms);
+            if (dw_rc == HFSSS_OK) {
+                gc_attach_admit_cb(&mt_ctx.ftl.gc,
+                                   det_window_gc_admit_adapter,
+                                   &g_det_window);
+                g_det_window_attached = true;
+                fprintf(stderr,
+                        "REQ-153:  det_window enabled (host=%u%%/gc_allowed=%u%%/gc_only=%u%%/cycle=%ums)\n",
+                        host_pct, gca_pct, gco_pct, cycle_ms);
+            } else {
+                fprintf(stderr,
+                        "REQ-153:  det_window env vars present but invalid (host+gc_allowed+gc_only must == 100, cycle_ms > 0); running without gate\n");
+            }
+        }
     } else {
         fprintf(stderr, "Mode:     SINGLE-THREADED\n");
     }

@@ -5,6 +5,7 @@
 #include "ftl/ftl_worker.h"
 #include "media/media.h"
 #include "hal/hal.h"
+#include "controller/qos.h"
 
 static int total_tests = 0, passed = 0, failed = 0;
 
@@ -154,31 +155,18 @@ static void test_gc_mt_reclaims_blocks(void)
 }
 
 /*
- * Duty-cycle admit callback that always rejects. Simulates a
- * det_window configured into DW_HOST_IO for the duration of the
- * test, which is what a real caller gets from det_window_admit_gc
- * during the HOST_IO phase.
- */
-static int g_always_reject_calls = 0;
-static bool always_reject_admit(void *ctx, u64 now_ns)
-{
-    (void)ctx; (void)now_ns;
-    g_always_reject_calls++;
-    return false;
-}
-
-/*
- * End-to-end test of the REQ-153 duty-cycle consumer: when an admit
- * callback returns false, gc_run_mt must bail out of its per-move
- * loop without performing any page moves. moved_pages must stay at
- * its pre-call value and det_window_rejects must advance.
- *
- * This is the closure signal HLD_02 §11.3 asks for: "No GC page
- * moves occur during HOST_IO window".
+ * End-to-end test of the REQ-153 duty-cycle consumer driven through
+ * the real det_window_gc_admit_adapter — not a synthetic stand-in.
+ * A window pinned to 100% HOST_IO / 0% GC forces every admit call
+ * into the rejecting branch, so gc_run_mt must observe zero page
+ * moves. A second run under 0% host / 100% GC_ALLOWED uses the same
+ * adapter and must make progress, proving the integration is real
+ * and the gate flips cleanly. This is the closure signal HLD_02
+ * §11.3.3 asks for: "No GC page moves occur during HOST_IO window".
  */
 static void test_gc_mt_respects_admit_callback_reject(void)
 {
-    printf("\n=== GC MT: Admit callback reject gates page moves ===\n");
+    printf("\n=== GC MT: det_window adapter gates page moves during HOST_IO ===\n");
 
     struct test_env env;
     memset(&env, 0, sizeof(env));
@@ -189,9 +177,7 @@ static void test_gc_mt_respects_admit_callback_reject(void)
     struct ftl_ctx *ftl = &env.mt.ftl;
     struct taa_ctx *taa = &env.mt.taa;
 
-    /* Fill + overwrite to create GC-eligible state (matches the
-     * reclaim test setup). We run the baseline GC with no admit cb
-     * attached first to confirm there's work to do. */
+    /* Fill + overwrite so GC has candidate pages to move. */
     uint8_t wbuf[PGSZ];
     for (u32 i = 0; i < TOTAL_LBAS; i++) {
         memset(wbuf, (uint8_t)(i & 0xFF), PGSZ);
@@ -202,32 +188,80 @@ static void test_gc_mt_respects_admit_callback_reject(void)
         ftl_write_page_mt(ftl, taa, i, wbuf);
     }
 
-    u64 moved_before = ftl->gc.moved_pages;
+    /* Baseline (no gate): prove GC has work so the later zero-move
+     * assertion is not vacuously true. */
+    u64 moved_pre_baseline     = ftl->gc.moved_pages;
+    u64 reclaimed_pre_baseline = ftl->gc.reclaimed_blocks;
+    gc_run_mt(&ftl->gc, &ftl->block_mgr, taa, ftl->hal);
+    TEST_ASSERT(ftl->gc.moved_pages      > moved_pre_baseline ||
+                ftl->gc.reclaimed_blocks > reclaimed_pre_baseline,
+                "baseline GC has work to do (moved_pages or reclaimed_blocks advanced)");
+
+    /* Re-dirty so the gated run has new candidates. */
+    for (u32 i = 0; i < TOTAL_LBAS; i++) {
+        memset(wbuf, (uint8_t)((i + 0xAA) & 0xFF), PGSZ);
+        ftl_write_page_mt(ftl, taa, i, wbuf);
+    }
+
+    /* 100% HOST_IO window — det_window_admit_gc must reject every call. */
+    struct det_window_config dw;
+    memset(&dw, 0, sizeof(dw));
+    ret = det_window_init(&dw, /*host*/100, /*gc_allowed*/0, /*gc_only*/0,
+                          /*cycle_ms*/1000);
+    TEST_ASSERT(ret == HFSSS_OK, "det_window_init 100/0/0 succeeds");
+
+    u64 moved_before   = ftl->gc.moved_pages;
     u64 rejects_before = ftl->gc.det_window_rejects;
 
-    /* Attach the always-reject callback and invoke GC. The first
-     * per-page admit check in the inner loop must trip the reject,
-     * break out of the loop, and leave moved_pages unchanged. */
-    g_always_reject_calls = 0;
-    gc_attach_admit_cb(&ftl->gc, always_reject_admit, NULL);
+    gc_attach_admit_cb(&ftl->gc, det_window_gc_admit_adapter, &dw);
 
     int gc_ret = gc_run_mt(&ftl->gc, &ftl->block_mgr, taa, ftl->hal);
-    printf("  gc_run_mt (rejecting admit) returned: %d\n", gc_ret);
-    printf("  admit callback invocations: %d\n", g_always_reject_calls);
+    printf("  gc_run_mt (HOST_IO phase) returned: %d\n", gc_ret);
 
-    u64 moved_after = ftl->gc.moved_pages;
+    u64 moved_after   = ftl->gc.moved_pages;
     u64 rejects_after = ftl->gc.det_window_rejects;
 
-    TEST_ASSERT(g_always_reject_calls >= 1,
-                "admit callback was consulted at least once per GC run");
     TEST_ASSERT(moved_after == moved_before,
-                "no page moves recorded while admit callback rejects");
+                "no page moves recorded during HOST_IO phase");
     TEST_ASSERT(rejects_after == rejects_before + 1,
                 "det_window_rejects advanced by one per rejected GC run");
 
-    /* Detach cleanly — flipping off the gate must reset both
-     * callback fields to NULL so future GC calls take the default
-     * path without dereferencing stale function/context pointers. */
+    /* det_window's own stats must record the rejection so the audit
+     * trail is cross-consistent with gc_ctx->det_window_rejects. */
+    struct det_window_stats dw_stats;
+    det_window_get_stats(&dw, &dw_stats);
+    TEST_ASSERT(dw_stats.gc_rejected[DW_HOST_IO] >= 1,
+                "det_window_stats.gc_rejected[DW_HOST_IO] advanced");
+    TEST_ASSERT(dw_stats.gc_admitted[DW_HOST_IO]    == 0 &&
+                dw_stats.gc_admitted[DW_GC_ALLOWED] == 0 &&
+                dw_stats.gc_admitted[DW_GC_ONLY]    == 0,
+                "det_window admitted zero GC operations in HOST_IO phase");
+
+    /* Flip the window to 100% GC_ALLOWED and re-dirty. The same
+     * adapter must now permit GC — proving the gate is a real
+     * policy knob, not a hard-wired block. */
+    memset(&dw, 0, sizeof(dw));
+    ret = det_window_init(&dw, /*host*/0, /*gc_allowed*/100, /*gc_only*/0,
+                          /*cycle_ms*/1000);
+    TEST_ASSERT(ret == HFSSS_OK, "det_window_init 0/100/0 succeeds");
+    for (u32 i = 0; i < TOTAL_LBAS; i++) {
+        memset(wbuf, (uint8_t)((i + 0x33) & 0xFF), PGSZ);
+        ftl_write_page_mt(ftl, taa, i, wbuf);
+    }
+
+    u64 moved_pre_permissive     = ftl->gc.moved_pages;
+    u64 reclaimed_pre_permissive = ftl->gc.reclaimed_blocks;
+    gc_attach_admit_cb(&ftl->gc, det_window_gc_admit_adapter, &dw);
+    gc_run_mt(&ftl->gc, &ftl->block_mgr, taa, ftl->hal);
+    TEST_ASSERT(ftl->gc.moved_pages      > moved_pre_permissive ||
+                ftl->gc.reclaimed_blocks > reclaimed_pre_permissive,
+                "GC makes progress in GC_ALLOWED phase with same adapter");
+
+    det_window_get_stats(&dw, &dw_stats);
+    TEST_ASSERT(dw_stats.gc_admitted[DW_GC_ALLOWED] >= 1,
+                "det_window admitted at least one GC call in GC_ALLOWED phase");
+
+    /* Detach cleanly. */
     gc_attach_admit_cb(&ftl->gc, NULL, NULL);
     TEST_ASSERT(ftl->gc.admit_gc_fn  == NULL,
                 "gc_attach_admit_cb(NULL, NULL) clears admit_gc_fn");

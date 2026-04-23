@@ -390,12 +390,25 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
         return HFSSS_ERR_INVAL;
     }
 
+    /*
+     * Snapshot admission callback under ctx->lock. Holding locals for
+     * the duration of the move loop closes the ABA race with
+     * gc_attach_admit_cb, which writes the same fields under the lock.
+     * Callers that need to change the binding mid-run must detach
+     * first (the contract documented in gc_attach_admit_cb). Snapshot
+     * also includes the running-flag acquisition so a concurrent
+     * gc_run_mt is rejected before the GC_MODE is observed.
+     */
+    gc_admit_gc_fn admit_fn;
+    void          *admit_ctx;
     mutex_lock(&ctx->lock, 0);
     if (ctx->running) {
         mutex_unlock(&ctx->lock);
         return HFSSS_ERR_BUSY;
     }
     ctx->running = true;
+    admit_fn  = ctx->admit_gc_fn;
+    admit_ctx = ctx->admit_gc_ctx;
     mutex_unlock(&ctx->lock);
 
     victim = block_find_victim(block_mgr, ctx->policy);
@@ -432,20 +445,24 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
         union ppn src_ppn;
 
         /*
-         * Duty-cycle enforcement. Consult the admit callback (if any)
-         * once per candidate page. A rejection aborts this run's
-         * remaining moves — the caller will try again next cycle and
-         * by then the phase may permit GC. Per-move granularity
-         * matches HLD_02 §11.3.3 "No GC page moves occur during
-         * HOST_IO window". The callback is owned by the caller (the
-         * controller binds it to det_window_admit_gc); we do not
-         * link against the controller lib directly.
+         * Duty-cycle enforcement (HLD_02 §11.3.3). The admit callback
+         * is consulted once per LBA-scan iteration — not strictly per
+         * live page — so a rejection aborts the run as soon as the
+         * policy flips, even if the current block happens to have no
+         * live pages. This is the safer-of-two-granularities choice:
+         *   - per-LBA: promptly observes a mid-run window flip,
+         *     at the cost of extra calls on sparse victims.
+         *   - per-movable-page: minimal calls, but a long sparse
+         *     scan ahead of a live page could keep moving pages
+         *     even after HOST_IO re-opens.
+         * admit_fn/admit_ctx are the pre-loop snapshot to close the
+         * race with gc_attach_admit_cb.
          */
-        if (ctx->admit_gc_fn) {
+        if (admit_fn) {
             struct timespec ts;
             clock_gettime(CLOCK_MONOTONIC, &ts);
             u64 now_ns = (u64)ts.tv_sec * 1000000000ULL + (u64)ts.tv_nsec;
-            if (!ctx->admit_gc_fn(ctx->admit_gc_ctx, now_ns)) {
+            if (!admit_fn(admit_ctx, now_ns)) {
                 mutex_lock(&ctx->lock, 0);
                 ctx->det_window_rejects++;
                 mutex_unlock(&ctx->lock);
