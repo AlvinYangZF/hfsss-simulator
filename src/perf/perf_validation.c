@@ -722,39 +722,66 @@ int perf_validation_run_all(struct perf_validation_report *report)
     /* REQ-122: Scalability >= 70% efficiency at N worker threads.
      *
      * The measurement is `iops(N) / (N * iops(1))` taken from back-to-
-     * back bench_run invocations. Single-shot sampling was too sensitive
-     * to host-scheduler jitter — measurements bounce in the 69-72% band,
-     * which straddles the 70% threshold and produced periodic CI red
-     * lights even though the parallelism itself is stable.
+     * back bench_run invocations. The original single-shot + median-of-3
+     * combination still flaked ~10% of the time on noisy hosts — local
+     * 10-run sampling produced a bimodal distribution with 2 runs
+     * around 60% and 8 runs in the 73-80% band, which defeats any small-
+     * N median. Root causes: (a) thread create/teardown overhead per
+     * bench_run, (b) straggler-thread tail effect at nt=8 on a host
+     * with unrelated background load.
      *
-     * Fix: a warmup iteration (discarded, populates page cache and
-     * stabilises the thread pool) followed by REQ122_TRIALS back-to-
-     * back efficiency samples, with the reported value being the
-     * median. Median over three samples tolerates one outlier in
-     * either direction — if any two of three runs clear 70%, REQ-122
-     * passes. This matches the capability-verification intent of the
-     * requirement without requiring every observation to clear the
-     * bar on a noisy CI box.
+     * De-flake strategy:
+     *   - Longer trials (50 000 / 400 000 ops instead of 20 000 /
+     *     160 000) so per-trial stddev shrinks. Per-sample SE scales
+     *     roughly with 1 / sqrt(ops); for a bimodal-contaminated
+     *     distribution the scaling is looser than a Gaussian SE but
+     *     the direction is the same.
+     *   - Two warmup iterations (was one) — the first warmup's
+     *     pthread_create + first-use allocation are themselves noisy;
+     *     the second lands in steady state.
+     *   - REQ122_TRIALS = 5 with median-of-5: tolerates 2 outliers in
+     *     either direction. At the observed pre-fix ~20 % single-trial
+     *     contamination rate, this drops the median-fail probability
+     *     from ~10 % (median-of-3) to ~6 % in theory; combined with
+     *     the lower per-trial stddev, 10-run local sampling shows
+     *     every trial clearing 70 %. Not a formal guarantee — the
+     *     bimodal tail could still bite on a differently-loaded CI
+     *     host, which is why we also re-check on each CI run.
+     *
+     * This matches the capability-verification intent of the
+     * requirement without requiring every observation on a noisy box
+     * to individually clear 70 %.
+     *
+     * Tradeoff: two warmups + longer trials make this a steady-state
+     * probe; a genuine regression that only surfaces in the first few
+     * thousand ops (e.g., contention in a lazy-init path) would be
+     * hidden. If that class of bug becomes a concern, add a separate
+     * cold-start probe rather than shortening the warmup here — this
+     * probe is already doing capability verification.
      */
     struct bench_cfg cfg_one = {
         .workload = BENCH_RAND_READ, .block_size = 4096,
-        .queue_depth = 1, .op_count = 20000, .num_threads = 1,
+        .queue_depth = 1, .op_count = 50000, .num_threads = 1,
         .capacity_bytes = 64ULL * 1024 * 1024,
     };
     struct bench_cfg cfg_n = cfg_one;
     cfg_n.num_threads = 8;         /* 8 workers is enough to expose real contention */
-    cfg_n.op_count    = 20000 * 8;
+    cfg_n.op_count    = 50000 * 8;
 
-    /* Warmup — results discarded. Stabilises the page cache, thread
-     * pool startup costs, and any first-use allocations inside the
-     * bench harness so the subsequent trials measure steady-state. */
+    /* Two warmup rounds — both results discarded. bench_run spawns
+     * fresh pthreads per call (no pool is reused), so the first
+     * warmup pays pthread_create + first-use allocation costs that
+     * contribute most of the initial-trial noise; the second
+     * populates the steady-state cache state. */
     {
         struct bench_result warm_one, warm_n;
-        (void)bench_run(&cfg_one, &warm_one);
-        (void)bench_run(&cfg_n,   &warm_n);
+        for (int w = 0; w < 2; w++) {
+            (void)bench_run(&cfg_one, &warm_one);
+            (void)bench_run(&cfg_n,   &warm_n);
+        }
     }
 
-    enum { REQ122_TRIALS = 3 };
+    enum { REQ122_TRIALS = 5 };
     double trials[REQ122_TRIALS];
     for (int t = 0; t < REQ122_TRIALS; t++) {
         struct bench_result br_one, br_n;
@@ -764,9 +791,8 @@ int perf_validation_run_all(struct perf_validation_report *report)
         double iops_n   = br_n.read_iops   + br_n.write_iops;
         trials[t] = (iops_one > 0.0) ? (iops_n / (iops_one * (double)cfg_n.num_threads)) : 0.0;
     }
-    /* Median of three: simple sort then pick the middle element.
-     * REQ122_TRIALS is tiny so bubble-sort is fine and avoids pulling
-     * in qsort for three entries. */
+    /* Median of five: simple sort then pick the middle element.
+     * REQ122_TRIALS is small so bubble-sort avoids pulling in qsort. */
     for (int i = 0; i < REQ122_TRIALS - 1; i++) {
         for (int j = 0; j < REQ122_TRIALS - 1 - i; j++) {
             if (trials[j] > trials[j + 1]) {
@@ -775,7 +801,7 @@ int perf_validation_run_all(struct perf_validation_report *report)
         }
     }
     double measured_eff = trials[REQ122_TRIALS / 2];
-    add_result(report, "REQ-122", "Measured scalability >= 70% at 8 workers (median of 3 trials)",
+    add_result(report, "REQ-122", "Measured scalability >= 70% at 8 workers (median of 5 trials)",
                measured_eff * 100.0, 70.0, "%", true);
 
     /* REQ-123: CPU utilization <= 50% under peak load. "Peak load"
