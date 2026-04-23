@@ -7,9 +7,9 @@ CFLAGS += -Iinclude -Iinclude/common -Iinclude/media -Iinclude/hal -Iinclude/ftl
 CFLAGS += -MMD -MP
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
-    LDFLAGS = -lpthread -lrt
+    LDFLAGS = -lpthread -lrt -lm
 else
-    LDFLAGS = -lpthread
+    LDFLAGS = -lpthread -lm
 endif
 
 # Coverage build variant (GCC --coverage instrumentation)
@@ -170,6 +170,7 @@ SYSTEST_PHASE7_INT = $(BIN_DIR)/systest_phase7_integration
 TEST_RESET_ABORT_RACE = $(BIN_DIR)/test_reset_abort_race
 TEST_FTL_PROFILE = $(BIN_DIR)/test_ftl_profile
 TEST_SSSIM_PROFILE = $(BIN_DIR)/test_sssim_profile
+FTL_MFC_REPRO = $(BIN_DIR)/ftl_mfc_repro
 
 # Perf validation library and test
 TEST_PERF = $(BIN_DIR)/test_perf_validation
@@ -616,7 +617,6 @@ $(HFSSS_NBD): $(VHOST_SRC)/hfsss_nbd_server.c $(VHOST_SRC)/nbd_async.c $(LIBHFSS
 	@$(CC) $(CFLAGS) $(VHOST_SRC)/hfsss_nbd_server.c $(VHOST_SRC)/nbd_async.c -o $@ -L$(LIB_DIR) -lhfsss-pcie -lhfsss-sssim -lhfsss-controller -lhfsss-ftl -lhfsss-hal -lhfsss-media -lhfsss-common -lm $(LDFLAGS)
 
 # ftl_mfc_repro — multi-threaded FTL load generator with CRC32C integrity check
-FTL_MFC_REPRO = $(BIN_DIR)/ftl_mfc_repro
 $(FTL_MFC_REPRO): tools/ftl_mfc_repro.c $(LIBHFSSS_FTL) $(LIBHFSSS_HAL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@mkdir -p $(BIN_DIR)
 	@echo "  CC      $@"
