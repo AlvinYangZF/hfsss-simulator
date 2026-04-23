@@ -138,19 +138,21 @@ void *resource_alloc(struct resource_mgr *mgr, enum resource_type type)
     mutex_lock(&pool->lock, 0);
 
     /*
-     * REQ-134 fault-injection hook. Checked under the pool lock so the
-     * faults-pointer read is serialized against
-     * resource_mgr_attach_faults / resource_mgr_cleanup (both store
-     * under mgr->lock but also need to be ordered against readers).
-     * fault_check itself is internally thread-safe on the registry.
-     * Hit returns NULL without consuming a slot.
+     * REQ-134 fault-injection hook. mgr->faults is atomic so the
+     * acquire load pairs with the release store in
+     * resource_mgr_attach_faults — no cross-lock hazard even though
+     * attach runs under mgr->lock and this path under pool->lock.
+     * fault_check itself is internally thread-safe; a hit returns
+     * NULL without consuming a slot.
      */
-    if (mgr->faults) {
+    struct fault_registry *faults =
+        atomic_load_explicit(&mgr->faults, memory_order_acquire);
+    if (faults) {
         struct fault_addr faddr = {
             FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
             FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
         };
-        if (fault_check(mgr->faults, FAULT_POOL_EXHAUST, &faddr)) {
+        if (fault_check(faults, FAULT_POOL_EXHAUST, &faddr)) {
             mutex_unlock(&pool->lock);
             return NULL;
         }
@@ -176,13 +178,14 @@ void resource_mgr_attach_faults(struct resource_mgr *mgr,
         return;
     }
     /*
-     * Store under mgr->lock so concurrent readers in resource_alloc
-     * (which take their per-pool lock) + idle_block_alloc (idle
-     * pool lock) observe a consistent pointer. See resource_mgr_cleanup.
+     * Atomic release store pairs with the acquire loads in
+     * resource_alloc / idle_block_alloc. No lock needed — the
+     * ordering between concurrent attach calls on the same mgr is
+     * the caller's responsibility, and the hot-path read cannot
+     * observe a torn pointer regardless of which per-pool lock it
+     * already holds.
      */
-    mutex_lock(&mgr->lock, 0);
-    mgr->faults = faults;
-    mutex_unlock(&mgr->lock);
+    atomic_store_explicit(&mgr->faults, faults, memory_order_release);
 }
 
 void resource_free(struct resource_mgr *mgr, enum resource_type type, void *ptr)
@@ -297,13 +300,16 @@ struct idle_block_entry *idle_block_alloc(struct resource_mgr *mgr)
     mutex_lock(&pool->lock, 0);
 
     /* REQ-134 fault-injection hook — idle-block pool exhaustion.
-     * Under pool->lock for the same ordering reason as resource_alloc. */
-    if (mgr->faults) {
+     * Atomic acquire load pairs with the release store in
+     * resource_mgr_attach_faults; see resource_alloc. */
+    struct fault_registry *faults =
+        atomic_load_explicit(&mgr->faults, memory_order_acquire);
+    if (faults) {
         struct fault_addr faddr = {
             FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
             FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
         };
-        if (fault_check(mgr->faults, FAULT_POOL_EXHAUST, &faddr)) {
+        if (fault_check(faults, FAULT_POOL_EXHAUST, &faddr)) {
             mutex_unlock(&pool->lock);
             return NULL;
         }

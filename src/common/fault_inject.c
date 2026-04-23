@@ -46,7 +46,7 @@ void fault_registry_cleanup(struct fault_registry *reg)
  * Internal helpers
  * ---------------------------------------------------------------------- */
 
-/* Rebuild type_present from active entries. */
+/* Rebuild type_present from active entries. Caller holds reg->lock. */
 static void rebuild_type_present(struct fault_registry *reg)
 {
     uint32_t mask = 0;
@@ -54,7 +54,7 @@ static void rebuild_type_present(struct fault_registry *reg)
         if (reg->entries[i].active)
             mask |= (uint32_t)reg->entries[i].type;
     }
-    reg->type_present = mask;
+    atomic_store_explicit(&reg->type_present, mask, memory_order_release);
 }
 
 /* Find an active entry by id; returns index or -1. */
@@ -141,7 +141,8 @@ int fault_inject_add(struct fault_registry *reg,
     }
 
     reg->count++;
-    reg->type_present |= (uint32_t)type;
+    atomic_fetch_or_explicit(&reg->type_present, (uint32_t)type,
+                             memory_order_release);
     uint32_t id = e->id;
 
     mutex_unlock(&reg->lock);
@@ -231,7 +232,7 @@ void fault_inject_clear_all(struct fault_registry *reg)
         reg->entries[i].active = false;
 
     reg->count        = 0;
-    reg->type_present = 0;
+    atomic_store_explicit(&reg->type_present, 0u, memory_order_release);
     mutex_unlock(&reg->lock);
 
     HFSSS_LOG_INFO(MODULE, "Cleared all faults");
@@ -249,18 +250,16 @@ struct fault_entry *fault_check(struct fault_registry *reg,
         return NULL;
 
     /*
-     * Unlocked fast exit: if no fault of this type is registered,
-     * return NULL without taking the lock. type_present is a u32;
-     * concurrent writers update it under reg->lock, so a reader
-     * observes either the pre- or post-update value (never torn on
-     * supported targets). A stale "bit set" false-positive just
-     * means we fall through to the locked scan and find nothing —
-     * correct, just slightly more expensive. A stale "bit clear"
-     * false-negative cannot happen because writers set the bit
-     * *before* releasing the lock on add; readers that observed the
-     * add must see the bit set.
+     * Unlocked fast exit. type_present is atomic; an acquire load
+     * pairs with the release store in add / remove / clear_all
+     * (performed under reg->lock before unlock). A set-but-stale bit
+     * is harmless — we fall into the locked scan and find no match.
+     * A clear-but-stale bit means the corresponding add has not yet
+     * released its bit to this reader; the next call observes it.
      */
-    if ((reg->type_present & (uint32_t)type) == 0)
+    uint32_t present = atomic_load_explicit(&reg->type_present,
+                                            memory_order_acquire);
+    if ((present & (uint32_t)type) == 0)
         return NULL;
 
     struct fault_entry *hit = NULL;
@@ -419,6 +418,17 @@ int fault_registry_to_json(const struct fault_registry *reg,
     if (rc != HFSSS_OK)
         return rc;
 
+    /*
+     * Walk entries under reg->lock so the snapshot sees a consistent
+     * view of active / hit_count / persist against concurrent
+     * fault_inject_add / remove / clear_all / fault_check mutations.
+     * const is cast away only to acquire the lock — the entries
+     * themselves are read, not written.
+     */
+    struct fault_registry *reg_mut = (struct fault_registry *)reg;
+    if (reg_mut->initialized)
+        mutex_lock(&reg_mut->lock, 0);
+
     for (int i = 0; i < FAULT_REGISTRY_MAX; i++) {
         const struct fault_entry *e = &reg->entries[i];
         if (!e->active && e->id == 0)
@@ -429,7 +439,11 @@ int fault_registry_to_json(const struct fault_registry *reg,
 
         if (!first) {
             rc = append(buf, bufsz, &pos, ",");
-            if (rc != HFSSS_OK) return rc;
+            if (rc != HFSSS_OK) {
+                if (reg_mut->initialized)
+                    mutex_unlock(&reg_mut->lock);
+                return rc;
+            }
         }
         first = false;
 
@@ -447,9 +461,15 @@ int fault_registry_to_json(const struct fault_registry *reg,
             (int)e->persist,
             e->hit_count,
             e->active ? "true" : "false");
-        if (rc != HFSSS_OK)
+        if (rc != HFSSS_OK) {
+            if (reg_mut->initialized)
+                mutex_unlock(&reg_mut->lock);
             return rc;
+        }
     }
+
+    if (reg_mut->initialized)
+        mutex_unlock(&reg_mut->lock);
 
     rc = append(buf, bufsz, &pos, "]");
     return rc;

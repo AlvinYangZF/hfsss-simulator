@@ -1,6 +1,7 @@
 #ifndef HFSSS_FAULT_INJECT_H
 #define HFSSS_FAULT_INJECT_H
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -87,22 +88,25 @@ struct fault_registry {
     struct fault_entry entries[FAULT_REGISTRY_MAX];
     int                count;
     uint32_t           next_id;
-    uint32_t           type_present;  /*
-                                       * Bitmask for lock-free fast exit in
-                                       * fault_check(): if a callee reads this
-                                       * without the lock and the bit is clear,
-                                       * no matching fault exists and the path
-                                       * returns early. Writers update it under
-                                       * reg->lock, so concurrent read sees
-                                       * either the pre- or post-update value
-                                       * but nothing torn.
+    _Atomic uint32_t   type_present;  /*
+                                       * Bitmask used for the lock-free fast
+                                       * exit in fault_check(). Writers update
+                                       * it via atomic_store (release) under
+                                       * reg->lock; readers in the hot path do
+                                       * an atomic_load (acquire) without the
+                                       * lock. Atomic typing avoids the C/TSAN
+                                       * data race that plain uint32_t had
+                                       * even though the value never tears on
+                                       * supported hardware.
                                        */
     bool               initialized;
     struct mutex       lock;          /*
                                        * Serializes add/remove/clear_all and
                                        * the mutating section of fault_check
                                        * (hit_count bump + one-shot deactivate
-                                       * + rebuild_type_present).
+                                       * + rebuild_type_present), plus the
+                                       * serialization walk in
+                                       * fault_registry_to_json.
                                        */
 };
 

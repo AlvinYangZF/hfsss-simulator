@@ -1,6 +1,8 @@
 #ifndef __HFSSS_RESOURCE_H
 #define __HFSSS_RESOURCE_H
 
+#include <stdatomic.h>
+
 #include "common/common.h"
 #include "common/mutex.h"
 #include "common/fault_inject.h"
@@ -77,12 +79,16 @@ struct resource_mgr {
     struct cpu_stats cpu;
 
     /*
-     * Optional fault-injection hook (REQ-134). When set, resource_alloc
-     * and idle_block_alloc consult the registry for FAULT_POOL_EXHAUST
-     * and return NULL on hit. Owned by the caller; lifetime must
-     * outlive the resource_mgr. NULL leaves the hot path untouched.
+     * Optional fault-injection hook (REQ-134). resource_alloc /
+     * idle_block_alloc run under their per-pool locks, not mgr->lock,
+     * so the pointer is atomic: attach/detach stores with release
+     * ordering, hot-path reads use acquire. A detach that races with
+     * a reader either wins (reader sees NULL, no fault check) or
+     * loses (reader sees the still-live registry; fault_check itself
+     * is internally thread-safe and the caller guarantees registry
+     * lifetime outlives any outstanding resource_alloc call).
      */
-    struct fault_registry *faults;
+    _Atomic(struct fault_registry *) faults;
 };
 
 /* Function Prototypes */
