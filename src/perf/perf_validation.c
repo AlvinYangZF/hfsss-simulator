@@ -768,8 +768,9 @@ int perf_validation_run_all(struct perf_validation_report *report)
     cfg_n.num_threads = 8;         /* 8 workers is enough to expose real contention */
     cfg_n.op_count    = 50000 * 8;
 
-    /* Two warmup rounds — both results discarded. The first warmup
-     * pays thread-pool startup + first-use allocation costs that
+    /* Two warmup rounds — both results discarded. bench_run spawns
+     * fresh pthreads per call (no pool is reused), so the first
+     * warmup pays pthread_create + first-use allocation costs that
      * contribute most of the initial-trial noise; the second
      * populates the steady-state cache state. */
     {
