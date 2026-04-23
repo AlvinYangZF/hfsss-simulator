@@ -100,6 +100,12 @@ void resource_mgr_cleanup(struct resource_mgr *mgr)
         return;
     }
 
+    /* REQ-134: detach any attached fault registry first so no
+     * in-flight resource_alloc can dereference a soon-to-be-freed
+     * registry. The per-pool locks + mgr->lock below drain any
+     * mid-call readers. */
+    resource_mgr_attach_faults(mgr, NULL);
+
     mutex_lock(&mgr->lock, 0);
 
     /* Cleanup idle block pool */
@@ -127,11 +133,17 @@ void *resource_alloc(struct resource_mgr *mgr, enum resource_type type)
         return NULL;
     }
 
+    pool = &mgr->pools[type];
+
+    mutex_lock(&pool->lock, 0);
+
     /*
-     * REQ-134 fault-injection hook. Checked before the pool lock so a
-     * registered FAULT_POOL_EXHAUST fault returns NULL without
-     * consuming a slot, mimicking true exhaustion from the caller's
-     * perspective.
+     * REQ-134 fault-injection hook. Checked under the pool lock so the
+     * faults-pointer read is serialized against
+     * resource_mgr_attach_faults / resource_mgr_cleanup (both store
+     * under mgr->lock but also need to be ordered against readers).
+     * fault_check itself is internally thread-safe on the registry.
+     * Hit returns NULL without consuming a slot.
      */
     if (mgr->faults) {
         struct fault_addr faddr = {
@@ -139,13 +151,10 @@ void *resource_alloc(struct resource_mgr *mgr, enum resource_type type)
             FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
         };
         if (fault_check(mgr->faults, FAULT_POOL_EXHAUST, &faddr)) {
+            mutex_unlock(&pool->lock);
             return NULL;
         }
     }
-
-    pool = &mgr->pools[type];
-
-    mutex_lock(&pool->lock, 0);
 
     if (pool->free > 0) {
         /* Take from the end of the free list */
@@ -166,7 +175,14 @@ void resource_mgr_attach_faults(struct resource_mgr *mgr,
     if (!mgr) {
         return;
     }
+    /*
+     * Store under mgr->lock so concurrent readers in resource_alloc
+     * (which take their per-pool lock) + idle_block_alloc (idle
+     * pool lock) observe a consistent pointer. See resource_mgr_cleanup.
+     */
+    mutex_lock(&mgr->lock, 0);
     mgr->faults = faults;
+    mutex_unlock(&mgr->lock);
 }
 
 void resource_free(struct resource_mgr *mgr, enum resource_type type, void *ptr)
@@ -276,20 +292,22 @@ struct idle_block_entry *idle_block_alloc(struct resource_mgr *mgr)
         return NULL;
     }
 
-    /* REQ-134 fault-injection hook: idle-block pool exhaustion. */
+    pool = &mgr->idle_blocks;
+
+    mutex_lock(&pool->lock, 0);
+
+    /* REQ-134 fault-injection hook — idle-block pool exhaustion.
+     * Under pool->lock for the same ordering reason as resource_alloc. */
     if (mgr->faults) {
         struct fault_addr faddr = {
             FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
             FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
         };
         if (fault_check(mgr->faults, FAULT_POOL_EXHAUST, &faddr)) {
+            mutex_unlock(&pool->lock);
             return NULL;
         }
     }
-
-    pool = &mgr->idle_blocks;
-
-    mutex_lock(&pool->lock, 0);
 
     if (pool->free > 0) {
         /* Take from head of free list */

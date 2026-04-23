@@ -21,6 +21,12 @@ int fault_registry_init(struct fault_registry *reg)
         return HFSSS_ERR_INVAL;
 
     memset(reg, 0, sizeof(*reg));
+
+    int rc = mutex_init(&reg->lock);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+
     reg->next_id     = 1;
     reg->initialized = true;
     return HFSSS_OK;
@@ -30,6 +36,9 @@ void fault_registry_cleanup(struct fault_registry *reg)
 {
     if (!reg)
         return;
+    if (reg->initialized) {
+        mutex_cleanup(&reg->lock);
+    }
     memset(reg, 0, sizeof(*reg));
 }
 
@@ -90,7 +99,10 @@ int fault_inject_add(struct fault_registry *reg,
     if (!reg || !reg->initialized)
         return HFSSS_ERR_INVAL;
 
+    mutex_lock(&reg->lock, 0);
+
     if (reg->count >= FAULT_REGISTRY_MAX) {
+        mutex_unlock(&reg->lock);
         HFSSS_LOG_WARN(MODULE, "Registry full (%d entries)", FAULT_REGISTRY_MAX);
         return HFSSS_ERR;
     }
@@ -103,8 +115,10 @@ int fault_inject_add(struct fault_registry *reg,
             break;
         }
     }
-    if (slot < 0)
+    if (slot < 0) {
+        mutex_unlock(&reg->lock);
         return HFSSS_ERR;
+    }
 
     struct fault_entry *e = &reg->entries[slot];
     memset(e, 0, sizeof(*e));
@@ -128,10 +142,13 @@ int fault_inject_add(struct fault_registry *reg,
 
     reg->count++;
     reg->type_present |= (uint32_t)type;
+    uint32_t id = e->id;
+
+    mutex_unlock(&reg->lock);
 
     HFSSS_LOG_INFO(MODULE, "Added fault id=%u type=0x%x persist=%d prob=%.3f",
-                   e->id, (unsigned)type, (int)persist, probability);
-    return (int)e->id;
+                   id, (unsigned)type, (int)persist, probability);
+    return (int)id;
 }
 
 int fault_inject_set_bit_flip(struct fault_registry *reg,
@@ -140,11 +157,14 @@ int fault_inject_set_bit_flip(struct fault_registry *reg,
     if (!reg || !reg->initialized)
         return HFSSS_ERR_INVAL;
 
+    mutex_lock(&reg->lock, 0);
     int idx = find_entry(reg, id);
-    if (idx < 0)
+    if (idx < 0) {
+        mutex_unlock(&reg->lock);
         return HFSSS_ERR_NOENT;
-
+    }
     reg->entries[idx].bit_flip_mask = mask;
+    mutex_unlock(&reg->lock);
     return HFSSS_OK;
 }
 
@@ -154,11 +174,14 @@ int fault_inject_set_disturb(struct fault_registry *reg,
     if (!reg || !reg->initialized)
         return HFSSS_ERR_INVAL;
 
+    mutex_lock(&reg->lock, 0);
     int idx = find_entry(reg, id);
-    if (idx < 0)
+    if (idx < 0) {
+        mutex_unlock(&reg->lock);
         return HFSSS_ERR_NOENT;
-
+    }
     reg->entries[idx].disturb_factor = factor;
+    mutex_unlock(&reg->lock);
     return HFSSS_OK;
 }
 
@@ -168,11 +191,14 @@ int fault_inject_set_aging(struct fault_registry *reg,
     if (!reg || !reg->initialized)
         return HFSSS_ERR_INVAL;
 
+    mutex_lock(&reg->lock, 0);
     int idx = find_entry(reg, id);
-    if (idx < 0)
+    if (idx < 0) {
+        mutex_unlock(&reg->lock);
         return HFSSS_ERR_NOENT;
-
+    }
     reg->entries[idx].aging_factor = factor;
+    mutex_unlock(&reg->lock);
     return HFSSS_OK;
 }
 
@@ -181,13 +207,16 @@ int fault_inject_remove(struct fault_registry *reg, uint32_t id)
     if (!reg || !reg->initialized)
         return HFSSS_ERR_INVAL;
 
+    mutex_lock(&reg->lock, 0);
     int idx = find_entry(reg, id);
-    if (idx < 0)
+    if (idx < 0) {
+        mutex_unlock(&reg->lock);
         return HFSSS_ERR_NOENT;
-
+    }
     reg->entries[idx].active = false;
     reg->count--;
     rebuild_type_present(reg);
+    mutex_unlock(&reg->lock);
     HFSSS_LOG_INFO(MODULE, "Removed fault id=%u", id);
     return HFSSS_OK;
 }
@@ -197,11 +226,14 @@ void fault_inject_clear_all(struct fault_registry *reg)
     if (!reg)
         return;
 
+    mutex_lock(&reg->lock, 0);
     for (int i = 0; i < FAULT_REGISTRY_MAX; i++)
         reg->entries[i].active = false;
 
     reg->count        = 0;
     reg->type_present = 0;
+    mutex_unlock(&reg->lock);
+
     HFSSS_LOG_INFO(MODULE, "Cleared all faults");
 }
 
@@ -216,10 +248,24 @@ struct fault_entry *fault_check(struct fault_registry *reg,
     if (!reg || !reg->initialized || !addr)
         return NULL;
 
-    /* O(1) fast exit: no fault of this type is registered. */
+    /*
+     * Unlocked fast exit: if no fault of this type is registered,
+     * return NULL without taking the lock. type_present is a u32;
+     * concurrent writers update it under reg->lock, so a reader
+     * observes either the pre- or post-update value (never torn on
+     * supported targets). A stale "bit set" false-positive just
+     * means we fall through to the locked scan and find nothing —
+     * correct, just slightly more expensive. A stale "bit clear"
+     * false-negative cannot happen because writers set the bit
+     * *before* releasing the lock on add; readers that observed the
+     * add must see the bit set.
+     */
     if ((reg->type_present & (uint32_t)type) == 0)
         return NULL;
 
+    struct fault_entry *hit = NULL;
+
+    mutex_lock(&reg->lock, 0);
     for (int i = 0; i < FAULT_REGISTRY_MAX; i++) {
         struct fault_entry *e = &reg->entries[i];
 
@@ -245,10 +291,11 @@ struct fault_entry *fault_check(struct fault_registry *reg,
             rebuild_type_present(reg);
         }
 
-        return e;
+        hit = e;
+        break;
     }
-
-    return NULL;
+    mutex_unlock(&reg->lock);
+    return hit;
 }
 
 /* -------------------------------------------------------------------------

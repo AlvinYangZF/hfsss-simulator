@@ -108,7 +108,14 @@ void arbiter_cleanup(struct arbiter_ctx *ctx)
         return;
     }
 
+    /*
+     * REQ-134: detach any fault registry before tearing down so no
+     * in-flight path dereferences a soon-to-be-freed registry. The
+     * attach/detach slot is a simple pointer so the store alone is
+     * enough under the lock; mutators already serialize on ctx->lock.
+     */
     mutex_lock(&ctx->lock, 0);
+    ctx->faults = NULL;
     free(ctx->cmd_pool);
     mutex_unlock(&ctx->lock);
 
@@ -125,7 +132,25 @@ struct cmd_context *arbiter_alloc_cmd(struct arbiter_ctx *ctx)
         return NULL;
     }
 
+    /*
+     * REQ-134 pool-exhaustion hook also applies here: the arbiter's
+     * cmd_pool is a bounded resource, so FAULT_POOL_EXHAUST gates
+     * allocation just like resource_alloc / idle_block_alloc.
+     * Checked under ctx->lock because ctx->faults is read under the
+     * same lock in the other mutators.
+     */
     mutex_lock(&ctx->lock, 0);
+
+    if (ctx->faults) {
+        struct fault_addr faddr = {
+            FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
+            FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
+        };
+        if (fault_check(ctx->faults, FAULT_POOL_EXHAUST, &faddr)) {
+            mutex_unlock(&ctx->lock);
+            return NULL;
+        }
+    }
 
     for (i = 0; i < ctx->max_cmds; i++) {
         if (ctx->cmd_pool[i].state == CMD_STATE_FREE) {
@@ -183,12 +208,21 @@ int arbiter_enqueue(struct arbiter_ctx *ctx, struct cmd_context *cmd)
         return HFSSS_ERR_INVAL;
     }
 
+    mutex_lock(&ctx->lock, 0);
+
     /*
-     * REQ-134: controller-panic injection. When FAULT_PANIC is armed,
+     * REQ-134: soft-panic injection. When FAULT_PANIC is armed the
      * enqueue is rejected and the command is left in CMD_STATE_ERROR
      * so the caller can observe the injected failure without the
-     * process terminating (cf. fault_controller_panic() which calls
-     * abort(); this path is the testable alternative).
+     * process terminating. This is not a true controller panic
+     * (cf. fault_controller_panic() which calls abort()); it is an
+     * injectable surrogate that exercises the same error-return
+     * paths real clients will take when the controller fails an
+     * enqueue.
+     *
+     * The state write must happen under ctx->lock to race-protect
+     * against a concurrent arbiter_mark_completed() / check_timeouts()
+     * that also mutates cmd->state.
      */
     if (ctx->faults) {
         struct fault_addr faddr = {
@@ -197,11 +231,10 @@ int arbiter_enqueue(struct arbiter_ctx *ctx, struct cmd_context *cmd)
         };
         if (fault_check(ctx->faults, FAULT_PANIC, &faddr)) {
             cmd->state = CMD_STATE_ERROR;
+            mutex_unlock(&ctx->lock);
             return HFSSS_ERR;
         }
     }
-
-    mutex_lock(&ctx->lock, 0);
 
     cmd->state = CMD_STATE_ARBITRATED;
     cmd_list_add_tail(&ctx->queues[cmd->priority].head, cmd);
@@ -299,11 +332,21 @@ u32 arbiter_check_timeouts(struct arbiter_ctx *ctx)
 
     now = get_time_ns();
 
+    mutex_lock(&ctx->lock, 0);
+
     /*
-     * REQ-134: timeout-storm injection. When FAULT_TIMEOUT is armed,
-     * every in-flight command is forced through the timeout path
-     * this tick regardless of its deadline — models a controller
-     * stall that causes mass timeout detection on the host.
+     * REQ-134: mass-timeout-detection injection. When FAULT_TIMEOUT
+     * is armed, every in-flight command is forced through the
+     * timeout path on this tick regardless of its deadline. Models a
+     * controller stall that causes the host to observe mass
+     * command-timeout at once. Under a sticky fault every subsequent
+     * tick fires the same slam, so the window is closer to "stuck
+     * in a timeout loop" than "a storm that clears"; one-shot or
+     * probability-gated faults model a transient event.
+     *
+     * ctx->faults is read under ctx->lock to pair with
+     * arbiter_attach_faults / arbiter_cleanup which store to it
+     * under the same lock, avoiding a torn / use-after-free deref.
      */
     if (ctx->faults) {
         struct fault_addr faddr = {
@@ -314,8 +357,6 @@ u32 arbiter_check_timeouts(struct arbiter_ctx *ctx)
             force_all = true;
         }
     }
-
-    mutex_lock(&ctx->lock, 0);
 
     cmd = ctx->in_flight_queue.head;
     while (cmd) {
@@ -375,5 +416,13 @@ void arbiter_attach_faults(struct arbiter_ctx *ctx,
     if (!ctx) {
         return;
     }
+    /*
+     * Store under ctx->lock so the pointer swap is never observed
+     * mid-write by a concurrent arbiter_enqueue / alloc_cmd /
+     * check_timeouts. Matches the read-under-lock discipline in
+     * those callers.
+     */
+    mutex_lock(&ctx->lock, 0);
     ctx->faults = faults;
+    mutex_unlock(&ctx->lock);
 }
