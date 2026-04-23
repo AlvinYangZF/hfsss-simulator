@@ -732,18 +732,32 @@ int perf_validation_run_all(struct perf_validation_report *report)
      *
      * De-flake strategy:
      *   - Longer trials (50 000 / 400 000 ops instead of 20 000 /
-     *     160 000) so per-trial stddev drops ~√2.5x.
+     *     160 000) so per-trial stddev shrinks. Per-sample SE scales
+     *     roughly with 1 / sqrt(ops); for a bimodal-contaminated
+     *     distribution the scaling is looser than a Gaussian SE but
+     *     the direction is the same.
      *   - Two warmup iterations (was one) — the first warmup's thread
      *     pool startup + first-use allocation are themselves noisy;
      *     the second lands in steady state.
      *   - REQ122_TRIALS = 5 with median-of-5: tolerates 2 outliers in
-     *     either direction. Combined with the reduced per-trial
-     *     stddev, this drives flake probability below ~1% at the
-     *     observed contamination rate.
+     *     either direction. At the observed pre-fix ~20 % single-trial
+     *     contamination rate, this drops the median-fail probability
+     *     from ~10 % (median-of-3) to ~6 % in theory; combined with
+     *     the lower per-trial stddev, 10-run local sampling shows
+     *     every trial clearing 70 %. Not a formal guarantee — the
+     *     bimodal tail could still bite on a differently-loaded CI
+     *     host, which is why we also re-check on each CI run.
      *
      * This matches the capability-verification intent of the
      * requirement without requiring every observation on a noisy box
-     * to individually clear 70%.
+     * to individually clear 70 %.
+     *
+     * Tradeoff: two warmups + longer trials make this a steady-state
+     * probe; a genuine regression that only surfaces in the first few
+     * thousand ops (e.g., contention in a lazy-init path) would be
+     * hidden. If that class of bug becomes a concern, add a separate
+     * cold-start probe rather than shortening the warmup here — this
+     * probe is already doing capability verification.
      */
     struct bench_cfg cfg_one = {
         .workload = BENCH_RAND_READ, .block_size = 4096,
