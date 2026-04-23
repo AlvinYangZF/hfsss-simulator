@@ -183,6 +183,24 @@ int arbiter_enqueue(struct arbiter_ctx *ctx, struct cmd_context *cmd)
         return HFSSS_ERR_INVAL;
     }
 
+    /*
+     * REQ-134: controller-panic injection. When FAULT_PANIC is armed,
+     * enqueue is rejected and the command is left in CMD_STATE_ERROR
+     * so the caller can observe the injected failure without the
+     * process terminating (cf. fault_controller_panic() which calls
+     * abort(); this path is the testable alternative).
+     */
+    if (ctx->faults) {
+        struct fault_addr faddr = {
+            FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
+            FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
+        };
+        if (fault_check(ctx->faults, FAULT_PANIC, &faddr)) {
+            cmd->state = CMD_STATE_ERROR;
+            return HFSSS_ERR;
+        }
+    }
+
     mutex_lock(&ctx->lock, 0);
 
     cmd->state = CMD_STATE_ARBITRATED;
@@ -273,6 +291,7 @@ u32 arbiter_check_timeouts(struct arbiter_ctx *ctx)
     u32 timeout_count = 0;
     u64 now;
     struct cmd_context *cmd, *next;
+    bool force_all = false;
 
     if (!ctx) {
         return 0;
@@ -280,12 +299,28 @@ u32 arbiter_check_timeouts(struct arbiter_ctx *ctx)
 
     now = get_time_ns();
 
+    /*
+     * REQ-134: timeout-storm injection. When FAULT_TIMEOUT is armed,
+     * every in-flight command is forced through the timeout path
+     * this tick regardless of its deadline — models a controller
+     * stall that causes mass timeout detection on the host.
+     */
+    if (ctx->faults) {
+        struct fault_addr faddr = {
+            FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
+            FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
+        };
+        if (fault_check(ctx->faults, FAULT_TIMEOUT, &faddr)) {
+            force_all = true;
+        }
+    }
+
     mutex_lock(&ctx->lock, 0);
 
     cmd = ctx->in_flight_queue.head;
     while (cmd) {
         next = cmd->next;
-        if (now > cmd->deadline) {
+        if (force_all || now > cmd->deadline) {
             /* Command timed out */
             cmd->state = CMD_STATE_TIMEOUT;
             ctx->stats.total_timeouts++;
@@ -332,4 +367,13 @@ struct cmd_context *arbiter_get_next_timeout(struct arbiter_ctx *ctx)
     mutex_unlock(&ctx->lock);
 
     return oldest;
+}
+
+void arbiter_attach_faults(struct arbiter_ctx *ctx,
+                           struct fault_registry *faults)
+{
+    if (!ctx) {
+        return;
+    }
+    ctx->faults = faults;
 }

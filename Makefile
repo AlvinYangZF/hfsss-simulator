@@ -452,9 +452,9 @@ $(TEST_CONFIG): $(TEST_DIR)/test_config.c $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common $(LDFLAGS)
 
-$(TEST_FAULT): $(TEST_DIR)/test_fault_inject.c $(LIBHFSSS_COMMON)
+$(TEST_FAULT): $(TEST_DIR)/test_fault_inject.c $(LIBHFSSS_CTRL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
-	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common -lm $(LDFLAGS)
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-controller -lhfsss-media -lhfsss-common $(LDFLAGS)
 
 $(TEST_RELIABILITY): $(TEST_DIR)/test_reliability.c $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"

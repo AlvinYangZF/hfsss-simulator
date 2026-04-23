@@ -127,6 +127,22 @@ void *resource_alloc(struct resource_mgr *mgr, enum resource_type type)
         return NULL;
     }
 
+    /*
+     * REQ-134 fault-injection hook. Checked before the pool lock so a
+     * registered FAULT_POOL_EXHAUST fault returns NULL without
+     * consuming a slot, mimicking true exhaustion from the caller's
+     * perspective.
+     */
+    if (mgr->faults) {
+        struct fault_addr faddr = {
+            FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
+            FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
+        };
+        if (fault_check(mgr->faults, FAULT_POOL_EXHAUST, &faddr)) {
+            return NULL;
+        }
+    }
+
     pool = &mgr->pools[type];
 
     mutex_lock(&pool->lock, 0);
@@ -142,6 +158,15 @@ void *resource_alloc(struct resource_mgr *mgr, enum resource_type type)
     mutex_unlock(&pool->lock);
 
     return ptr;
+}
+
+void resource_mgr_attach_faults(struct resource_mgr *mgr,
+                                struct fault_registry *faults)
+{
+    if (!mgr) {
+        return;
+    }
+    mgr->faults = faults;
 }
 
 void resource_free(struct resource_mgr *mgr, enum resource_type type, void *ptr)
@@ -249,6 +274,17 @@ struct idle_block_entry *idle_block_alloc(struct resource_mgr *mgr)
 
     if (!mgr) {
         return NULL;
+    }
+
+    /* REQ-134 fault-injection hook: idle-block pool exhaustion. */
+    if (mgr->faults) {
+        struct fault_addr faddr = {
+            FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
+            FAULT_WILDCARD, FAULT_WILDCARD, FAULT_WILDCARD,
+        };
+        if (fault_check(mgr->faults, FAULT_POOL_EXHAUST, &faddr)) {
+            return NULL;
+        }
     }
 
     pool = &mgr->idle_blocks;

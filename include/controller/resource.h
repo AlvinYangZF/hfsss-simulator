@@ -3,6 +3,7 @@
 
 #include "common/common.h"
 #include "common/mutex.h"
+#include "common/fault_inject.h"
 
 /* Resource Type */
 enum resource_type {
@@ -74,6 +75,14 @@ struct resource_mgr {
 
     /* Per-role CPU stats (REQ-119) */
     struct cpu_stats cpu;
+
+    /*
+     * Optional fault-injection hook (REQ-134). When set, resource_alloc
+     * and idle_block_alloc consult the registry for FAULT_POOL_EXHAUST
+     * and return NULL on hit. Owned by the caller; lifetime must
+     * outlive the resource_mgr. NULL leaves the hot path untouched.
+     */
+    struct fault_registry *faults;
 };
 
 /* Function Prototypes */
@@ -81,6 +90,10 @@ int resource_mgr_init(struct resource_mgr *mgr);
 void resource_mgr_cleanup(struct resource_mgr *mgr);
 void *resource_alloc(struct resource_mgr *mgr, enum resource_type type);
 void resource_free(struct resource_mgr *mgr, enum resource_type type, void *ptr);
+
+/* Fault injection attachment (REQ-134). Pass NULL to detach. */
+void resource_mgr_attach_faults(struct resource_mgr *mgr,
+                                struct fault_registry *faults);
 
 /* Idle Block Pool Functions */
 int idle_block_pool_init(struct idle_block_pool *pool, u32 total_blocks, u32 low_watermark, u32 high_watermark);

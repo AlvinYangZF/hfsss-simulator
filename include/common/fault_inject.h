@@ -22,6 +22,7 @@ enum fault_type {
     FAULT_POWER         = (1 << 7),
     FAULT_PANIC         = (1 << 8),
     FAULT_POOL_EXHAUST  = (1 << 9),
+    FAULT_TIMEOUT       = (1 << 10),   /* controller command-timeout storm */
 };
 
 /* Persistence mode */

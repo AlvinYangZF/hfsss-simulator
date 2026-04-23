@@ -334,6 +334,7 @@ static const char *fault_type_name(enum fault_type t)
     case FAULT_POWER:         return "POWER";
     case FAULT_PANIC:         return "PANIC";
     case FAULT_POOL_EXHAUST:  return "POOL_EXHAUST";
+    case FAULT_TIMEOUT:       return "TIMEOUT";
     default:                  return "UNKNOWN";
     }
 }
@@ -480,6 +481,7 @@ int fault_entry_from_json(const char *json, struct fault_entry *out)
     else if (strcmp(type_str, "POWER")         == 0) out->type = FAULT_POWER;
     else if (strcmp(type_str, "PANIC")         == 0) out->type = FAULT_PANIC;
     else if (strcmp(type_str, "POOL_EXHAUST")  == 0) out->type = FAULT_POOL_EXHAUST;
+    else if (strcmp(type_str, "TIMEOUT")       == 0) out->type = FAULT_TIMEOUT;
     else                                              out->type = FAULT_NONE;
 
     return HFSSS_OK;

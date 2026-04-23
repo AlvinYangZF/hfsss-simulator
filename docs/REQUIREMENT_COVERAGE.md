@@ -35,9 +35,9 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 2 | 0 | 86.4% | ↑ +6 (cmd state machine, retries, flow ctl, wear monitor, Error Log Page) |
 | Performance Requirements | 8 | 7 | 0 | 1 | 0 | 87.5% (87.5% partial) | ↑ REQ-116..120 + REQ-122 Amdahl scalability + REQ-123 bursty-load CPU probe gated by regression suite |
 | Product Interfaces | 8 | 5 | 2 | 1 | 0 | 62.5% (87.5% partial) | ↑ REQ-131 LLD_15 reconciled with shipping code (V1.1); REQ-125/126 retain ⚠️ pending LLD_16 host-path evidence |
-| Fault Injection | 3 | 2 | 1 | 0 | 0 | 66.7% (100% partial) | ↑ registry + power hook + NAND read/program/erase fault gates landed |
+| Fault Injection | 3 | 3 | 0 | 0 | 0 | 100% | ↑ REQ-134 controller fault hooks (pool exhaustion + panic + timeout storm) wired into resource_mgr + arbiter; verified by `tests/test_fault_inject.c::test_controller_*` |
 | System Reliability | 4 | 3 | 0 | 1 | 0 | 75.0% | ↑ REQ-088 P99.9 latency anomaly detector |
-| **Core Subtotal** | **138** | **110** | **11** | **17** | **0** | **79.7%** (87.7% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **111** | **10** | **17** | **0** | **80.4%** (87.7% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 6 | 1 | 0 | 0 | 85.7% (100% partial) | ↑ DWRR + per-NS IOPS/BW caps + SLA rollback + hot-reconfig |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
 | **Enterprise Subtotal** | **40** | **39** | **1** | **0** | **0** | **97.5%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **149** | **12** | **17** | **0** | **83.7%** (90.4% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **150** | **11** | **17** | **0** | **84.3%** (90.4% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -230,7 +230,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 |----|------------------------|--------|-------|
 | REQ-132 | NAND Media Fault Injection | ✅ | Fault registry in `src/common/fault_inject.c`; `struct media_ctx.faults` + `media_attach_fault_registry()` plug it into the NAND I/O path. `media_nand_read/program/erase` consult `fault_check()` early and surface hits as `HFSSS_ERR_IO` (FAULT_READ_ERROR / FAULT_PROGRAM_ERROR / FAULT_ERASE_ERROR). Per-address targeting + wildcards validated by `tests/test_media.c::test_fault_injection_nand_path`. |
 | REQ-133 | Power Fault Injection | ✅ | UPLP test hooks `uplp_inject_power_fail`/`uplp_inject_at_phase` in `src/common/uplp.c`; `tests/test_uplp.c` |
-| REQ-134 | Controller Fault Injection | ⚠️ | Some controller-level fault hooks via `fault_inject.c`; comprehensive panic / pool-exhaustion / timeout-storm scenarios not all wired |
+| REQ-134 | Controller Fault Injection | ✅ | `struct resource_mgr.faults` + `resource_mgr_attach_faults()` plug the fault registry into the controller resource path; `resource_alloc` and `idle_block_alloc` consult `fault_check(FAULT_POOL_EXHAUST)` and return NULL on hit. `struct arbiter_ctx.faults` + `arbiter_attach_faults()` plug the same registry into the command path; `arbiter_enqueue` rejects with `HFSSS_ERR` + `CMD_STATE_ERROR` under `FAULT_PANIC`, and `arbiter_check_timeouts` forces every in-flight command to `CMD_STATE_TIMEOUT` under `FAULT_TIMEOUT`. The three scenarios (pool exhaustion / controller panic / timeout storm) are exercised end-to-end by `tests/test_fault_inject.c::test_controller_*` (REQ-134.1 through REQ-134.5). |
 
 ### 10. System Reliability & Stability (REQ-135 to REQ-138)
 

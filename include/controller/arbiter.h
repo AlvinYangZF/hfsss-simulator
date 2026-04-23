@@ -3,6 +3,7 @@
 
 #include "common/common.h"
 #include "common/mutex.h"
+#include "common/fault_inject.h"
 #include "controller/shmem_if.h"
 
 /* Command Priority */
@@ -71,6 +72,15 @@ struct arbiter_ctx {
     u64 cmd_timeout_ns;
     struct timeout_stats stats;
     struct mutex lock;
+
+    /*
+     * Optional fault-injection hook (REQ-134).
+     *   FAULT_PANIC on arbiter_enqueue  -> enqueue rejected with HFSSS_ERR
+     *   FAULT_TIMEOUT on check_timeouts -> every in-flight cmd forced to
+     *                                      CMD_STATE_TIMEOUT this tick
+     * NULL leaves the hot path untouched. Owned by the caller.
+     */
+    struct fault_registry *faults;
 };
 
 /* Function Prototypes */
@@ -87,5 +97,9 @@ void arbiter_mark_in_flight(struct arbiter_ctx *ctx, struct cmd_context *cmd);
 void arbiter_mark_completed(struct arbiter_ctx *ctx, struct cmd_context *cmd);
 u32 arbiter_check_timeouts(struct arbiter_ctx *ctx);
 struct cmd_context *arbiter_get_next_timeout(struct arbiter_ctx *ctx);
+
+/* Fault injection attachment (REQ-134). Pass NULL to detach. */
+void arbiter_attach_faults(struct arbiter_ctx *ctx,
+                           struct fault_registry *faults);
 
 #endif /* __HFSSS_ARBITER_H */

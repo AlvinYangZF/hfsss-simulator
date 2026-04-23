@@ -10,6 +10,8 @@
 
 #include "fault_inject.h"
 #include "common.h"
+#include "controller/resource.h"
+#include "controller/arbiter.h"
 
 /* -------------------------------------------------------------------------
  * Minimal test harness
@@ -558,6 +560,186 @@ static void test_json_roundtrip(void)
 }
 
 /* -------------------------------------------------------------------------
+ * REQ-134: controller fault injection
+ * ---------------------------------------------------------------------- */
+
+static void test_controller_pool_exhaust_resource_alloc(void)
+{
+    printf("[REQ-134.1] resource_alloc honors FAULT_POOL_EXHAUST\n");
+    struct resource_mgr mgr;
+    int rc = resource_mgr_init(&mgr);
+    TEST_ASSERT(rc == HFSSS_OK, "resource_mgr_init");
+
+    /* Baseline: alloc succeeds without a fault attached. */
+    void *p_ok = resource_alloc(&mgr, RESOURCE_CMD_SLOT);
+    TEST_ASSERT(p_ok != NULL, "baseline alloc succeeds without faults");
+    if (p_ok) {
+        resource_free(&mgr, RESOURCE_CMD_SLOT, p_ok);
+    }
+
+    /* Attach a fault registry and register a sticky POOL_EXHAUST fault. */
+    struct fault_registry reg;
+    fault_registry_init(&reg);
+    int fid = fault_inject_add(&reg, FAULT_POOL_EXHAUST, NULL,
+                               FAULT_PERSIST_STICKY, 1.0);
+    TEST_ASSERT(fid > 0, "POOL_EXHAUST fault registered");
+
+    resource_mgr_attach_faults(&mgr, &reg);
+
+    /* Alloc now returns NULL repeatedly (sticky fault). */
+    void *p_bad_1 = resource_alloc(&mgr, RESOURCE_CMD_SLOT);
+    void *p_bad_2 = resource_alloc(&mgr, RESOURCE_DATA_BUFFER);
+    TEST_ASSERT(p_bad_1 == NULL, "sticky POOL_EXHAUST forces alloc NULL (slot)");
+    TEST_ASSERT(p_bad_2 == NULL, "sticky POOL_EXHAUST forces alloc NULL (buf)");
+
+    /* Hit count should have advanced twice. */
+    TEST_ASSERT(reg.entries[0].hit_count >= 2, "hit_count advanced per alloc");
+
+    /* Detach -> alloc recovers. */
+    resource_mgr_attach_faults(&mgr, NULL);
+    void *p_after = resource_alloc(&mgr, RESOURCE_CMD_SLOT);
+    TEST_ASSERT(p_after != NULL, "detach restores alloc");
+    if (p_after) {
+        resource_free(&mgr, RESOURCE_CMD_SLOT, p_after);
+    }
+
+    fault_registry_cleanup(&reg);
+    resource_mgr_cleanup(&mgr);
+}
+
+static void test_controller_pool_exhaust_one_shot(void)
+{
+    printf("[REQ-134.2] FAULT_POOL_EXHAUST one-shot fires exactly once\n");
+    struct resource_mgr mgr;
+    resource_mgr_init(&mgr);
+
+    struct fault_registry reg;
+    fault_registry_init(&reg);
+    int fid = fault_inject_add(&reg, FAULT_POOL_EXHAUST, NULL,
+                               FAULT_PERSIST_ONE_SHOT, 1.0);
+    TEST_ASSERT(fid > 0, "one-shot POOL_EXHAUST registered");
+
+    resource_mgr_attach_faults(&mgr, &reg);
+
+    void *p1 = resource_alloc(&mgr, RESOURCE_CMD_SLOT);
+    void *p2 = resource_alloc(&mgr, RESOURCE_CMD_SLOT);
+    TEST_ASSERT(p1 == NULL, "first alloc trips the fault");
+    TEST_ASSERT(p2 != NULL, "second alloc succeeds (one-shot auto-cleared)");
+
+    if (p2) resource_free(&mgr, RESOURCE_CMD_SLOT, p2);
+    fault_registry_cleanup(&reg);
+    resource_mgr_cleanup(&mgr);
+}
+
+static void test_controller_pool_exhaust_idle_block(void)
+{
+    printf("[REQ-134.3] idle_block_alloc honors FAULT_POOL_EXHAUST\n");
+    struct resource_mgr mgr;
+    resource_mgr_init(&mgr);
+
+    /* Seed the idle pool so baseline alloc is non-NULL. */
+    int prc = idle_block_pool_init(&mgr.idle_blocks, 16, 4, 12);
+    TEST_ASSERT(prc == HFSSS_OK, "idle_block_pool_init");
+
+    struct idle_block_entry *ok = idle_block_alloc(&mgr);
+    TEST_ASSERT(ok != NULL, "baseline idle_block_alloc");
+    if (ok) idle_block_free(&mgr, ok);
+
+    struct fault_registry reg;
+    fault_registry_init(&reg);
+    fault_inject_add(&reg, FAULT_POOL_EXHAUST, NULL, FAULT_PERSIST_STICKY, 1.0);
+    resource_mgr_attach_faults(&mgr, &reg);
+
+    struct idle_block_entry *bad = idle_block_alloc(&mgr);
+    TEST_ASSERT(bad == NULL, "idle_block_alloc returns NULL under POOL_EXHAUST");
+
+    fault_registry_cleanup(&reg);
+    resource_mgr_cleanup(&mgr);
+}
+
+static void test_controller_panic_inject_on_enqueue(void)
+{
+    printf("[REQ-134.4] arbiter_enqueue rejects on FAULT_PANIC (no abort)\n");
+    struct arbiter_ctx arb;
+    int rc = arbiter_init(&arb, 16);
+    TEST_ASSERT(rc == HFSSS_OK, "arbiter_init");
+
+    struct cmd_context *cmd = arbiter_alloc_cmd(&arb);
+    TEST_ASSERT(cmd != NULL, "arbiter_alloc_cmd");
+    cmd->priority = PRIO_IO_NORMAL;
+
+    /* Baseline enqueue succeeds. */
+    rc = arbiter_enqueue(&arb, cmd);
+    TEST_ASSERT(rc == HFSSS_OK, "baseline enqueue ok");
+    TEST_ASSERT(cmd->state == CMD_STATE_ARBITRATED, "state == ARBITRATED after enqueue");
+
+    /* Drain so the cmd is not pinned in the queue when we re-enqueue. */
+    struct cmd_context *deq = arbiter_dequeue(&arb);
+    TEST_ASSERT(deq == cmd, "dequeue returns the same cmd");
+
+    /* Attach PANIC fault and re-enqueue. */
+    struct fault_registry reg;
+    fault_registry_init(&reg);
+    fault_inject_add(&reg, FAULT_PANIC, NULL, FAULT_PERSIST_STICKY, 1.0);
+    arbiter_attach_faults(&arb, &reg);
+
+    cmd->priority = PRIO_IO_NORMAL;
+    cmd->state    = CMD_STATE_RECEIVED;
+    rc = arbiter_enqueue(&arb, cmd);
+    TEST_ASSERT(rc == HFSSS_ERR, "enqueue rejected with HFSSS_ERR under FAULT_PANIC");
+    TEST_ASSERT(cmd->state == CMD_STATE_ERROR,
+                "cmd state is CMD_STATE_ERROR under injected panic");
+
+    fault_registry_cleanup(&reg);
+    arbiter_free_cmd(&arb, cmd);
+    arbiter_cleanup(&arb);
+}
+
+static void test_controller_timeout_storm(void)
+{
+    printf("[REQ-134.5] arbiter_check_timeouts forces all in-flight under FAULT_TIMEOUT\n");
+    struct arbiter_ctx arb;
+    arbiter_init(&arb, 16);
+
+    /* Make the baseline deadline effectively infinite so without a
+     * fault, check_timeouts observes no actual timeouts. */
+    arbiter_set_timeout(&arb, 10 * 60 * 1000);
+
+    /* Enqueue + mark a few in-flight. */
+    struct cmd_context *cmds[3];
+    for (int i = 0; i < 3; i++) {
+        cmds[i] = arbiter_alloc_cmd(&arb);
+        TEST_ASSERT(cmds[i] != NULL, "alloc cmd for timeout storm");
+        cmds[i]->priority = PRIO_IO_NORMAL;
+        arbiter_enqueue(&arb, cmds[i]);
+        (void)arbiter_dequeue(&arb);
+        arbiter_mark_in_flight(&arb, cmds[i]);
+    }
+
+    /* Baseline: no timeouts since the deadline is far in the future. */
+    u32 baseline = arbiter_check_timeouts(&arb);
+    TEST_ASSERT(baseline == 0, "no timeouts without fault (deadline not expired)");
+
+    /* Attach TIMEOUT fault. */
+    struct fault_registry reg;
+    fault_registry_init(&reg);
+    fault_inject_add(&reg, FAULT_TIMEOUT, NULL, FAULT_PERSIST_STICKY, 1.0);
+    arbiter_attach_faults(&arb, &reg);
+
+    u32 forced = arbiter_check_timeouts(&arb);
+    TEST_ASSERT(forced == 3, "FAULT_TIMEOUT forced every in-flight cmd to timeout");
+    for (int i = 0; i < 3; i++) {
+        TEST_ASSERT(cmds[i]->state == CMD_STATE_TIMEOUT,
+                    "cmd state is CMD_STATE_TIMEOUT after storm");
+    }
+    TEST_ASSERT(arb.stats.total_timeouts == 3, "stats.total_timeouts == 3 after storm");
+
+    fault_registry_cleanup(&reg);
+    for (int i = 0; i < 3; i++) arbiter_free_cmd(&arb, cmds[i]);
+    arbiter_cleanup(&arb);
+}
+
+/* -------------------------------------------------------------------------
  * Entry point
  * ---------------------------------------------------------------------- */
 
@@ -590,6 +772,13 @@ int main(void)
     test_null_safety();
     test_power_marker();
     test_json_roundtrip();
+
+    /* REQ-134 controller fault-injection wiring. */
+    test_controller_pool_exhaust_resource_alloc();
+    test_controller_pool_exhaust_one_shot();
+    test_controller_pool_exhaust_idle_block();
+    test_controller_panic_inject_on_enqueue();
+    test_controller_timeout_storm();
 
     printf("========================================\n");
     printf("Total: %d PASS, %d FAIL\n", g_pass, g_fail);
