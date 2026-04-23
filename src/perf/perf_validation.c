@@ -736,8 +736,8 @@ int perf_validation_run_all(struct perf_validation_report *report)
      *     roughly with 1 / sqrt(ops); for a bimodal-contaminated
      *     distribution the scaling is looser than a Gaussian SE but
      *     the direction is the same.
-     *   - Two warmup iterations (was one) — the first warmup's thread
-     *     pool startup + first-use allocation are themselves noisy;
+     *   - Two warmup iterations (was one) — the first warmup's
+     *     pthread_create + first-use allocation are themselves noisy;
      *     the second lands in steady state.
      *   - REQ122_TRIALS = 5 with median-of-5: tolerates 2 outliers in
      *     either direction. At the observed pre-fix ~20 % single-trial
