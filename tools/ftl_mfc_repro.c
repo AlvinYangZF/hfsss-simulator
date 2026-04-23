@@ -18,11 +18,18 @@
  *
  * Usage:
  *   ftl_mfc_repro [--threads N] [--rwmix N] [--duration N] [--lbas N]
+ *                 [--planes N]
  *
  *   --threads N   Worker thread count (default 64)
  *   --rwmix  N    Read percentage 0-100 (default 70)
  *   --duration N  Run duration in seconds (default 120)
  *   --lbas   N    Total LBA space (default 131072 = 512 MiB @ 4K)
+ *   --planes N    Planes per die, 1-4 (default 1). Configures the FTL stack
+ *                 with a multi-plane NAND topology — raises raw capacity
+ *                 proportionally and widens the (ch,chip,die,plane) tuple
+ *                 space in cmd_engine, but does NOT trigger the multi-plane
+ *                 PROG/ERASE opcode path (that requires plane_mask > 1, which
+ *                 only tests/test_media_multi_plane_concurrency.c sets).
  *
  * Exit code: 0 if mismatches == 0, 2 otherwise.
  */
@@ -50,7 +57,8 @@
 #define GEO_CH    4
 #define GEO_CHIP  4
 #define GEO_DIE   2
-#define GEO_PLANE 1
+#define GEO_PLANE_DEFAULT 1
+#define GEO_PLANE_MAX     4
 #define GEO_BLKS  64
 #define GEO_PGS   64
 #define GEO_PGSZ  4096
@@ -346,14 +354,14 @@ static void *worker_fn(void *arg)
 /* -------------------------------------------------------------------------
  * Environment init/cleanup
  * ------------------------------------------------------------------------- */
-static int env_init(struct env *e, uint32_t total_lbas)
+static int env_init(struct env *e, uint32_t total_lbas, uint32_t planes)
 {
     struct media_config mcfg;
     memset(&mcfg, 0, sizeof(mcfg));
     mcfg.channel_count     = GEO_CH;
     mcfg.chips_per_channel = GEO_CHIP;
     mcfg.dies_per_chip     = GEO_DIE;
-    mcfg.planes_per_die    = GEO_PLANE;
+    mcfg.planes_per_die    = planes;
     mcfg.blocks_per_plane  = GEO_BLKS;
     mcfg.pages_per_block   = GEO_PGS;
     mcfg.page_size         = GEO_PGSZ;
@@ -367,7 +375,7 @@ static int env_init(struct env *e, uint32_t total_lbas)
     }
 
     ret = hal_nand_dev_init(&e->nand,
-                            GEO_CH, GEO_CHIP, GEO_DIE, GEO_PLANE,
+                            GEO_CH, GEO_CHIP, GEO_DIE, planes,
                             GEO_BLKS, GEO_PGS, GEO_PGSZ, 64, &e->media);
     if (ret != HFSSS_OK) {
         fprintf(stderr, "hal_nand_dev_init failed: %d\n", ret);
@@ -388,7 +396,7 @@ static int env_init(struct env *e, uint32_t total_lbas)
     fcfg.channel_count     = GEO_CH;
     fcfg.chips_per_channel = GEO_CHIP;
     fcfg.dies_per_chip     = GEO_DIE;
-    fcfg.planes_per_die    = GEO_PLANE;
+    fcfg.planes_per_die    = planes;
     fcfg.blocks_per_plane  = GEO_BLKS;
     fcfg.pages_per_block   = GEO_PGS;
     fcfg.page_size         = GEO_PGSZ;
@@ -424,7 +432,7 @@ static void env_cleanup(struct env *e)
  * ------------------------------------------------------------------------- */
 static void parse_args(int argc, char **argv,
                        int *threads, int *rwmix, int *duration,
-                       uint32_t *lbas)
+                       uint32_t *lbas, uint32_t *planes)
 {
     for (int i = 1; i + 1 < argc; i++) {
         if (strcmp(argv[i], "--threads") == 0) {
@@ -435,6 +443,8 @@ static void parse_args(int argc, char **argv,
             *duration = atoi(argv[i + 1]);
         } else if (strcmp(argv[i], "--lbas") == 0) {
             *lbas = (uint32_t)atoi(argv[i + 1]);
+        } else if (strcmp(argv[i], "--planes") == 0) {
+            *planes = (uint32_t)atoi(argv[i + 1]);
         }
     }
 }
@@ -448,8 +458,9 @@ int main(int argc, char **argv)
     int      rwmix    = DEFAULT_RWMIX;
     int      duration = DEFAULT_DURATION;
     uint32_t lbas     = DEFAULT_LBAS;
+    uint32_t planes   = GEO_PLANE_DEFAULT;
 
-    parse_args(argc, argv, &threads, &rwmix, &duration, &lbas);
+    parse_args(argc, argv, &threads, &rwmix, &duration, &lbas, &planes);
 
     if (threads < 1 || threads > 4096) {
         fprintf(stderr, "error: --threads must be 1-4096\n");
@@ -467,9 +478,13 @@ int main(int argc, char **argv)
         fprintf(stderr, "error: --lbas must be >= 1\n");
         return 1;
     }
+    if (planes < 1u || planes > GEO_PLANE_MAX) {
+        fprintf(stderr, "error: --planes must be 1-%u\n", GEO_PLANE_MAX);
+        return 1;
+    }
 
-    printf("ftl_mfc_repro: threads=%d rwmix=%d%% duration=%ds lbas=%u\n",
-           threads, rwmix, duration, lbas);
+    printf("ftl_mfc_repro: threads=%d rwmix=%d%% duration=%ds lbas=%u planes=%u\n",
+           threads, rwmix, duration, lbas, planes);
 
     g_crc_map = (struct crc_entry *)calloc(lbas, sizeof(struct crc_entry));
     if (!g_crc_map) {
@@ -503,7 +518,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    int ret = env_init(e, lbas);
+    int ret = env_init(e, lbas, planes);
     if (ret != HFSSS_OK) {
         free(e);
         free(g_crc_map);
