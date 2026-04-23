@@ -24,9 +24,12 @@
  *   --rwmix  N    Read percentage 0-100 (default 70)
  *   --duration N  Run duration in seconds (default 120)
  *   --lbas   N    Total LBA space (default 131072 = 512 MiB @ 4K)
- *   --planes N    Planes per die, 1-4 (default 1). Exercises the multi-plane
- *                 geometry added in PR #99 (REQ-042) — raises raw capacity
- *                 proportionally.
+ *   --planes N    Planes per die, 1-4 (default 1). Configures the FTL stack
+ *                 with a multi-plane NAND topology — raises raw capacity
+ *                 proportionally and widens the (ch,chip,die,plane) tuple
+ *                 space in cmd_engine, but does NOT trigger the multi-plane
+ *                 PROG/ERASE opcode path (that requires plane_mask > 1, which
+ *                 only tests/test_media_multi_plane_concurrency.c sets).
  *
  * Exit code: 0 if mismatches == 0, 2 otherwise.
  */
