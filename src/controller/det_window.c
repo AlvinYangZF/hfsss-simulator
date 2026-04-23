@@ -78,3 +78,84 @@ bool det_window_allow_host_io(const struct det_window_config *cfg, u64 now_ns)
     enum det_window_phase phase = det_window_get_phase(cfg, now_ns);
     return (phase == DW_HOST_IO || phase == DW_GC_ALLOWED);
 }
+
+/*
+ * REQ-153 enforcement accounting.
+ *
+ * record_phase_transition updates last_phase + phase_transitions in one
+ * place so every admit call sees a consistent observed-phase history.
+ * Indices into the host/gc admitted/rejected arrays come from the enum
+ * directly so the stats layout matches the phase's numeric value.
+ */
+static void record_phase_transition(struct det_window_config *cfg,
+                                    enum det_window_phase phase)
+{
+    if (cfg->stats.last_phase != phase) {
+        cfg->stats.phase_transitions++;
+        cfg->stats.last_phase = phase;
+    }
+}
+
+bool det_window_admit_host_io(struct det_window_config *cfg, u64 now_ns)
+{
+    if (!cfg) {
+        return true;
+    }
+    if (!cfg->enabled) {
+        /* Disabled: no phase, nothing to record. */
+        return true;
+    }
+
+    enum det_window_phase phase = det_window_get_phase(cfg, now_ns);
+    bool allowed = (phase == DW_HOST_IO || phase == DW_GC_ALLOWED);
+
+    record_phase_transition(cfg, phase);
+    if (allowed) {
+        cfg->stats.host_admitted[phase]++;
+    } else {
+        cfg->stats.host_rejected[phase]++;
+    }
+    return allowed;
+}
+
+bool det_window_admit_gc(struct det_window_config *cfg, u64 now_ns)
+{
+    if (!cfg) {
+        return true;
+    }
+    if (!cfg->enabled) {
+        return true;
+    }
+
+    enum det_window_phase phase = det_window_get_phase(cfg, now_ns);
+    bool allowed = (phase == DW_GC_ALLOWED || phase == DW_GC_ONLY);
+
+    record_phase_transition(cfg, phase);
+    if (allowed) {
+        cfg->stats.gc_admitted[phase]++;
+    } else {
+        cfg->stats.gc_rejected[phase]++;
+    }
+    return allowed;
+}
+
+void det_window_get_stats(const struct det_window_config *cfg,
+                          struct det_window_stats *out)
+{
+    if (!out) {
+        return;
+    }
+    if (!cfg) {
+        memset(out, 0, sizeof(*out));
+        return;
+    }
+    *out = cfg->stats;
+}
+
+void det_window_reset_stats(struct det_window_config *cfg)
+{
+    if (!cfg) {
+        return;
+    }
+    memset(&cfg->stats, 0, sizeof(cfg->stats));
+}

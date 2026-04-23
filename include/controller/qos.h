@@ -89,6 +89,22 @@ enum det_window_phase {
     DW_GC_ONLY    = 2,
 };
 
+/*
+ * Per-phase admission statistics (REQ-153 duty-cycle enforcement).
+ * Indexed by enum det_window_phase (DW_HOST_IO / DW_GC_ALLOWED / DW_GC_ONLY).
+ * Every call to det_window_admit_{host_io,gc} advances exactly one of
+ * admitted[phase] or rejected[phase], giving the controller / OOB layer
+ * an auditable record of enforcement decisions.
+ */
+struct det_window_stats {
+    u64 host_admitted[3];
+    u64 host_rejected[3];
+    u64 gc_admitted[3];
+    u64 gc_rejected[3];
+    u64 phase_transitions;       /* incremented when observed phase changes */
+    enum det_window_phase last_phase;
+};
+
 struct det_window_config {
     u32 host_io_pct;      /* e.g., 80 */
     u32 gc_allowed_pct;   /* e.g., 15 */
@@ -96,6 +112,9 @@ struct det_window_config {
     u32 cycle_ms;         /* full cycle duration */
     u64 cycle_start_ns;
     bool enabled;
+
+    /* REQ-153 enforcement accounting. Updated by det_window_admit_*. */
+    struct det_window_stats stats;
 };
 
 /* DWRR scheduler functions */
@@ -149,5 +168,26 @@ enum det_window_phase det_window_get_phase(const struct det_window_config *cfg,
                                            u64 now_ns);
 bool det_window_allow_gc(const struct det_window_config *cfg, u64 now_ns);
 bool det_window_allow_host_io(const struct det_window_config *cfg, u64 now_ns);
+
+/*
+ * REQ-153 enforcement entry points. These wrap the pure
+ * det_window_allow_* predicates and record the admission outcome
+ * in cfg->stats. Callers that only want to peek at the policy
+ * (without being counted) should keep using det_window_allow_*;
+ * callers that actually gate an operation through the duty cycle
+ * should use these admit helpers so the stats reflect reality.
+ *
+ * Return value matches det_window_allow_*: true = operation permitted.
+ */
+bool det_window_admit_host_io(struct det_window_config *cfg, u64 now_ns);
+bool det_window_admit_gc     (struct det_window_config *cfg, u64 now_ns);
+
+/*
+ * Read a snapshot of the admission stats. Safe against NULL args;
+ * on NULL cfg the output is zeroed.
+ */
+void det_window_get_stats(const struct det_window_config *cfg,
+                          struct det_window_stats *out);
+void det_window_reset_stats(struct det_window_config *cfg);
 
 #endif /* __HFSSS_QOS_H */

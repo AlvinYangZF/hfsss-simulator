@@ -39,13 +39,13 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | System Reliability | 4 | 3 | 0 | 1 | 0 | 75.0% | ↑ REQ-088 P99.9 latency anomaly detector |
 | **Core Subtotal** | **138** | **111** | **10** | **17** | **0** | **80.4%** (87.7% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
-| Enterprise: QoS Determinism | 7 | 6 | 1 | 0 | 0 | 85.7% (100% partial) | ↑ DWRR + per-NS IOPS/BW caps + SLA rollback + hot-reconfig |
+| Enterprise: QoS Determinism | 7 | 7 | 0 | 0 | 0 | 100% | ↑ DWRR + per-NS IOPS/BW caps + SLA rollback + hot-reconfig + REQ-153 duty-cycle admission stats |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
 | Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100% | ↑ AES-XTS sim, keys, crypto erase, sanitize action modes, secure-boot-verify, NOR-backed dual-copy UPLP-safe key table, TCG-Opal lock/unlock |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
-| **Enterprise Subtotal** | **40** | **39** | **1** | **0** | **0** | **97.5%** (100% partial) | ↑ from 0% |
-| **Grand Total** | **178** | **150** | **11** | **17** | **0** | **84.3%** (90.4% partial) | ↑ from 38.8% |
+| **Enterprise Subtotal** | **40** | **40** | **0** | **0** | **0** | **100%** | ↑ from 0% |
+| **Grand Total** | **178** | **151** | **10** | **17** | **0** | **84.8%** (90.4% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -264,7 +264,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-150 | Latency SLA enforcement (P99) | ✅ | `nvme_uspace_dev_set_sla_rollback(nsid, target_us, trigger_count, cb, ctx)` arms a P99 SLA target + rollback callback; `nvme_uspace_dev_check_sla` folds `lat_monitor_check_sla`'s breach detection on top of the trigger count and fires the callback on sustained breaches, then resets consecutive_violations so each window is evaluated independently. Covered by `tests/test_nvme_uspace.c::test_qos_sla_rollback` (healthy P99 silent, 3-in-a-row breaches fire exactly once, disabled trigger stays silent, second window re-arms). |
 | REQ-151 | QoS policy hot-reconfiguration | ✅ | `nvme_uspace_dev_set_qos_policy` rebuilds the token buckets in place and the next `qos_acquire_tokens` call sees the new caps without stopping traffic or draining the I/O path. Works for cap changes AND for `enforced` flag flips. Covered by `tests/test_nvme_uspace.c::test_qos_hot_reconfigure_live` (tight -> unenforced mid-traffic stops throttling immediately; subsequent reconfigure to 2M IOPS still passes all commands). |
 | REQ-152 | GC/WL background priority yield | ✅ | GC bandwidth cap (REQ-036) + QoS-aware dispatcher yields foreground reads |
-| REQ-153 | Deterministic latency window (duty cycle) | ⚠️ | `det_window.c` provides windowed metrics; duty-cycle enforcement partial |
+| REQ-153 | Deterministic latency window (duty cycle) | ✅ | `det_window_init` configures the 3-phase (HOST_IO / GC_ALLOWED / GC_ONLY) cycle; `det_window_admit_host_io` and `det_window_admit_gc` wrap `det_window_allow_*` and record each admission/rejection into `struct det_window_stats` (per-phase counters + `phase_transitions` histogram + `*_admitted_while_disabled` audit counters). Production consumer: the NBD server (`src/vhost/hfsss_nbd_server.c`) attaches `det_window_gc_admit_adapter` as the GC admit callback when `HFSSS_DET_WINDOW_{HOST,GC_ALLOWED,GC_ONLY}_PCT` env vars are set; `gc_run_mt` in `src/ftl/gc.c` snapshots the callback under `ctx->lock` and consults it each LBA-scan iteration, aborting the run's remaining moves on reject. Covered by `tests/test_qos.c::test_det_window_admit_stats` / `test_det_window_admit_disabled` (stats-layer accounting) and `tests/test_gc_mt.c::test_gc_mt_respects_admit_callback_reject` (end-to-end: 100% HOST_IO window → zero page moves + rejects counter advances; 100% GC_ALLOWED window → GC makes progress with the same adapter). |
 
 ### 13. Enterprise: T10 DIF/PI - Data Integrity (REQ-154 to REQ-158)
 
