@@ -90,19 +90,34 @@ enum det_window_phase {
 };
 
 /*
- * Per-phase admission statistics (REQ-153 duty-cycle enforcement).
- * Indexed by enum det_window_phase (DW_HOST_IO / DW_GC_ALLOWED / DW_GC_ONLY).
- * Every call to det_window_admit_{host_io,gc} advances exactly one of
- * admitted[phase] or rejected[phase], giving the controller / OOB layer
- * an auditable record of enforcement decisions.
+ * Number of distinct det_window phases. Keep in sync with
+ * enum det_window_phase above; the stats array indexes into this.
+ */
+#define DET_WINDOW_PHASES 3
+
+/*
+ * Per-phase admission statistics for duty-cycle enforcement.
+ * Indexed by enum det_window_phase. Every call to
+ * det_window_admit_{host_io,gc} advances exactly one of
+ * admitted[phase] / rejected[phase] (for an enabled window) or the
+ * *_admitted_while_disabled counter (for a disabled window) — so the
+ * audit trail distinguishes "window was disabled" from "never called".
  */
 struct det_window_stats {
-    u64 host_admitted[3];
-    u64 host_rejected[3];
-    u64 gc_admitted[3];
-    u64 gc_rejected[3];
-    u64 phase_transitions;       /* incremented when observed phase changes */
+    u64 host_admitted[DET_WINDOW_PHASES];
+    u64 host_rejected[DET_WINDOW_PHASES];
+    u64 gc_admitted[DET_WINDOW_PHASES];
+    u64 gc_rejected[DET_WINDOW_PHASES];
+    u64 host_admitted_while_disabled;
+    u64 gc_admitted_while_disabled;
+    u64 phase_transitions;       /*
+                                  * Counts observed phase changes after the
+                                  * first observation; last_phase_valid gates
+                                  * this so the first admit on a fresh window
+                                  * is not mis-counted as a transition.
+                                  */
     enum det_window_phase last_phase;
+    bool last_phase_valid;
 };
 
 struct det_window_config {
@@ -113,7 +128,7 @@ struct det_window_config {
     u64 cycle_start_ns;
     bool enabled;
 
-    /* REQ-153 enforcement accounting. Updated by det_window_admit_*. */
+    /* Enforcement accounting. Updated by det_window_admit_*. */
     struct det_window_stats stats;
 };
 
@@ -170,14 +185,22 @@ bool det_window_allow_gc(const struct det_window_config *cfg, u64 now_ns);
 bool det_window_allow_host_io(const struct det_window_config *cfg, u64 now_ns);
 
 /*
- * REQ-153 enforcement entry points. These wrap the pure
- * det_window_allow_* predicates and record the admission outcome
- * in cfg->stats. Callers that only want to peek at the policy
- * (without being counted) should keep using det_window_allow_*;
- * callers that actually gate an operation through the duty cycle
- * should use these admit helpers so the stats reflect reality.
+ * Enforcement entry points. These wrap the pure det_window_allow_*
+ * predicates and record the admission outcome in cfg->stats.
  *
- * Return value matches det_window_allow_*: true = operation permitted.
+ * Callers that only want to peek at the policy (without being
+ * counted) should keep using det_window_allow_*. Callers that
+ * actually gate an operation through the duty cycle should use these
+ * admit helpers so the stats reflect reality.
+ *
+ * Return value matches det_window_allow_*: true = operation
+ * permitted. For a disabled window both return true (pass-through)
+ * and bump the *_admitted_while_disabled counter so the audit trail
+ * distinguishes a disabled window from an uncalled one.
+ *
+ * UNLIKE det_window_allow_*, these take a non-const pointer because
+ * they mutate cfg->stats. Callers that hold a const cfg (e.g., for
+ * status reporting) must stay on the allow_* predicates.
  */
 bool det_window_admit_host_io(struct det_window_config *cfg, u64 now_ns);
 bool det_window_admit_gc     (struct det_window_config *cfg, u64 now_ns);
@@ -189,5 +212,15 @@ bool det_window_admit_gc     (struct det_window_config *cfg, u64 now_ns);
 void det_window_get_stats(const struct det_window_config *cfg,
                           struct det_window_stats *out);
 void det_window_reset_stats(struct det_window_config *cfg);
+
+/*
+ * Adapter matching ftl/gc.h's gc_admit_gc_fn signature
+ * (`bool (*)(void *ctx, u64 now_ns)`). Callers wire this into the FTL
+ * GC path via `gc_attach_admit_cb(gc, det_window_gc_admit_adapter,
+ * &cfg)`. Keeps the FTL lib free of a direct link dependency on the
+ * controller, while still giving the duty-cycle enforcement a
+ * per-page-move gate in gc_run_mt.
+ */
+bool det_window_gc_admit_adapter(void *cfg_ctx, u64 now_ns);
 
 #endif /* __HFSSS_QOS_H */

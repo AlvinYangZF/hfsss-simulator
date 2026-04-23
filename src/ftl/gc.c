@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 static u64 gc_dbg_read_fail_removes = 0;
 static u64 gc_dbg_write_fail_removes = 0;
@@ -47,11 +48,26 @@ void gc_cleanup(struct gc_ctx *ctx)
     }
 
     mutex_lock(&ctx->lock, 0);
-
+    /* Detach the admit callback before tear-down so no in-flight
+     * gc_run_mt call can deref a soon-to-be-freed cb_ctx. */
+    ctx->admit_gc_fn  = NULL;
+    ctx->admit_gc_ctx = NULL;
     mutex_unlock(&ctx->lock);
     mutex_cleanup(&ctx->lock);
 
     memset(ctx, 0, sizeof(*ctx));
+}
+
+void gc_attach_admit_cb(struct gc_ctx *ctx,
+                        gc_admit_gc_fn fn, void *cb_ctx)
+{
+    if (!ctx) {
+        return;
+    }
+    mutex_lock(&ctx->lock, 0);
+    ctx->admit_gc_fn  = fn;
+    ctx->admit_gc_ctx = cb_ctx;
+    mutex_unlock(&ctx->lock);
 }
 
 bool gc_should_trigger(struct gc_ctx *ctx, u64 free_blocks)
@@ -414,6 +430,29 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
 
     for (u64 lba = 0; lba < taa->total_lbas; lba++) {
         union ppn src_ppn;
+
+        /*
+         * Duty-cycle enforcement. Consult the admit callback (if any)
+         * once per candidate page. A rejection aborts this run's
+         * remaining moves — the caller will try again next cycle and
+         * by then the phase may permit GC. Per-move granularity
+         * matches HLD_02 §11.3.3 "No GC page moves occur during
+         * HOST_IO window". The callback is owned by the caller (the
+         * controller binds it to det_window_admit_gc); we do not
+         * link against the controller lib directly.
+         */
+        if (ctx->admit_gc_fn) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            u64 now_ns = (u64)ts.tv_sec * 1000000000ULL + (u64)ts.tv_nsec;
+            if (!ctx->admit_gc_fn(ctx->admit_gc_ctx, now_ns)) {
+                mutex_lock(&ctx->lock, 0);
+                ctx->det_window_rejects++;
+                mutex_unlock(&ctx->lock);
+                reloc_aborted = true;
+                break;
+            }
+        }
 
         if (taa_lookup(taa, lba, &src_ppn) != HFSSS_OK) {
             continue;
