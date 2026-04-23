@@ -95,6 +95,8 @@ struct page_metadata {
 
 **BBT region**: appended after NAND data via `bbt_save()`; see `src/media/bbt.c`.
 
+**Incremental-mode caveat.** `write_file_header` computes `bbt_offset` from the *full* NAND footprint (block + page metadata + page data + OOB) regardless of the `flags` value. When `flags & INCREMENTAL`, clean blocks and pages are written as a single `false` byte, so fewer bytes land between `nand_data_offset` and the actual BBT. `bbt_offset` in the header therefore does **not** point at the true BBT start in an incremental file — it is only accurate for `FULL` files. The shipping code compensates by sequentially reading the NAND data region (which self-describes its size from the config geometry) and ignoring `bbt_offset` during load. `tests/systest_persistence.c` documents this as a known limitation; callers that want the header offsets to be authoritative on reload should use `media_save` rather than `media_save_incremental`.
+
 ### 3.2 Superblock / FTL L2P Checkpoint (on-NAND)
 
 The FTL keeps its L2P checkpoint and operation journal in reserved NAND superblocks rather than in a separate host-side file. Layouts and magic numbers are in `include/ftl/superblock.h`.
@@ -177,9 +179,11 @@ struct wal_record {
 };
 ```
 
-`WAL_REC_COMMIT` records carry `end_marker = WAL_COMMIT_MARKER` and mark the latest durably-committed sequence. During replay, records up to and including the highest COMMIT are applied; everything after is treated as incomplete.
+`WAL_REC_COMMIT` records carry `end_marker = WAL_COMMIT_MARKER` and advance the "last durably-committed sequence" counter maintained by `wal_get_committed_seq`. That counter is a helper exposed for callers that want to reason about the last safe point; the replay path itself does **not** consult it.
 
-The on-disk WAL file (when used) is a flat append of `struct wal_record` entries preceded by a small 16-byte file preamble (capacity + count + next_sequence + reserved) written by `wal_save`. `wal_load` consumes the preamble, allocates the ring, and restores records.
+`wal_replay` iterates the in-memory ring in order, validates each record's `magic` + `crc32`, stops at the first bad record, skips `WAL_REC_COMMIT` entries (control markers, not state deltas), and forwards every other valid record to the caller-supplied callback. There is no "records past the last COMMIT are dropped" behavior in the shipped implementation — every valid record ahead of the first corrupt slot is replayed.
+
+The on-disk WAL file (when used) is a flat append of `struct wal_record` entries with **no file preamble**: `wal_save` writes `count × sizeof(struct wal_record)` bytes directly, and `wal_load` reads records one at a time, stopping on bad magic, CRC mismatch, or ring-capacity exhaustion.
 
 ### 3.4 NOR Image
 
@@ -187,14 +191,14 @@ See LLD_14_NOR_FLASH for the full NOR partition table and on-disk `mmap(MAP_SHAR
 
 ### 3.5 Panic Dump (Future Work)
 
-The initial V1.0 draft of this document specified a `panic_dump_<timestamp>.bin` file format with a 400-byte header. That design is not shipped: the current boot flow emits a `[PANIC]` log record through the standard log sink (see `src/common/log.c`) and relies on the superblock checkpoint + WAL for post-mortem state. A dedicated panic-dump file format is reserved for a future release; the V1.0 draft remains on file as the starting point for that work.
+The initial V1.0 draft of this document specified a `panic_dump_<timestamp>.bin` file format with a 400-byte header. That design is not shipped: `hfsss_panic()` in `src/common/log.c` prints `HFSSS PANIC` directly to `stderr` (bypassing the structured log sink) and the current boot flow relies on the superblock checkpoint + WAL for post-mortem state. A dedicated panic-dump file format is reserved for a future release; the V1.0 draft remains on file as the starting point for that work.
 
 ### 3.6 Version Compatibility Rules
 
 - `current_version < min_reader_version`: reject; require explicit migration.
 - `writer_version > current_version`: open with warning (forward-compatible read where the trailing new fields are ignored).
 - Magic mismatch: reject immediately.
-- CRC mismatch: reject the specific artefact and fall back to the previous generation where applicable.
+- CRC mismatch: reject the specific artefact and return an I/O error to the caller. The shipped implementations do **not** fall back to older generations — `sb_checkpoint_read` picks the single highest-sequence superblock header and gives up if its data pages fail CRC, and the media checkpoint is a single file, so a CRC failure there has nothing to fall back to.
 
 For the media checkpoint, V1 → V2 is handled automatically via `struct media_file_header_v1`; newer writers never emit V1.
 
@@ -262,7 +266,11 @@ int  wal_save    (const struct wal_ctx *ctx, const char *filepath);
 int  wal_load    (struct wal_ctx *ctx, const char *filepath);
 ```
 
-Each `wal_append` stamps a new record with `WAL_RECORD_MAGIC`, monotonic sequence, type, LBA, PPN, type-specific metadata, and a CRC-32 over bytes [0..55]. `wal_commit` appends a `WAL_REC_COMMIT` entry with `end_marker = WAL_COMMIT_MARKER`; replay treats anything past the highest COMMIT as incomplete and drops it.
+Each `wal_append` stamps a new record with `WAL_RECORD_MAGIC`, monotonic sequence, type, LBA, PPN, type-specific metadata, and a CRC-32 over bytes [0..55]. `wal_commit` appends a `WAL_REC_COMMIT` entry with `end_marker = WAL_COMMIT_MARKER`.
+
+`wal_replay` validates each record's magic + CRC in order, stops at the first bad slot, skips COMMIT records (they are control markers), and forwards every other valid record to the callback. It does **not** consult `wal_get_committed_seq`, so there is no "drop anything past the last COMMIT" behavior — every valid record ahead of the first corrupt slot is replayed. `wal_get_committed_seq` remains available as a separate helper for callers that want to reason about the last durable commit point.
+
+Note that `wal_replay` is currently an exported API with no production caller: the shipped recovery path is entirely superblock-driven (see `sb_recover` below). WAL coverage lives in unit tests only (`tests/test_foundation.c`).
 
 ---
 
@@ -299,23 +307,24 @@ startup
             no -> cold start
             yes -> sb_checkpoint_read
                    -> sb_journal_replay (apply WRITE / TRIM deltas in seq order)
-  -> wal_replay (if a wal file exists for the run)
-       -> accept records up to highest WAL_REC_COMMIT
-       -> drop anything past the last valid COMMIT
   -> recovery complete
 ```
+
+`wal_replay` is not wired into the production recovery path (`sssim_init` / `ftl_init` only call `sb_recover`). The WAL API is available for callers that want to layer their own replay on top of the in-memory ring; `tests/test_foundation.c` exercises it at the unit level.
 
 ### 6.4 Superblock Page Integrity Check
 
 ```
 read sb_page_header at page offset
   magic in { SB_HEADER_MAGIC, SB_CKPT_MAGIC, SB_JRNL_MAGIC } ?
-    no  -> reject page, fall back to previous generation
+    no  -> reject page, return HFSSS_ERR_IO (no older-generation fallback)
     yes -> recompute CRC over the data region
            matches header.crc32 ?
-             no  -> reject page, fall back
+             no  -> reject page, return HFSSS_ERR_IO
              yes -> apply by page_type
 ```
+
+`sb_checkpoint_read` scans page 0 of every reserved superblock, picks the one with the highest `sequence` in its header, and reads the rest of the checkpoint from that block. If any data page in the chosen block fails CRC, the read aborts with `HFSSS_ERR_IO` — the shipped code does **not** retry against older-generation superblocks.
 
 ### 6.5 WAL Record Integrity Check
 
@@ -326,11 +335,13 @@ for each 64-byte slot in the WAL ring:
     yes -> recompute CRC over bytes [0..55]
            matches record.crc32 ?
              no  -> stop replay (corrupt record)
-             yes -> if type == WAL_REC_COMMIT and end_marker == WAL_COMMIT_MARKER
-                        -> advance committed_seq
+             yes -> if type == WAL_REC_COMMIT
+                        -> skip (control marker, not forwarded to callback)
                     else
-                        -> buffer the record; commit on next COMMIT
+                        -> forward to callback(rec, user_data)
 ```
+
+`wal_get_committed_seq` runs an independent pass over the ring to find the highest-sequence COMMIT; it is not part of replay. Production code that cares about the last durable commit point calls that helper directly.
 
 ---
 
@@ -344,7 +355,7 @@ Figures below are for a 2 TB geometry (512 M LPN, 4 KiB page) unless noted.
 | Media checkpoint size (incremental, idle)     | one bool per block + BBT             | ~ total_blocks bytes + BBT |
 | Superblock L2P checkpoint size                | `512 M × 16 B (ckpt_entry)`          | 8 GB spread across superblock pages |
 | WAL in-memory ring                            | `WAL_MAX_RECORDS × 64 B`             | 1 MB        |
-| WAL on-disk file (when persisted)             | ring + 16 B preamble                 | ≤ 1 MB + 16 B |
+| WAL on-disk file (when persisted)             | `count × 64 B` (no preamble)         | ≤ 1 MB       |
 | Superblock page header overhead               | `sizeof(struct sb_page_header)`       | 32 B / page |
 | `wal_append` latency (in-memory only)          | memcpy + CRC                         | < 1 µs      |
 | `wal_save` latency (flush to disk)             | one `fwrite` + `fclose`              | ~100 µs     |
@@ -359,27 +370,29 @@ Shipping persistence tests:
 |-------------|--------------------------------------------------|--------------------------------------------------|
 | PF-SB-*     | `tests/test_superblock.c`                        | Superblock header / checkpoint / journal round-trips, magic & CRC rejection, recovery |
 | PF-PWR-*    | `tests/test_power_cycle.c`                       | End-to-end crash recovery via `media_save` + reboot + `media_load` + journal replay |
-| PF-MEDIA-*  | `tests/test_media.c` (persistence sections)      | Media checkpoint write/read, V1 → V2 shim, full vs incremental |
+| PF-MEDIA-*  | `tests/test_media.c::test_persistence`           | Media checkpoint write/read (full-only) at the `media_save` / `media_load` level |
+| PF-PER-*    | `tests/systest_persistence.c`                    | Full-vs-incremental checkpoint behaviour, including the `bbt_offset` limitation noted in §3.1 |
+| PF-WAL-*    | `tests/test_foundation.c` (WAL unit sections)    | `wal_init` / `wal_append` / `wal_commit` / `wal_replay` / `wal_save` / `wal_load` round-trips, magic + CRC rejection |
 
 Representative test points (verified by the shipping suites):
 
 | Case ID | Description                                                             | Verification Point                                      |
 |---------|-------------------------------------------------------------------------|---------------------------------------------------------|
 | PF-001  | Superblock checkpoint write then read                                   | All LBA → PPN mappings round-trip                       |
-| PF-002  | Corrupt `sb_page_header.crc32`                                           | Page rejected, recovery falls back to previous generation |
-| PF-003  | Corrupt checkpoint entry region                                         | CRC mismatch → reject, fall back                        |
-| PF-004  | WAL append N records, replay                                            | Every committed record re-applied; uncommitted dropped  |
-| PF-005  | Interrupted WAL (last record missing `end_marker`)                      | Replay stops cleanly at last valid COMMIT               |
-| PF-006  | WAL record CRC error                                                    | Replay stops at N-1 with warning                        |
+| PF-002  | Corrupt `sb_page_header.crc32`                                           | `sb_checkpoint_read` returns `HFSSS_ERR_IO`; no older-generation retry |
+| PF-003  | Corrupt checkpoint entry region                                         | CRC mismatch → reject with `HFSSS_ERR_IO`                |
+| PF-004  | WAL append N records, `wal_replay` with callback                        | Every valid non-COMMIT record forwarded to callback; COMMIT records skipped |
+| PF-005  | Interrupted WAL (final slot has `magic = 0`)                             | Replay stops at the bad slot; records before it are still forwarded |
+| PF-006  | WAL record CRC error                                                    | Replay stops at record N-1; no later records forwarded  |
 | PF-007  | Magic mismatch on any persisted artefact                                | Reader rejects, does not attempt to parse payload       |
 | PF-008  | Media checkpoint: save (full) → reopen → load → verify page data + OOB  | Page data + metadata match                              |
-| PF-009  | Media checkpoint: save (incremental) after partial dirty                | Clean blocks skipped; dirty blocks round-trip           |
-| PF-010  | `MEDIA_FILE_MAGIC` mismatch                                             | `media_load` returns `HFSSS_ERR_IO`                     |
+| PF-009  | Media checkpoint: save (incremental) after partial dirty                | Clean blocks skipped; dirty blocks round-trip; `bbt_offset` divergence tolerated by sequential load |
+| PF-010  | `MEDIA_FILE_MAGIC` mismatch                                             | `media_load` returns `HFSSS_ERR_INVAL`                  |
 | PF-011  | Media V1 → V2 upgrade path                                              | V1 file loads cleanly via the `_v1` shim                |
 | PF-012  | Cold boot (no checkpoint, no journal)                                   | FTL starts with empty mapping, no errors                |
 | PF-013  | Warm boot with valid checkpoint + empty journal                         | Mapping matches pre-shutdown state                      |
 | PF-014  | Warm boot with valid checkpoint + non-empty journal                     | Checkpoint applied, then journal deltas in seq order    |
-| PF-015  | Full crash recovery flow (checkpoint + WAL)                              | End state consistent with last durably-committed write  |
+| PF-015  | Full crash recovery flow (superblock checkpoint + journal; `wal_replay` exercised independently as unit test only) | End state consistent with last durably-committed write  |
 
 ---
 

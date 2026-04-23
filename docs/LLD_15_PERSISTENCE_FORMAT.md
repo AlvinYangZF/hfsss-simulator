@@ -103,6 +103,8 @@ struct page_metadata {
 
 **BBT 区**：紧随 NAND 数据区之后，由 `bbt_save()` 写入（参见 `src/media/bbt.c`）。
 
+**增量模式注意事项。** `write_file_header` 始终按照*全量*布局计算 `bbt_offset`（块元数据 + 页元数据 + 页数据 + OOB），不受 `flags` 影响。当 `flags & INCREMENTAL` 时，干净块/页只占一个 `false` 字节，真实落盘数据比全量少，因此 `bbt_offset` 在增量文件中**并不**指向 BBT 实际起始位置 —— 该字段仅在 `FULL` 文件中可信。现网加载路径通过按配置几何顺序读取 NAND 数据区（区段可自描述大小），绕过 `bbt_offset` 字段。`tests/systest_persistence.c` 将此作为已知限制记录在案；若需要头部偏移在重载时权威可用，调用方应使用 `media_save` 而非 `media_save_incremental`。
+
 ### 3.2 Superblock / FTL L2P 检查点（NAND 内）
 
 FTL 将 L2P 检查点和操作日志保存在预留的 NAND 超级块中，而不是另起一个宿主端文件。布局与魔数定义在 `include/ftl/superblock.h`。
@@ -185,9 +187,11 @@ struct wal_record {
 };
 ```
 
-`WAL_REC_COMMIT` 记录携带 `end_marker = WAL_COMMIT_MARKER`，标记最新已持久化提交的序号。重放时，包含最后一条 COMMIT 及之前的记录全部应用，之后的记录视为不完整数据被丢弃。
+`WAL_REC_COMMIT` 记录携带 `end_marker = WAL_COMMIT_MARKER`，并推进 `wal_get_committed_seq` 维护的"最新已持久化提交序号"计数器。该计数器是独立辅助接口，供调用方查询最后一个安全点；**重放路径本身不使用它**。
 
-当启用磁盘持久化时，WAL 文件是 `struct wal_record` 的扁平追加，前置一个 16 字节前导（capacity + count + next_sequence + reserved），由 `wal_save` 写入，由 `wal_load` 读取后分配环形缓冲并还原记录。
+`wal_replay` 按顺序遍历内存环形缓冲，逐条校验 `magic` + `crc32`，遇到首个无效记录时停止；遇到 `WAL_REC_COMMIT` 时跳过（控制标记，不向上转发），其余有效记录全部通过回调向上转发。当前实现**没有**"丢弃最后一条 COMMIT 之后记录"的行为 —— 首个损坏位之前的每一条有效记录都会被重放。
+
+磁盘持久化时，WAL 文件是 `struct wal_record` 的扁平追加，**没有任何文件前导**：`wal_save` 直接写入 `count × sizeof(struct wal_record)` 字节；`wal_load` 逐条读取，遇到魔数不匹配、CRC 错误或达到环形缓冲容量上限时停止。
 
 ### 3.4 NOR 镜像
 
@@ -195,14 +199,14 @@ NOR 分区表及 `mmap(MAP_SHARED)` 磁盘布局（bootloader / fw_slot_a / fw_s
 
 ### 3.5 Panic 转储（后续版本）
 
-V1.0 初稿曾规定过 `panic_dump_<timestamp>.bin` 文件格式（400 字节头部）。该设计未在当前版本落地：当前启动流程通过 `src/common/log.c` 的标准日志接口输出 `[PANIC]` 记录，并依靠 Superblock 检查点 + WAL 来完成事后状态恢复。独立的 panic-dump 文件格式保留为后续版本工作项；V1.0 的设计文稿保留在历史版本中，作为该工作的起点。
+V1.0 初稿曾规定过 `panic_dump_<timestamp>.bin` 文件格式（400 字节头部）。该设计未在当前版本落地：`src/common/log.c` 中的 `hfsss_panic()` 直接向 `stderr` 打印 `HFSSS PANIC`（绕过结构化日志通道），当前启动流程依靠 Superblock 检查点 + WAL 来完成事后状态恢复。独立的 panic-dump 文件格式保留为后续版本工作项；V1.0 的设计文稿保留在历史版本中，作为该工作的起点。
 
 ### 3.6 版本兼容性规则
 
 - `current_version < min_reader_version`：拒绝加载，要求显式迁移；
 - `writer_version > current_version`：允许加载并发出警告（向前兼容读取，尾部新增字段忽略）；
 - 魔数不匹配：立即拒绝；
-- CRC 不匹配：拒绝该制品，若有上一代则回退到上一代。
+- CRC 不匹配：拒绝该制品并向上返回 I/O 错误。现网实现**不会**回退到更早的代数 —— `sb_checkpoint_read` 只选取单个最高序号的 superblock 头，若其数据页 CRC 校验失败即返回 `HFSSS_ERR_IO`；Media 检查点是单文件，CRC 错误也无上一代可退。
 
 对于 Media 检查点，V1 → V2 升级通过 `struct media_file_header_v1` 自动完成；新写入器不再产出 V1。
 
@@ -270,7 +274,11 @@ int  wal_save    (const struct wal_ctx *ctx, const char *filepath);
 int  wal_load    (struct wal_ctx *ctx, const char *filepath);
 ```
 
-`wal_append` 为新记录打上 `WAL_RECORD_MAGIC`、单调序号、类型、LBA、PPN、类型相关元数据，并计算字节 [0..55] 上的 CRC-32。`wal_commit` 追加一条 `end_marker = WAL_COMMIT_MARKER` 的 `WAL_REC_COMMIT` 记录；重放时一切位于最后一条有效 COMMIT 之后的数据都被视为不完整并丢弃。
+`wal_append` 为新记录打上 `WAL_RECORD_MAGIC`、单调序号、类型、LBA、PPN、类型相关元数据，并计算字节 [0..55] 上的 CRC-32。`wal_commit` 追加一条 `end_marker = WAL_COMMIT_MARKER` 的 `WAL_REC_COMMIT` 记录。
+
+`wal_replay` 按顺序校验每条记录的 magic + CRC，遇到首个无效槽即停止；跳过 COMMIT 记录（控制标记，不向上转发），其余有效记录全部通过回调向上转发。**不会**查询 `wal_get_committed_seq`，因此不存在"丢弃最后一条 COMMIT 之后记录"的行为 —— 首个损坏槽之前的每条有效记录都会被重放。`wal_get_committed_seq` 作为独立辅助接口保留，供需要最后一个持久化提交点的调用方单独使用。
+
+注意：`wal_replay` 目前是已导出的 API，但**没有生产调用方** —— 现网恢复路径完全由 superblock 驱动（参见下文 `sb_recover`）。WAL 覆盖仅在单元测试中实现（`tests/test_foundation.c`）。
 
 ---
 
@@ -307,23 +315,24 @@ media_save_incremental(ctx, "checkpoint.bin")
             否 -> 冷启动
             是 -> sb_checkpoint_read
                   -> sb_journal_replay (按序应用 WRITE / TRIM 增量)
-  -> wal_replay (若本次运行存在 WAL 文件)
-       -> 接受直至最后一条 WAL_REC_COMMIT 的记录
-       -> 丢弃最后一条有效 COMMIT 之后的记录
   -> 恢复完成
 ```
+
+`wal_replay` 未接入生产恢复路径（`sssim_init` / `ftl_init` 只调用 `sb_recover`）。该 API 作为单独工具保留，便于调用方在内存环形缓冲之上自行扩展重放；`tests/test_foundation.c` 在单元层面覆盖它。
 
 ### 6.4 Superblock 页完整性检查
 
 ```
 读取页开头的 sb_page_header
   magic 属于 { SB_HEADER_MAGIC, SB_CKPT_MAGIC, SB_JRNL_MAGIC } ?
-    否 -> 拒绝该页，回退到上一代
+    否 -> 拒绝该页，返回 HFSSS_ERR_IO（无上一代回退）
     是 -> 重新计算数据区 CRC
            与 header.crc32 匹配 ?
-             否 -> 拒绝该页，回退
+             否 -> 拒绝该页，返回 HFSSS_ERR_IO
              是 -> 按 page_type 应用
 ```
+
+`sb_checkpoint_read` 扫描每个预留 superblock 的第 0 页，选取头部 `sequence` 最高的 block，并从该 block 读取检查点其余部分。若所选 block 的任意数据页 CRC 校验失败，读取直接终止并返回 `HFSSS_ERR_IO` —— 现网代码**不会**回退至更早代数的 superblock。
 
 ### 6.5 WAL 记录完整性检查
 
@@ -334,11 +343,13 @@ media_save_incremental(ctx, "checkpoint.bin")
     是 -> 重新计算字节 [0..55] 上的 CRC
            与 record.crc32 匹配 ?
              否 -> 停止重放（记录损坏）
-             是 -> 若 type == WAL_REC_COMMIT 且 end_marker == WAL_COMMIT_MARKER
-                      -> 推进 committed_seq
+             是 -> 若 type == WAL_REC_COMMIT
+                      -> 跳过（控制标记，不向上转发回调）
                     否则
-                      -> 缓存该记录，等待下一条 COMMIT 时提交
+                      -> 转发 callback(rec, user_data)
 ```
+
+`wal_get_committed_seq` 独立遍历环形缓冲查找最高序号的 COMMIT，不属于重放流程。需要关心最后一个持久化提交点的生产代码应单独调用该辅助接口。
 
 ---
 
@@ -352,7 +363,7 @@ media_save_incremental(ctx, "checkpoint.bin")
 | Media 检查点（增量，空闲态）                      | 每块一个 bool + BBT                       | ~ total_blocks 字节 + BBT |
 | Superblock L2P 检查点大小                         | `512 M × 16 B (ckpt_entry)`              | 分摊到超级块页上共 8 GB   |
 | WAL 内存环形缓冲                                  | `WAL_MAX_RECORDS × 64 B`                 | 1 MB                      |
-| WAL 磁盘文件（启用持久化时）                      | 环形缓冲 + 16 B 前导                      | ≤ 1 MB + 16 B             |
+| WAL 磁盘文件（启用持久化时）                      | `count × 64 B`（无前导）                  | ≤ 1 MB                    |
 | Superblock 页头开销                               | `sizeof(struct sb_page_header)`           | 32 B / 页                 |
 | `wal_append` 延迟（仅内存）                        | memcpy + CRC                             | < 1 µs                    |
 | `wal_save` 延迟（落盘）                            | 单次 `fwrite` + `fclose`                  | ~100 µs                   |
@@ -367,27 +378,29 @@ media_save_incremental(ctx, "checkpoint.bin")
 |-------------|--------------------------------------------------|------------------------------------------------|
 | PF-SB-*     | `tests/test_superblock.c`                        | Superblock 头/检查点/Journal 往返、魔数与 CRC 拒绝、恢复 |
 | PF-PWR-*    | `tests/test_power_cycle.c`                       | 端到端崩溃恢复（`media_save` + 重启 + `media_load` + Journal 重放） |
-| PF-MEDIA-*  | `tests/test_media.c`（持久化章节）               | Media 检查点读写、V1 → V2 兼容、全量与增量   |
+| PF-MEDIA-*  | `tests/test_media.c::test_persistence`           | Media 检查点在 `media_save` / `media_load` 层的读写（仅全量） |
+| PF-PER-*    | `tests/systest_persistence.c`                    | 全量与增量检查点行为，包括 §3.1 记录的 `bbt_offset` 限制 |
+| PF-WAL-*    | `tests/test_foundation.c`（WAL 单元章节）        | `wal_init` / `wal_append` / `wal_commit` / `wal_replay` / `wal_save` / `wal_load` 往返、魔数与 CRC 拒绝 |
 
 代表性测试点：
 
 | 用例 ID | 描述                                                                 | 验证点                                                         |
 |---------|----------------------------------------------------------------------|----------------------------------------------------------------|
 | PF-001  | Superblock 检查点写然后读                                            | 所有 LBA → PPN 映射往返一致                                    |
-| PF-002  | 损坏 `sb_page_header.crc32`                                           | 该页被拒绝，恢复回退到上一代                                   |
-| PF-003  | 损坏检查点 entry 区                                                  | CRC 不匹配 → 拒绝并回退                                         |
-| PF-004  | WAL 追加 N 条记录，重放                                              | 每条已提交记录被重新应用；未提交记录被丢弃                    |
-| PF-005  | WAL 最后一条记录截断（缺 `end_marker`）                              | 重放在最后一条有效 COMMIT 处干净停止                           |
-| PF-006  | WAL 记录 CRC 错误                                                    | 在第 N-1 条停止并输出告警                                      |
+| PF-002  | 损坏 `sb_page_header.crc32`                                           | `sb_checkpoint_read` 返回 `HFSSS_ERR_IO`；无上一代重试          |
+| PF-003  | 损坏检查点 entry 区                                                  | CRC 不匹配 → 拒绝并返回 `HFSSS_ERR_IO`                          |
+| PF-004  | WAL 追加 N 条记录，`wal_replay` 带回调                                | 每条有效非 COMMIT 记录转发到回调；COMMIT 记录被跳过            |
+| PF-005  | WAL 最终槽（`magic = 0`）截断                                         | 重放在该槽停止；之前的记录仍被转发                             |
+| PF-006  | WAL 记录 CRC 错误                                                    | 在第 N-1 条停止；之后无记录转发                                |
 | PF-007  | 任一持久化制品的魔数不匹配                                           | 读取器拒绝，不尝试解析负载                                     |
 | PF-008  | Media 检查点：保存（全量）→ 重新打开 → 加载 → 校验页数据 + OOB        | 页数据 + 元数据一致                                            |
-| PF-009  | Media 检查点：部分脏后保存（增量）                                   | 干净块被跳过；脏块往返一致                                     |
-| PF-010  | `MEDIA_FILE_MAGIC` 不匹配                                             | `media_load` 返回 `HFSSS_ERR_IO`                                |
+| PF-009  | Media 检查点：部分脏后保存（增量）                                   | 干净块被跳过；脏块往返一致；`bbt_offset` 偏差由顺序加载容忍   |
+| PF-010  | `MEDIA_FILE_MAGIC` 不匹配                                             | `media_load` 返回 `HFSSS_ERR_INVAL`                             |
 | PF-011  | Media V1 → V2 升级路径                                                | V1 文件通过 `_v1` shim 正常加载                                 |
 | PF-012  | 冷启动（无检查点、无 Journal）                                       | FTL 以空映射启动，无错误                                       |
 | PF-013  | 热启动：有效检查点 + 空 Journal                                      | 映射与关机前一致                                               |
 | PF-014  | 热启动：有效检查点 + 非空 Journal                                    | 先应用检查点，再按序重放 Journal 增量                          |
-| PF-015  | 完整崩溃恢复流程（检查点 + WAL）                                      | 末态与最后一次持久化提交的写入保持一致                         |
+| PF-015  | 完整崩溃恢复流程（superblock 检查点 + journal；`wal_replay` 仅单元测试独立覆盖） | 末态与最后一次持久化提交的写入保持一致 |
 
 ---
 
