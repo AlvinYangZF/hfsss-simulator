@@ -1,8 +1,11 @@
 #ifndef __HFSSS_RESOURCE_H
 #define __HFSSS_RESOURCE_H
 
+#include <stdatomic.h>
+
 #include "common/common.h"
 #include "common/mutex.h"
+#include "common/fault_inject.h"
 
 /* Resource Type */
 enum resource_type {
@@ -74,6 +77,18 @@ struct resource_mgr {
 
     /* Per-role CPU stats (REQ-119) */
     struct cpu_stats cpu;
+
+    /*
+     * Optional fault-injection hook (REQ-134). resource_alloc /
+     * idle_block_alloc run under their per-pool locks, not mgr->lock,
+     * so the pointer is atomic: attach/detach stores with release
+     * ordering, hot-path reads use acquire. A detach that races with
+     * a reader either wins (reader sees NULL, no fault check) or
+     * loses (reader sees the still-live registry; fault_check itself
+     * is internally thread-safe and the caller guarantees registry
+     * lifetime outlives any outstanding resource_alloc call).
+     */
+    _Atomic(struct fault_registry *) faults;
 };
 
 /* Function Prototypes */
@@ -81,6 +96,10 @@ int resource_mgr_init(struct resource_mgr *mgr);
 void resource_mgr_cleanup(struct resource_mgr *mgr);
 void *resource_alloc(struct resource_mgr *mgr, enum resource_type type);
 void resource_free(struct resource_mgr *mgr, enum resource_type type, void *ptr);
+
+/* Fault injection attachment (REQ-134). Pass NULL to detach. */
+void resource_mgr_attach_faults(struct resource_mgr *mgr,
+                                struct fault_registry *faults);
 
 /* Idle Block Pool Functions */
 int idle_block_pool_init(struct idle_block_pool *pool, u32 total_blocks, u32 low_watermark, u32 high_watermark);

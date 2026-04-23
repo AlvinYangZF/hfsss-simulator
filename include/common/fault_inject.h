@@ -1,9 +1,12 @@
 #ifndef HFSSS_FAULT_INJECT_H
 #define HFSSS_FAULT_INJECT_H
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+
+#include "common/mutex.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,6 +25,7 @@ enum fault_type {
     FAULT_POWER         = (1 << 7),
     FAULT_PANIC         = (1 << 8),
     FAULT_POOL_EXHAUST  = (1 << 9),
+    FAULT_TIMEOUT       = (1 << 10),   /* controller command-timeout storm */
 };
 
 /* Persistence mode */
@@ -32,7 +36,28 @@ enum fault_persist {
 
 #define FAULT_WILDCARD  UINT32_MAX  /* match any value in that field */
 
-/* Fault target address (NAND hierarchy) */
+/*
+ * Fault target address (NAND hierarchy).
+ *
+ * NOTE on controller-level fault types (FAULT_PANIC / FAULT_POOL_EXHAUST /
+ * FAULT_TIMEOUT). These types are not naturally addressable by NAND
+ * coordinate — there is no "channel 0 pool exhaustion" distinct from
+ * "channel 3 pool exhaustion". The current convention is:
+ *   - Controller-level hooks in resource.c / arbiter.c pass an all-wildcard
+ *     fault_addr to fault_check.
+ *   - A controller-level fault is registered with NULL addr (equivalent to
+ *     all wildcards) and will fire on any controller hot path.
+ *   - A user who registers a NAND-scoped fault (e.g., FAULT_POOL_EXHAUST
+ *     with addr.channel=0) will still see it fire on every controller
+ *     path because the hook side passes wildcards that always match.
+ *     If you need a fault that *only* fires at a narrow NAND address,
+ *     register a type that the controller hooks do not consult
+ *     (FAULT_READ_ERROR / FAULT_PROGRAM_ERROR / etc.).
+ *
+ * This keeps fault_addr shape-compatible across modules; a future
+ * FAULT_SCOPE bit would be the clean long-term fix if this convention
+ * becomes painful.
+ */
 struct fault_addr {
     uint32_t channel;   /* FAULT_WILDCARD = any */
     uint32_t chip;
@@ -63,8 +88,26 @@ struct fault_registry {
     struct fault_entry entries[FAULT_REGISTRY_MAX];
     int                count;
     uint32_t           next_id;
-    uint32_t           type_present;  /* bitmask: lock-free fast exit */
+    _Atomic uint32_t   type_present;  /*
+                                       * Bitmask used for the lock-free fast
+                                       * exit in fault_check(). Writers update
+                                       * it via atomic_store (release) under
+                                       * reg->lock; readers in the hot path do
+                                       * an atomic_load (acquire) without the
+                                       * lock. Atomic typing avoids the C/TSAN
+                                       * data race that plain uint32_t had
+                                       * even though the value never tears on
+                                       * supported hardware.
+                                       */
     bool               initialized;
+    struct mutex       lock;          /*
+                                       * Serializes add/remove/clear_all and
+                                       * the mutating section of fault_check
+                                       * (hit_count bump + one-shot deactivate
+                                       * + rebuild_type_present), plus the
+                                       * serialization walk in
+                                       * fault_registry_to_json.
+                                       */
 };
 
 /* Lifecycle */

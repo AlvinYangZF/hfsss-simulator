@@ -21,6 +21,12 @@ int fault_registry_init(struct fault_registry *reg)
         return HFSSS_ERR_INVAL;
 
     memset(reg, 0, sizeof(*reg));
+
+    int rc = mutex_init(&reg->lock);
+    if (rc != HFSSS_OK) {
+        return rc;
+    }
+
     reg->next_id     = 1;
     reg->initialized = true;
     return HFSSS_OK;
@@ -30,6 +36,9 @@ void fault_registry_cleanup(struct fault_registry *reg)
 {
     if (!reg)
         return;
+    if (reg->initialized) {
+        mutex_cleanup(&reg->lock);
+    }
     memset(reg, 0, sizeof(*reg));
 }
 
@@ -37,7 +46,7 @@ void fault_registry_cleanup(struct fault_registry *reg)
  * Internal helpers
  * ---------------------------------------------------------------------- */
 
-/* Rebuild type_present from active entries. */
+/* Rebuild type_present from active entries. Caller holds reg->lock. */
 static void rebuild_type_present(struct fault_registry *reg)
 {
     uint32_t mask = 0;
@@ -45,7 +54,7 @@ static void rebuild_type_present(struct fault_registry *reg)
         if (reg->entries[i].active)
             mask |= (uint32_t)reg->entries[i].type;
     }
-    reg->type_present = mask;
+    atomic_store_explicit(&reg->type_present, mask, memory_order_release);
 }
 
 /* Find an active entry by id; returns index or -1. */
@@ -90,7 +99,10 @@ int fault_inject_add(struct fault_registry *reg,
     if (!reg || !reg->initialized)
         return HFSSS_ERR_INVAL;
 
+    mutex_lock(&reg->lock, 0);
+
     if (reg->count >= FAULT_REGISTRY_MAX) {
+        mutex_unlock(&reg->lock);
         HFSSS_LOG_WARN(MODULE, "Registry full (%d entries)", FAULT_REGISTRY_MAX);
         return HFSSS_ERR;
     }
@@ -103,8 +115,10 @@ int fault_inject_add(struct fault_registry *reg,
             break;
         }
     }
-    if (slot < 0)
+    if (slot < 0) {
+        mutex_unlock(&reg->lock);
         return HFSSS_ERR;
+    }
 
     struct fault_entry *e = &reg->entries[slot];
     memset(e, 0, sizeof(*e));
@@ -127,11 +141,15 @@ int fault_inject_add(struct fault_registry *reg,
     }
 
     reg->count++;
-    reg->type_present |= (uint32_t)type;
+    atomic_fetch_or_explicit(&reg->type_present, (uint32_t)type,
+                             memory_order_release);
+    uint32_t id = e->id;
+
+    mutex_unlock(&reg->lock);
 
     HFSSS_LOG_INFO(MODULE, "Added fault id=%u type=0x%x persist=%d prob=%.3f",
-                   e->id, (unsigned)type, (int)persist, probability);
-    return (int)e->id;
+                   id, (unsigned)type, (int)persist, probability);
+    return (int)id;
 }
 
 int fault_inject_set_bit_flip(struct fault_registry *reg,
@@ -140,11 +158,14 @@ int fault_inject_set_bit_flip(struct fault_registry *reg,
     if (!reg || !reg->initialized)
         return HFSSS_ERR_INVAL;
 
+    mutex_lock(&reg->lock, 0);
     int idx = find_entry(reg, id);
-    if (idx < 0)
+    if (idx < 0) {
+        mutex_unlock(&reg->lock);
         return HFSSS_ERR_NOENT;
-
+    }
     reg->entries[idx].bit_flip_mask = mask;
+    mutex_unlock(&reg->lock);
     return HFSSS_OK;
 }
 
@@ -154,11 +175,14 @@ int fault_inject_set_disturb(struct fault_registry *reg,
     if (!reg || !reg->initialized)
         return HFSSS_ERR_INVAL;
 
+    mutex_lock(&reg->lock, 0);
     int idx = find_entry(reg, id);
-    if (idx < 0)
+    if (idx < 0) {
+        mutex_unlock(&reg->lock);
         return HFSSS_ERR_NOENT;
-
+    }
     reg->entries[idx].disturb_factor = factor;
+    mutex_unlock(&reg->lock);
     return HFSSS_OK;
 }
 
@@ -168,11 +192,14 @@ int fault_inject_set_aging(struct fault_registry *reg,
     if (!reg || !reg->initialized)
         return HFSSS_ERR_INVAL;
 
+    mutex_lock(&reg->lock, 0);
     int idx = find_entry(reg, id);
-    if (idx < 0)
+    if (idx < 0) {
+        mutex_unlock(&reg->lock);
         return HFSSS_ERR_NOENT;
-
+    }
     reg->entries[idx].aging_factor = factor;
+    mutex_unlock(&reg->lock);
     return HFSSS_OK;
 }
 
@@ -181,13 +208,16 @@ int fault_inject_remove(struct fault_registry *reg, uint32_t id)
     if (!reg || !reg->initialized)
         return HFSSS_ERR_INVAL;
 
+    mutex_lock(&reg->lock, 0);
     int idx = find_entry(reg, id);
-    if (idx < 0)
+    if (idx < 0) {
+        mutex_unlock(&reg->lock);
         return HFSSS_ERR_NOENT;
-
+    }
     reg->entries[idx].active = false;
     reg->count--;
     rebuild_type_present(reg);
+    mutex_unlock(&reg->lock);
     HFSSS_LOG_INFO(MODULE, "Removed fault id=%u", id);
     return HFSSS_OK;
 }
@@ -197,11 +227,14 @@ void fault_inject_clear_all(struct fault_registry *reg)
     if (!reg)
         return;
 
+    mutex_lock(&reg->lock, 0);
     for (int i = 0; i < FAULT_REGISTRY_MAX; i++)
         reg->entries[i].active = false;
 
     reg->count        = 0;
-    reg->type_present = 0;
+    atomic_store_explicit(&reg->type_present, 0u, memory_order_release);
+    mutex_unlock(&reg->lock);
+
     HFSSS_LOG_INFO(MODULE, "Cleared all faults");
 }
 
@@ -216,10 +249,22 @@ struct fault_entry *fault_check(struct fault_registry *reg,
     if (!reg || !reg->initialized || !addr)
         return NULL;
 
-    /* O(1) fast exit: no fault of this type is registered. */
-    if ((reg->type_present & (uint32_t)type) == 0)
+    /*
+     * Unlocked fast exit. type_present is atomic; an acquire load
+     * pairs with the release store in add / remove / clear_all
+     * (performed under reg->lock before unlock). A set-but-stale bit
+     * is harmless — we fall into the locked scan and find no match.
+     * A clear-but-stale bit means the corresponding add has not yet
+     * released its bit to this reader; the next call observes it.
+     */
+    uint32_t present = atomic_load_explicit(&reg->type_present,
+                                            memory_order_acquire);
+    if ((present & (uint32_t)type) == 0)
         return NULL;
 
+    struct fault_entry *hit = NULL;
+
+    mutex_lock(&reg->lock, 0);
     for (int i = 0; i < FAULT_REGISTRY_MAX; i++) {
         struct fault_entry *e = &reg->entries[i];
 
@@ -245,10 +290,11 @@ struct fault_entry *fault_check(struct fault_registry *reg,
             rebuild_type_present(reg);
         }
 
-        return e;
+        hit = e;
+        break;
     }
-
-    return NULL;
+    mutex_unlock(&reg->lock);
+    return hit;
 }
 
 /* -------------------------------------------------------------------------
@@ -334,6 +380,7 @@ static const char *fault_type_name(enum fault_type t)
     case FAULT_POWER:         return "POWER";
     case FAULT_PANIC:         return "PANIC";
     case FAULT_POOL_EXHAUST:  return "POOL_EXHAUST";
+    case FAULT_TIMEOUT:       return "TIMEOUT";
     default:                  return "UNKNOWN";
     }
 }
@@ -371,6 +418,17 @@ int fault_registry_to_json(const struct fault_registry *reg,
     if (rc != HFSSS_OK)
         return rc;
 
+    /*
+     * Walk entries under reg->lock so the snapshot sees a consistent
+     * view of active / hit_count / persist against concurrent
+     * fault_inject_add / remove / clear_all / fault_check mutations.
+     * const is cast away only to acquire the lock — the entries
+     * themselves are read, not written.
+     */
+    struct fault_registry *reg_mut = (struct fault_registry *)reg;
+    if (reg_mut->initialized)
+        mutex_lock(&reg_mut->lock, 0);
+
     for (int i = 0; i < FAULT_REGISTRY_MAX; i++) {
         const struct fault_entry *e = &reg->entries[i];
         if (!e->active && e->id == 0)
@@ -381,7 +439,11 @@ int fault_registry_to_json(const struct fault_registry *reg,
 
         if (!first) {
             rc = append(buf, bufsz, &pos, ",");
-            if (rc != HFSSS_OK) return rc;
+            if (rc != HFSSS_OK) {
+                if (reg_mut->initialized)
+                    mutex_unlock(&reg_mut->lock);
+                return rc;
+            }
         }
         first = false;
 
@@ -399,9 +461,15 @@ int fault_registry_to_json(const struct fault_registry *reg,
             (int)e->persist,
             e->hit_count,
             e->active ? "true" : "false");
-        if (rc != HFSSS_OK)
+        if (rc != HFSSS_OK) {
+            if (reg_mut->initialized)
+                mutex_unlock(&reg_mut->lock);
             return rc;
+        }
     }
+
+    if (reg_mut->initialized)
+        mutex_unlock(&reg_mut->lock);
 
     rc = append(buf, bufsz, &pos, "]");
     return rc;
@@ -480,6 +548,7 @@ int fault_entry_from_json(const char *json, struct fault_entry *out)
     else if (strcmp(type_str, "POWER")         == 0) out->type = FAULT_POWER;
     else if (strcmp(type_str, "PANIC")         == 0) out->type = FAULT_PANIC;
     else if (strcmp(type_str, "POOL_EXHAUST")  == 0) out->type = FAULT_POOL_EXHAUST;
+    else if (strcmp(type_str, "TIMEOUT")       == 0) out->type = FAULT_TIMEOUT;
     else                                              out->type = FAULT_NONE;
 
     return HFSSS_OK;
