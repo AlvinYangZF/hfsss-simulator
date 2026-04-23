@@ -186,7 +186,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | REQ-128 | /proc filesystem interface | 7.2.2 | HLD_05 | LLD_07 | TEST_LLD_05 | Implemented |
 | REQ-129 | CLI tool (hfsss-ctrl) | 7.2.3 | HLD_05 | LLD_07 | TEST_LLD_05 | Implemented |
 | REQ-130 | Configuration file (YAML) | 7.3 | HLD_05 | LLD_07 | TEST_LLD_05 | Implemented |
-| REQ-131 | Persistence data format | 7.4 | HLD_03, HLD_06 | LLD_07, LLD_15 | TEST_LLD_03, TEST_LLD_06 | Partial |
+| REQ-131 | Persistence data format | 7.4 | HLD_03, HLD_06 | LLD_07, LLD_15 | TEST_LLD_03, TEST_LLD_06 | Implemented |
 ### 9. Fault Injection Framework (REQ-132 through REQ-134)
 
 | REQ-ID | Description (brief) | PRD Section | HLD Reference | LLD Reference | Test Reference | Implementation Status |
@@ -279,7 +279,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Common Services | 24 | 20 | 2 | 0 | 2 | 83.3% |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 0 | 2 | 86.4% |
 | Performance Requirements | 8 | 7 | 0 | 0 | 1 | 87.5% |
-| Product Interfaces | 8 | 4 | 3 | 0 | 1 | 50.0% |
+| Product Interfaces | 8 | 5 | 2 | 0 | 1 | 62.5% |
 | Fault Injection Framework | 3 | 2 | 1 | 0 | 0 | 66.7% |
 | System Reliability/Stability | 4 | 3 | 0 | 0 | 1 | 75.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100.0% |
@@ -288,7 +288,7 @@ This document maps every requirement to its PRD source, HLD architecture, LLD de
 | Enterprise: Security | 7 | 7 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100.0% |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100.0% |
-| **Total** | **178** | **148** | **13** | **0** | **17** | **83.1%** |
+| **Total** | **178** | **149** | **12** | **0** | **17** | **83.7%** |
 
 > Note: "Coverage %" counts Implemented only. Partial and Stub are not counted as fully covered.
 
