@@ -59,12 +59,20 @@ struct timing_model {
      * REQ-121: optional NAND latency error injection. basis_points gives
      * the ±variance in 1/10000 (500 = ±5%); 0 disables jitter so the
      * timing lookups return the deterministic baseline. jitter_state is
-     * an LCG, advanced atomically so concurrent NAND workers do not tear
+     * an LCG advanced atomically so concurrent NAND workers do not tear
      * it; single-threaded callers get a reproducible sequence from a
-     * given seed. See timing_model_enable_jitter for the activation path.
+     * given seed.
+     *
+     * Both fields are atomic so enable/disable races with a concurrent
+     * latency read are well-defined. Publication order: enable_jitter
+     * writes jitter_state first (relaxed, the seed is useless without
+     * basis_points != 0), then releases the non-zero basis_points.
+     * apply_jitter acquires basis_points first; seeing a non-zero value
+     * guarantees acquire-visibility into the prior seed store. See
+     * timing_model_enable_jitter for the activation path.
      */
     _Atomic u64 jitter_state;
-    u32         jitter_basis_points;
+    _Atomic u32 jitter_basis_points;
 };
 
 #define TIMING_JITTER_MAX_BP 2000u  /* ±20% ceiling */

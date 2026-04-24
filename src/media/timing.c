@@ -33,14 +33,19 @@ static u64 advance_lcg(struct timing_model *model)
 
 static u64 apply_jitter(struct timing_model *model, u64 base)
 {
-    if (!model->jitter_basis_points || base == 0) {
+    /* Acquire load pairs with the release store in
+     * timing_model_enable_jitter. A non-zero value implies happens-before
+     * visibility into the seed store that precedes it. */
+    u32 bp = atomic_load_explicit(&model->jitter_basis_points,
+                                  memory_order_acquire);
+    if (bp == 0 || base == 0) {
         return base;
     }
 
     /* Top 32 bits of the LCG output are the high-entropy half. */
     u64 rnd   = advance_lcg(model) >> 32;
-    u32 range = 2u * model->jitter_basis_points + 1u;   /* inclusive span */
-    s32 delta = (s32)(rnd % range) - (s32)model->jitter_basis_points;
+    u32 range = 2u * bp + 1u;   /* inclusive span */
+    s32 delta = (s32)(rnd % range) - (s32)bp;
 
     /* Signed 128-bit-ish math in u64 domain: treat delta as ppm/10000. */
     s64 scaled = (s64)base * (s64)delta;
@@ -60,6 +65,11 @@ int timing_model_init_from_profile(struct timing_model *model, const struct nand
     }
 
     memset(model, 0, sizeof(*model));
+    /* C11 reserves atomic_init for initializing implementation-private
+     * atomic state. memset works on every mainstream target, but
+     * atomic_init is the portable guarantee — do both. */
+    atomic_init(&model->jitter_state, 0ULL);
+    atomic_init(&model->jitter_basis_points, 0u);
 
     /*
      * Profile carries timing for every cell variant; copying all four lanes
@@ -109,6 +119,14 @@ void timing_model_cleanup(struct timing_model *model)
         return;
     }
 
+    /* Disarm + zero the atomics via the proper store API before the
+     * bulk memset, so we never rely on the memset-over-atomic behavior
+     * for the live path. The memset itself is retained for the
+     * non-atomic timing_params sub-structs. */
+    atomic_store_explicit(&model->jitter_basis_points, 0u,
+                          memory_order_relaxed);
+    atomic_store_explicit(&model->jitter_state, 0ULL,
+                          memory_order_relaxed);
     memset(model, 0, sizeof(*model));
 }
 
@@ -299,11 +317,14 @@ void timing_model_enable_jitter(struct timing_model *model,
     if (basis_points > TIMING_JITTER_MAX_BP) {
         basis_points = TIMING_JITTER_MAX_BP;
     }
-    /* Store state before the basis_points flip so a concurrent NAND
-     * worker that observes the enabled factor is guaranteed to see the
-     * seed too. basis_points is the arming bit; order matters. */
-    atomic_store_explicit(&model->jitter_state, seed, memory_order_release);
-    model->jitter_basis_points = basis_points;
+    /* Seed is published with a relaxed store; the release on
+     * basis_points below carries the seed into acquire-visibility for
+     * any reader that observes bp != 0. basis_points is the arming
+     * bit, so its release store is the synchronization edge. */
+    atomic_store_explicit(&model->jitter_state, seed,
+                          memory_order_relaxed);
+    atomic_store_explicit(&model->jitter_basis_points, basis_points,
+                          memory_order_release);
 }
 
 void timing_model_disable_jitter(struct timing_model *model)
@@ -311,7 +332,11 @@ void timing_model_disable_jitter(struct timing_model *model)
     if (!model) {
         return;
     }
-    model->jitter_basis_points = 0;
-    atomic_store_explicit(&model->jitter_state, 0ULL,
+    /* Disarm first (release): once a reader observes bp == 0 it takes
+     * the early-return branch and never reads the state. Then zero the
+     * state so a subsequent enable starts from a clean slate. */
+    atomic_store_explicit(&model->jitter_basis_points, 0u,
                           memory_order_release);
+    atomic_store_explicit(&model->jitter_state, 0ULL,
+                          memory_order_relaxed);
 }
