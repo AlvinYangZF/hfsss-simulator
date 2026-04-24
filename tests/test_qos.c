@@ -612,6 +612,229 @@ static void test_det_window_invalid(void)
     TEST_ASSERT(det_window_allow_host_io(NULL, 0), "NULL config allows host IO");
 }
 
+/*
+ * Duty-cycle enforcement accounting. Each call to det_window_admit_*
+ * must (a) return the same decision as det_window_allow_*, and (b)
+ * advance either admitted[phase] or rejected[phase] for the observed
+ * phase. phase_transitions counts observed phase changes AFTER the
+ * first observation (a fresh cfg's first admit does not count as a
+ * transition — that was a latent bug in the earlier version that
+ * relied on the zero-init DW_HOST_IO value).
+ */
+static void test_det_window_admit_stats(void)
+{
+    printf("\n=== Duty-Cycle Admission Stats ===\n");
+
+    struct det_window_config cfg;
+    int ret = det_window_init(&cfg, 80, 15, 5, 100);  /* 100 ms cycle */
+    TEST_ASSERT(ret == HFSSS_OK, "det_window_init(80/15/5 @100ms)");
+
+    /* Stats are zero on init and last_phase_valid is false. */
+    struct det_window_stats s;
+    det_window_get_stats(&cfg, &s);
+    for (int i = 0; i < DET_WINDOW_PHASES; i++) {
+        TEST_ASSERT(s.host_admitted[i] == 0, "host_admitted zero post-init");
+        TEST_ASSERT(s.gc_admitted[i]   == 0, "gc_admitted zero post-init");
+        TEST_ASSERT(s.host_rejected[i] == 0, "host_rejected zero post-init");
+        TEST_ASSERT(s.gc_rejected[i]   == 0, "gc_rejected zero post-init");
+    }
+    TEST_ASSERT(s.phase_transitions == 0, "phase_transitions zero post-init");
+    TEST_ASSERT(s.last_phase_valid == false, "last_phase_valid false post-init");
+
+    u64 t_start = cfg.cycle_start_ns;
+
+    u64 t_host       = t_start + 40ULL * 1000000ULL;  /* HOST_IO    [0,80) */
+    u64 t_gc_allowed = t_start + 85ULL * 1000000ULL;  /* GC_ALLOWED [80,95) */
+    u64 t_gc_only    = t_start + 97ULL * 1000000ULL;  /* GC_ONLY    [95,100) */
+
+    /* admit_* decision must match allow_* on the same timestamp.
+     * We peek allow_* first so the admit call's mutation doesn't
+     * confuse the comparison. */
+    TEST_ASSERT(det_window_allow_host_io(&cfg, t_host) ==
+                (det_window_admit_host_io(&cfg, t_host)),
+                "admit_host_io decision == allow_host_io in HOST_IO");
+    TEST_ASSERT(det_window_allow_gc(&cfg, t_host) ==
+                (det_window_admit_gc(&cfg, t_host)),
+                "admit_gc decision == allow_gc in HOST_IO");
+
+    TEST_ASSERT(det_window_allow_host_io(&cfg, t_gc_allowed) ==
+                (det_window_admit_host_io(&cfg, t_gc_allowed)),
+                "admit_host_io decision == allow_host_io in GC_ALLOWED");
+    TEST_ASSERT(det_window_allow_gc(&cfg, t_gc_allowed) ==
+                (det_window_admit_gc(&cfg, t_gc_allowed)),
+                "admit_gc decision == allow_gc in GC_ALLOWED");
+
+    TEST_ASSERT(det_window_allow_host_io(&cfg, t_gc_only) ==
+                (det_window_admit_host_io(&cfg, t_gc_only)),
+                "admit_host_io decision == allow_host_io in GC_ONLY");
+    TEST_ASSERT(det_window_allow_gc(&cfg, t_gc_only) ==
+                (det_window_admit_gc(&cfg, t_gc_only)),
+                "admit_gc decision == allow_gc in GC_ONLY");
+
+    /* Per-phase counts across the 6 admits: 1 host admit per
+     * (HOST_IO, GC_ALLOWED); 1 host reject in GC_ONLY; 1 gc admit
+     * per (GC_ALLOWED, GC_ONLY); 1 gc reject in HOST_IO. */
+    det_window_get_stats(&cfg, &s);
+    TEST_ASSERT(s.host_admitted[DW_HOST_IO]    == 1, "host admit in HOST_IO = 1");
+    TEST_ASSERT(s.host_admitted[DW_GC_ALLOWED] == 1, "host admit in GC_ALLOWED = 1");
+    TEST_ASSERT(s.host_admitted[DW_GC_ONLY]    == 0, "host admit in GC_ONLY = 0");
+    TEST_ASSERT(s.host_rejected[DW_GC_ONLY]    == 1, "host reject in GC_ONLY = 1");
+    TEST_ASSERT(s.host_rejected[DW_HOST_IO]    == 0, "host reject in HOST_IO = 0");
+    TEST_ASSERT(s.gc_admitted[DW_GC_ALLOWED]   == 1, "gc admit in GC_ALLOWED = 1");
+    TEST_ASSERT(s.gc_admitted[DW_GC_ONLY]      == 1, "gc admit in GC_ONLY = 1");
+    TEST_ASSERT(s.gc_admitted[DW_HOST_IO]      == 0, "gc admit in HOST_IO = 0");
+    TEST_ASSERT(s.gc_rejected[DW_HOST_IO]      == 1, "gc reject in HOST_IO = 1");
+    TEST_ASSERT(s.gc_rejected[DW_GC_ALLOWED]   == 0, "gc reject in GC_ALLOWED = 0");
+
+    /* Sequence observed phases: HOST_IO, HOST_IO, GC_ALLOWED, GC_ALLOWED,
+     * GC_ONLY, GC_ONLY. Transitions: HOST_IO→GC_ALLOWED, GC_ALLOWED→GC_ONLY.
+     * The first admit (HOST_IO) does not count thanks to last_phase_valid. */
+    TEST_ASSERT(s.phase_transitions == 2, "phase_transitions = 2 real transitions");
+    TEST_ASSERT(s.last_phase_valid == true, "last_phase_valid after first observation");
+    TEST_ASSERT(s.last_phase == DW_GC_ONLY, "last_phase = final observation");
+
+    /* reset clears counters (including last_phase_valid). */
+    det_window_reset_stats(&cfg);
+    det_window_get_stats(&cfg, &s);
+    for (int i = 0; i < DET_WINDOW_PHASES; i++) {
+        TEST_ASSERT(s.host_admitted[i] == 0 && s.gc_admitted[i]   == 0 &&
+                    s.host_rejected[i] == 0 && s.gc_rejected[i]   == 0,
+                    "reset zeros per-phase counters");
+    }
+    TEST_ASSERT(s.phase_transitions == 0, "reset zeros phase_transitions");
+    TEST_ASSERT(s.last_phase_valid == false, "reset zeros last_phase_valid");
+    TEST_ASSERT(cfg.enabled == true, "reset preserves cfg.enabled");
+    TEST_ASSERT(cfg.host_io_pct == 80, "reset preserves host_io_pct");
+}
+
+/*
+ * Regression test for the initial-transition counting bug the previous
+ * implementation had. With last_phase_valid introduced, a first admit
+ * that lands in DW_GC_ALLOWED (not the zero-init default DW_HOST_IO)
+ * must record last_phase = DW_GC_ALLOWED and phase_transitions = 0.
+ * Previously this would either undercount (if first phase was HOST_IO)
+ * or overcount (if first phase was anything else).
+ */
+static void test_det_window_admit_first_non_host_io(void)
+{
+    printf("\n=== Duty-Cycle First Admit In Non-HOST_IO Phase ===\n");
+
+    struct det_window_config cfg;
+    det_window_init(&cfg, 80, 15, 5, 100);
+
+    u64 t_start = cfg.cycle_start_ns;
+    u64 t_gc_allowed = t_start + 85ULL * 1000000ULL;
+
+    /* Very first admit lands in GC_ALLOWED. */
+    (void)det_window_admit_gc(&cfg, t_gc_allowed);
+
+    struct det_window_stats s;
+    det_window_get_stats(&cfg, &s);
+    TEST_ASSERT(s.phase_transitions == 0,
+                "first admit in GC_ALLOWED records 0 transitions");
+    TEST_ASSERT(s.last_phase == DW_GC_ALLOWED,
+                "last_phase = DW_GC_ALLOWED after first admit");
+    TEST_ASSERT(s.last_phase_valid == true,
+                "last_phase_valid is set after first admit");
+    TEST_ASSERT(s.gc_admitted[DW_GC_ALLOWED] == 1,
+                "gc admit in GC_ALLOWED counted");
+
+    /* Same phase again → still 0 transitions. */
+    (void)det_window_admit_gc(&cfg, t_gc_allowed);
+    det_window_get_stats(&cfg, &s);
+    TEST_ASSERT(s.phase_transitions == 0,
+                "second admit in same phase records 0 transitions");
+
+    /* Now a move to GC_ONLY → one real transition. */
+    u64 t_gc_only = t_start + 97ULL * 1000000ULL;
+    (void)det_window_admit_gc(&cfg, t_gc_only);
+    det_window_get_stats(&cfg, &s);
+    TEST_ASSERT(s.phase_transitions == 1,
+                "first actual phase change records 1 transition");
+}
+
+/*
+ * The gc.h gc_admit_gc_fn signature is `bool (void *, u64)`; the
+ * det_window_admit_gc signature is `bool (struct det_window_config *,
+ * u64)`. det_window_gc_admit_adapter bridges the two so FTL callers
+ * (which cannot link against det_window directly) can attach the
+ * window via a plain function-pointer setter. Verify the adapter
+ * forwards correctly for each phase + the NULL pass-through case.
+ */
+static void test_det_window_gc_admit_adapter(void)
+{
+    printf("\n=== Duty-Cycle FTL Admit Adapter ===\n");
+
+    struct det_window_config cfg;
+    det_window_init(&cfg, 80, 15, 5, 100);
+
+    u64 t_start      = cfg.cycle_start_ns;
+    u64 t_host       = t_start + 40ULL * 1000000ULL;  /* HOST_IO */
+    u64 t_gc_allowed = t_start + 85ULL * 1000000ULL;  /* GC_ALLOWED */
+    u64 t_gc_only    = t_start + 97ULL * 1000000ULL;  /* GC_ONLY */
+
+    TEST_ASSERT(det_window_gc_admit_adapter(&cfg, t_host) == false,
+                "adapter rejects during HOST_IO");
+    TEST_ASSERT(det_window_gc_admit_adapter(&cfg, t_gc_allowed) == true,
+                "adapter admits during GC_ALLOWED");
+    TEST_ASSERT(det_window_gc_admit_adapter(&cfg, t_gc_only) == true,
+                "adapter admits during GC_ONLY");
+
+    /* NULL pass-through — a detached gc cb (NULL cfg_ctx) must not
+     * crash; it inherits det_window_admit_gc's NULL semantics. */
+    TEST_ASSERT(det_window_gc_admit_adapter(NULL, t_host) == true,
+                "adapter with NULL cfg admits (pass-through)");
+
+    /* Adapter must record stats into the underlying cfg. */
+    struct det_window_stats s;
+    det_window_get_stats(&cfg, &s);
+    TEST_ASSERT(s.gc_rejected[DW_HOST_IO]    == 1, "adapter bumped gc_rejected[HOST_IO]");
+    TEST_ASSERT(s.gc_admitted[DW_GC_ALLOWED] == 1, "adapter bumped gc_admitted[GC_ALLOWED]");
+    TEST_ASSERT(s.gc_admitted[DW_GC_ONLY]    == 1, "adapter bumped gc_admitted[GC_ONLY]");
+}
+
+static void test_det_window_admit_disabled(void)
+{
+    printf("\n=== Disabled det_window Pass-Through ===\n");
+
+    /* Zero-initialised cfg is !enabled; admit_* returns true and the
+     * call is recorded into the dedicated *_admitted_while_disabled
+     * counter so the audit trail distinguishes "disabled" from
+     * "never called". */
+    struct det_window_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    TEST_ASSERT(det_window_admit_host_io(&cfg, 0) == true,
+                "disabled window admits host-io");
+    TEST_ASSERT(det_window_admit_host_io(&cfg, 0) == true,
+                "disabled window admits host-io (call 2)");
+    TEST_ASSERT(det_window_admit_gc(&cfg, 0) == true,
+                "disabled window admits gc");
+
+    struct det_window_stats s;
+    det_window_get_stats(&cfg, &s);
+    TEST_ASSERT(s.host_admitted_while_disabled == 2,
+                "disabled window records 2 host admissions");
+    TEST_ASSERT(s.gc_admitted_while_disabled == 1,
+                "disabled window records 1 gc admission");
+    /* Per-phase counters stay zero because no phase was evaluated. */
+    for (int i = 0; i < DET_WINDOW_PHASES; i++) {
+        TEST_ASSERT(s.host_admitted[i] == 0, "disabled: host_admitted[i] = 0");
+        TEST_ASSERT(s.gc_admitted[i]   == 0, "disabled: gc_admitted[i] = 0");
+    }
+
+    /* NULL config is also pass-through; get_stats(NULL, out) zeros. */
+    TEST_ASSERT(det_window_admit_host_io(NULL, 0) == true,
+                "NULL cfg admits host-io");
+    TEST_ASSERT(det_window_admit_gc(NULL, 0) == true,
+                "NULL cfg admits gc");
+
+    memset(&s, 0xFF, sizeof(s));
+    det_window_get_stats(NULL, &s);
+    TEST_ASSERT(s.host_admitted[0] == 0 && s.gc_admitted[0] == 0,
+                "get_stats(NULL, out) zeros out");
+}
+
 /* REQ-088: P99.9 latency anomaly detector. The monitor accumulates
  * histogram samples via the existing lat_monitor_record API; the
  * anomaly check computes current P99.9 and, if it exceeds the
@@ -791,6 +1014,10 @@ int main(void)
     test_det_window_phase();
     test_det_window_permissions();
     test_det_window_invalid();
+    test_det_window_admit_stats();
+    test_det_window_admit_first_non_host_io();
+    test_det_window_admit_disabled();
+    test_det_window_gc_admit_adapter();
 
     print_separator();
     printf("QoS Tests: %d/%d passed, %d failed\n",

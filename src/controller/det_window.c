@@ -78,3 +78,102 @@ bool det_window_allow_host_io(const struct det_window_config *cfg, u64 now_ns)
     enum det_window_phase phase = det_window_get_phase(cfg, now_ns);
     return (phase == DW_HOST_IO || phase == DW_GC_ALLOWED);
 }
+
+/*
+ * Duty-cycle enforcement accounting.
+ *
+ * record_phase_transition uses a last_phase_valid sentinel so the
+ * first admit on a fresh cfg is not mis-counted as a transition from
+ * the zero-initialised (DW_HOST_IO) value. A real transition is
+ * recorded only once we have a prior observation to compare against.
+ * Indices into the host/gc admitted/rejected arrays come from the
+ * enum directly so stats layout matches the phase's numeric value.
+ */
+static void record_phase_transition(struct det_window_config *cfg,
+                                    enum det_window_phase phase)
+{
+    if (!cfg->stats.last_phase_valid) {
+        cfg->stats.last_phase       = phase;
+        cfg->stats.last_phase_valid = true;
+        return;
+    }
+    if (cfg->stats.last_phase != phase) {
+        cfg->stats.phase_transitions++;
+        cfg->stats.last_phase = phase;
+    }
+}
+
+bool det_window_admit_host_io(struct det_window_config *cfg, u64 now_ns)
+{
+    if (!cfg) {
+        return true;
+    }
+    if (!cfg->enabled) {
+        /* Disabled pass-through: record the call so the audit trail
+         * distinguishes "window was disabled" from "never called". */
+        cfg->stats.host_admitted_while_disabled++;
+        return true;
+    }
+
+    enum det_window_phase phase = det_window_get_phase(cfg, now_ns);
+    bool allowed = (phase == DW_HOST_IO || phase == DW_GC_ALLOWED);
+
+    record_phase_transition(cfg, phase);
+    if (allowed) {
+        cfg->stats.host_admitted[phase]++;
+    } else {
+        cfg->stats.host_rejected[phase]++;
+    }
+    return allowed;
+}
+
+bool det_window_admit_gc(struct det_window_config *cfg, u64 now_ns)
+{
+    if (!cfg) {
+        return true;
+    }
+    if (!cfg->enabled) {
+        cfg->stats.gc_admitted_while_disabled++;
+        return true;
+    }
+
+    enum det_window_phase phase = det_window_get_phase(cfg, now_ns);
+    bool allowed = (phase == DW_GC_ALLOWED || phase == DW_GC_ONLY);
+
+    record_phase_transition(cfg, phase);
+    if (allowed) {
+        cfg->stats.gc_admitted[phase]++;
+    } else {
+        cfg->stats.gc_rejected[phase]++;
+    }
+    return allowed;
+}
+
+void det_window_get_stats(const struct det_window_config *cfg,
+                          struct det_window_stats *out)
+{
+    if (!out) {
+        return;
+    }
+    if (!cfg) {
+        memset(out, 0, sizeof(*out));
+        return;
+    }
+    *out = cfg->stats;
+}
+
+void det_window_reset_stats(struct det_window_config *cfg)
+{
+    if (!cfg) {
+        return;
+    }
+    memset(&cfg->stats, 0, sizeof(cfg->stats));
+}
+
+bool det_window_gc_admit_adapter(void *cfg_ctx, u64 now_ns)
+{
+    /* cfg_ctx is the attach caller's det_window_config pointer. A
+     * NULL cfg_ctx yields pass-through (det_window_admit_gc handles
+     * the NULL cfg case). */
+    return det_window_admit_gc((struct det_window_config *)cfg_ctx, now_ns);
+}
