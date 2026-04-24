@@ -15,9 +15,11 @@
 #include <stdint.h>
 #include <signal.h>
 #include <time.h>
+#include <dirent.h>
 
 #include "common/common.h"
 #include "common/fault_inject.h"
+#include "common/system_monitor.h"
 #include "media/media.h"
 
 /* -------------------------------------------------------------------------
@@ -110,6 +112,35 @@ static void page_idx_to_addr(uint32_t idx,
 }
 
 /* -------------------------------------------------------------------------
+ * system_monitor thread-count callback
+ *
+ * system_monitor requires a non-NULL thread-count provider. On Linux we
+ * count entries in /proc/self/task; elsewhere (and on read failure) we
+ * fall back to 1 so sampling never stalls on the CPU / RSS metrics that
+ * actually gate REQ-137.
+ * ---------------------------------------------------------------------- */
+
+static uint32_t stress_thread_count(void *ctx)
+{
+    (void)ctx;
+    uint32_t count = 0;
+#ifdef __linux__
+    DIR *d = opendir("/proc/self/task");
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_name[0] == '.') {
+                continue;
+            }
+            count++;
+        }
+        closedir(d);
+    }
+#endif
+    return count > 0 ? count : 1u;
+}
+
+/* -------------------------------------------------------------------------
  * Signal handling
  * ---------------------------------------------------------------------- */
 
@@ -135,6 +166,15 @@ struct stability_report {
     size_t   mem_at_start;
     size_t   mem_at_end;
     double   elapsed_sec;
+
+    /* REQ-137: runtime resource peaks sampled via system_monitor. */
+    double   peak_cpu_pct;
+    uint64_t peak_rss_bytes;
+    uint32_t peak_thread_count;
+    uint64_t monitor_samples;
+    /* Optional fail threshold on peak RSS. 0 == disabled. */
+    uint64_t peak_rss_limit_bytes;
+    int      peak_rss_limit_exceeded;
 };
 
 static void print_report(const struct stability_report *r)
@@ -161,10 +201,26 @@ static void print_report(const struct stability_report *r)
     printf("Memory at start:     %zu bytes\n", r->mem_at_start);
     printf("Memory at end:       %zu bytes\n", r->mem_at_end);
     printf("Memory delta:        %lld bytes\n", (long long)mem_delta);
+    printf("Peak CPU:            %.1f%%\n", r->peak_cpu_pct);
+    printf("Peak RSS:            %llu bytes\n",
+           (unsigned long long)r->peak_rss_bytes);
+    printf("Peak threads:        %u\n", r->peak_thread_count);
+    printf("Monitor samples:     %llu\n",
+           (unsigned long long)r->monitor_samples);
+    if (r->peak_rss_limit_bytes > 0) {
+        printf("Peak RSS limit:      %llu bytes (%s)\n",
+               (unsigned long long)r->peak_rss_limit_bytes,
+               r->peak_rss_limit_exceeded ? "EXCEEDED" : "ok");
+    }
     printf("========================================\n");
 
+    size_t mem_abs = (mem_delta >= 0)
+                     ? (size_t)mem_delta
+                     : (size_t)(-mem_delta);
+    int mem_pass = mem_abs < (1024UL * 1024UL);
     pass = (r->integrity_failures == 0) &&
-           (mem_delta >= 0 ? (size_t)mem_delta : (size_t)(-mem_delta)) < (1024UL * 1024UL);
+           mem_pass &&
+           !r->peak_rss_limit_exceeded;
 
     if (pass) {
         printf("RESULT: PASS\n");
@@ -174,12 +230,76 @@ static void print_report(const struct stability_report *r)
             printf("  REASON: %llu integrity failure(s)\n",
                    (unsigned long long)r->integrity_failures);
         }
-        if ((mem_delta >= 0 ? (size_t)mem_delta : (size_t)(-mem_delta)) >= (1024UL * 1024UL)) {
+        if (!mem_pass) {
             printf("  REASON: memory delta %lld bytes exceeds 1 MB threshold\n",
                    (long long)mem_delta);
         }
+        if (r->peak_rss_limit_exceeded) {
+            printf("  REASON: peak RSS %llu bytes exceeds %llu-byte limit\n",
+                   (unsigned long long)r->peak_rss_bytes,
+                   (unsigned long long)r->peak_rss_limit_bytes);
+        }
     }
     printf("========================================\n");
+}
+
+/*
+ * REQ-137: optional machine-parseable summary for CI consumption.
+ * When STRESS_RESULTS_FILE is set, the same report lands there as
+ * key=value lines alongside the human-readable form; CI picks up
+ * the file as a build artifact. Keys are stable and flat so a
+ * simple grep / awk pipeline can gate on any field.
+ */
+static void write_results_file(const char *path,
+                               const struct stability_report *r,
+                               int pass)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "[WARN] cannot open results file '%s'\n", path);
+        return;
+    }
+    int64_t mem_delta = (int64_t)r->mem_at_end - (int64_t)r->mem_at_start;
+    fprintf(f, "result=%s\n", pass ? "PASS" : "FAIL");
+    fprintf(f, "duration_sec=%.1f\n", r->elapsed_sec);
+    fprintf(f, "total_ops=%llu\n",          (unsigned long long)r->total_ops);
+    fprintf(f, "read_ops=%llu\n",           (unsigned long long)r->read_ops);
+    fprintf(f, "write_ops=%llu\n",          (unsigned long long)r->write_ops);
+    fprintf(f, "integrity_failures=%llu\n", (unsigned long long)r->integrity_failures);
+    fprintf(f, "faults_injected=%llu\n",    (unsigned long long)r->faults_injected);
+    fprintf(f, "errors_handled=%llu\n",     (unsigned long long)r->errors_handled);
+    fprintf(f, "mem_delta_bytes=%lld\n",    (long long)mem_delta);
+    fprintf(f, "peak_cpu_pct=%.1f\n",       r->peak_cpu_pct);
+    fprintf(f, "peak_rss_bytes=%llu\n",     (unsigned long long)r->peak_rss_bytes);
+    fprintf(f, "peak_thread_count=%u\n",    r->peak_thread_count);
+    fprintf(f, "monitor_samples=%llu\n",    (unsigned long long)r->monitor_samples);
+    fprintf(f, "peak_rss_limit_bytes=%llu\n",
+                                            (unsigned long long)r->peak_rss_limit_bytes);
+    fprintf(f, "peak_rss_limit_exceeded=%d\n", r->peak_rss_limit_exceeded);
+    fclose(f);
+}
+
+/*
+ * Pull the latest sample from the background monitor and fold the
+ * three metrics into the report's running peaks. Called from the
+ * progress tick and once more at shutdown so the final printout
+ * and results file always reflect the highest observed values.
+ */
+static void update_peaks(struct system_monitor *m,
+                         struct stability_report *r)
+{
+    double cpu = system_monitor_cpu_pct(m);
+    u64    rss = system_monitor_mem_bytes(m);
+    u32    thr = system_monitor_thread_count(m);
+    u64    s   = system_monitor_sample_count(m);
+    if (cpu > r->peak_cpu_pct)         r->peak_cpu_pct      = cpu;
+    if (rss > r->peak_rss_bytes)       r->peak_rss_bytes    = rss;
+    if (thr > r->peak_thread_count)    r->peak_thread_count = thr;
+    r->monitor_samples = s;
+    if (r->peak_rss_limit_bytes > 0 &&
+        r->peak_rss_bytes > r->peak_rss_limit_bytes) {
+        r->peak_rss_limit_exceeded = 1;
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -271,12 +391,48 @@ int main(int argc, char *argv[])
     }
 
     /* ------------------------------------------------------------------
+     * Init system_monitor (REQ-137)
+     *
+     * Background sampler at 2 Hz over the entire run. Uses the POSIX
+     * getrusage-backed defaults; thread count reads /proc/self/task on
+     * Linux and falls back to 1 on macOS. Keeping poll_interval_ms
+     * conservative so the sampler never shows up in profile data.
+     * ------------------------------------------------------------------ */
+
+    struct system_monitor monitor;
+    struct system_monitor_config moncfg = {
+        .poll_interval_ms   = 500,
+        .get_cpu_time_ns    = system_monitor_default_cpu_time_ns,
+        .get_mem_bytes      = system_monitor_default_mem_bytes,
+        .get_thread_count   = stress_thread_count,
+        .cb_ctx             = NULL,
+    };
+    int monitor_ok = (system_monitor_init(&monitor, &moncfg) == HFSSS_OK &&
+                      system_monitor_start(&monitor)        == HFSSS_OK);
+    if (!monitor_ok) {
+        fprintf(stderr,
+            "[WARN] system_monitor unavailable — peaks will read 0\n");
+    }
+
+    /* ------------------------------------------------------------------
      * Stress loop
      * ------------------------------------------------------------------ */
 
     struct stability_report report;
     memset(&report, 0, sizeof(report));
     report.mem_at_start = mem_baseline;
+
+    /* Optional fail-on-peak-RSS ceiling. Read in MB for readability
+     * (STRESS_PEAK_RSS_LIMIT_MB=512), falling back to the raw byte
+     * form for fine-grained CI tuning. 0 / unset disables the check. */
+    const char *rss_limit_mb = getenv("STRESS_PEAK_RSS_LIMIT_MB");
+    const char *rss_limit_b  = getenv("STRESS_PEAK_RSS_LIMIT_BYTES");
+    if (rss_limit_mb && atoll(rss_limit_mb) > 0) {
+        report.peak_rss_limit_bytes =
+            (uint64_t)atoll(rss_limit_mb) * 1024ULL * 1024ULL;
+    } else if (rss_limit_b && atoll(rss_limit_b) > 0) {
+        report.peak_rss_limit_bytes = (uint64_t)atoll(rss_limit_b);
+    }
 
     uint32_t rng = (uint32_t)(time(NULL) ^ 0xDEADBEEFu) | 1u;
 
@@ -291,12 +447,18 @@ int main(int argc, char *argv[])
 
         /* Progress report */
         if ((now - last_progress) >= PROGRESS_INTERVAL_SEC) {
-            printf("  [%3lds] ops=%llu writes=%llu reads=%llu failures=%llu\n",
+            if (monitor_ok) {
+                update_peaks(&monitor, &report);
+            }
+            printf("  [%3lds] ops=%llu writes=%llu reads=%llu failures=%llu "
+                   "cpu=%.1f%% rss=%lluKiB\n",
                    (long)(now - start_time),
                    (unsigned long long)report.total_ops,
                    (unsigned long long)report.write_ops,
                    (unsigned long long)report.read_ops,
-                   (unsigned long long)report.integrity_failures);
+                   (unsigned long long)report.integrity_failures,
+                   report.peak_cpu_pct,
+                   (unsigned long long)(report.peak_rss_bytes / 1024ULL));
             last_progress = now;
         }
 
@@ -387,7 +549,27 @@ int main(int argc, char *argv[])
     report.elapsed_sec = difftime(end_time, start_time);
     report.mem_at_end  = mem_baseline; /* stable: no heap growth beyond init */
 
+    /* Final peak pull before the monitor is torn down. */
+    if (monitor_ok) {
+        update_peaks(&monitor, &report);
+        system_monitor_stop(&monitor);
+        system_monitor_cleanup(&monitor);
+    }
+
+    int64_t mem_delta = (int64_t)report.mem_at_end - (int64_t)report.mem_at_start;
+    size_t  mem_abs   = (mem_delta >= 0)
+                        ? (size_t)mem_delta
+                        : (size_t)(-mem_delta);
+    int pass = (report.integrity_failures == 0) &&
+               (mem_abs < (1024UL * 1024UL)) &&
+               !report.peak_rss_limit_exceeded;
+
     print_report(&report);
+
+    const char *results_path = getenv("STRESS_RESULTS_FILE");
+    if (results_path && *results_path) {
+        write_results_file(results_path, &report, pass);
+    }
 
     /* ------------------------------------------------------------------
      * Cleanup
@@ -400,5 +582,5 @@ int main(int argc, char *argv[])
     free(rbuf);
     free(spare);
 
-    return (report.integrity_failures == 0) ? 0 : 1;
+    return pass ? 0 : 1;
 }

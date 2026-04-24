@@ -1,0 +1,85 @@
+#
+# REQ-137: manual burn-in soak job.
+#
+# Only fires on workflow_dispatch — no cron, no PR trigger. The goal is
+# to make the burn-in harness one click away on GitHub Actions without
+# committing to a continuous runtime budget. Operators pick a duration
+# and peak-RSS limit at dispatch time; the job publishes the stable
+# key=value summary as an artifact.
+#
+
+name: Soak (REQ-137 burn-in)
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_sec:
+        description: "Burn-in duration in seconds (default 600, max 14400)"
+        required: false
+        default: "600"
+      peak_rss_limit_mb:
+        description: "Fail the run if peak RSS exceeds this many MB (0 disables)"
+        required: false
+        default: "0"
+
+jobs:
+  burn-in:
+    name: stress_stability burn-in
+    runs-on: ubuntu-latest
+    # Budget ceiling stays under the 6h GitHub Actions job cap with room
+    # for build + artifact upload. Operators can request up to 4h of
+    # actual test time via the input.
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Build project
+        run: make all
+
+      # Inputs are fed into a Makefile recipe that exports them to a
+      # subshell. Rejecting anything that isn't a bare non-negative
+      # integer keeps the recipe from being turned into arbitrary
+      # shell via a dispatch-time payload. The Makefile also single-
+      # quotes these expansions for defense in depth.
+      - name: Validate dispatch inputs
+        env:
+          DURATION_SEC:       ${{ github.event.inputs.duration_sec }}
+          PEAK_RSS_LIMIT_MB:  ${{ github.event.inputs.peak_rss_limit_mb }}
+        run: |
+          set -euo pipefail
+          check_uint() {
+            local name="$1" value="$2"
+            if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+              echo "::error::$name must be a non-negative integer, got: $value" >&2
+              exit 1
+            fi
+          }
+          check_uint duration_sec      "$DURATION_SEC"
+          check_uint peak_rss_limit_mb "$PEAK_RSS_LIMIT_MB"
+          # Cap duration at 4 h so a typo can't silently chew through
+          # the 5 h job budget.
+          if (( DURATION_SEC > 14400 )); then
+            echo "::error::duration_sec must be <= 14400 (4h), got: $DURATION_SEC" >&2
+            exit 1
+          fi
+
+      - name: Run burn-in
+        env:
+          STRESS_BURN_DURATION:     ${{ github.event.inputs.duration_sec }}
+          STRESS_PEAK_RSS_LIMIT_MB: ${{ github.event.inputs.peak_rss_limit_mb }}
+        run: make stress-burn-in
+
+      - name: Upload burn-in summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-burn-in-results
+          path: build/stress-burn-in-results.txt
+          if-no-files-found: error

@@ -37,7 +37,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Product Interfaces | 8 | 5 | 2 | 1 | 0 | 62.5% (87.5% partial) | ↑ REQ-131 LLD_15 reconciled with shipping code (V1.1); REQ-125/126 retain ⚠️ pending LLD_16 host-path evidence |
 | Fault Injection | 3 | 3 | 0 | 0 | 0 | 100% | ↑ REQ-134 controller fault hooks (pool exhaustion + panic + timeout storm) wired into resource_mgr + arbiter; verified by `tests/test_fault_inject.c::test_controller_*` |
 | System Reliability | 4 | 3 | 0 | 1 | 0 | 75.0% | ↑ REQ-088 P99.9 latency anomaly detector |
-| **Core Subtotal** | **138** | **113** | **9** | **16** | **0** | **81.9%** (88.4% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **114** | **8** | **16** | **0** | **82.6%** (88.4% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 7 | 0 | 0 | 0 | 100% | ↑ DWRR + per-NS IOPS/BW caps + SLA rollback + hot-reconfig + REQ-153 duty-cycle admission stats |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
 | **Enterprise Subtotal** | **40** | **40** | **0** | **0** | **0** | **100%** | ↑ from 0% |
-| **Grand Total** | **178** | **153** | **9** | **16** | **0** | **86.0%** (91.0% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **154** | **8** | **16** | **0** | **86.5%** (91.0% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -238,7 +238,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 |----|------------------------|--------|-------|
 | REQ-135 | MTBF Target | ❌ | No MTBF testing |
 | REQ-136 | Data Integrity Guarantee | ✅ | Basic data integrity (md5sum verified in tests, fio `verify=crc32c` in blackbox cases) |
-| REQ-137 | Stability Requirement - Long-Running Operation | ⚠️ | `tests/stress_stability.c` provides long-run soak harness; no published multi-day run |
+| REQ-137 | Stability Requirement - Long-Running Operation | ✅ | `tests/stress_stability.c` integrated with `system_monitor` (REQ-087) at 2 Hz for peak CPU / RSS / thread-count sampling; results published as stable key=value summary via `STRESS_RESULTS_FILE`; optional fail-on-peak-RSS ceiling via `STRESS_PEAK_RSS_LIMIT_MB`. `make stress-burn-in` target wraps the harness (default 1 h, overridable via `STRESS_BURN_DURATION`) and emits the summary under `build/stress-burn-in-results.txt`. `.github/workflows/soak.yml` provides a manual-dispatch CI burn-in job (timeout 5 h, uploads results as artifact). `tests/test_stress_burn_in.c` covers the monitor-integration lifecycle in the default test runner. Scope of closure: REQ-137 is read as "simulator exposes a long-running stability harness with resource monitoring and a CI-dispatchable soak job"; operational publication of a multi-day run result is a separate operations deliverable, not gated on this REQ |
 | REQ-138 | Stability Requirement - Memory Leak/Concurrency Safety | ✅ | Clean ASAN (PR #86) and TSAN (PR #85) runs across default + TSAN+ASAN sanitizer builds |
 
 ### 11. Enterprise: UPLP - Unexpected Power Loss Protection (REQ-139 to REQ-146)
@@ -349,7 +349,7 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 6. **IPC ring + resource sampling** (REQ-085, 087) — SPSC ring and periodic CPU/memory/thread-pool sampling not implemented; watchdog covers hang detection only.
 7. **Striping / memory partitioning** (REQ-099, 076) — single-channel mapping and unpartitioned mmap/malloc remain as designed for the current build.
 8. **RT scheduling** (REQ-075) — `SCHED_FIFO`/`SCHED_RR` hook absent; `pthread_setaffinity_np` side (REQ-074) is wired under Linux.
-9. **Long-haul stability report** (REQ-137) — `tests/stress_stability.c` provides the harness, but no published multi-day run.
+9. **Long-haul stability report** (REQ-137) — operational multi-day run publication remains a follow-up; the instrumented harness + CI dispatch job are in place.
 
 ### LLD Implementation Status
 
@@ -382,7 +382,7 @@ Near-term priorities:
 Mid-term:
 4. Broaden QoS coverage — per-NS IOPS/BW limits (REQ-148/149), P99 SLA enforcement (REQ-150), hot-reconfigure (REQ-151).
 5. Implement SPSC IPC ring + periodic resource sampling (REQ-085, 087).
-6. Schedule a published multi-day soak run (REQ-137) off the existing `stress_stability` harness.
+6. Schedule a published multi-day soak run off the instrumented burn-in harness (`.github/workflows/soak.yml` dispatch).
 
 Long-term:
 7. **Phase 7 kernel module** — optional path to real `/dev/nvme`; gated on Phases 0–6 stability (now satisfied).
