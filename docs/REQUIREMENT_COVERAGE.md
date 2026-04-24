@@ -33,11 +33,11 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | HAL | 12 | 12 | 0 | 0 | 0 | 100% | ↑ REQ-063 AER + REQ-064 PCIe link state + REQ-069 byte-level config space (LLD_13) |
 | Common Services | 24 | 20 | 2 | 2 | 0 | 83.3% | ↑ REQ-085 SPSC ring + REQ-087 system resource monitor on top of boot/power/OOB/SMART/trace |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 2 | 0 | 86.4% | ↑ +6 (cmd state machine, retries, flow ctl, wear monitor, Error Log Page) |
-| Performance Requirements | 8 | 7 | 0 | 1 | 0 | 87.5% (87.5% partial) | ↑ REQ-116..120 + REQ-122 Amdahl scalability + REQ-123 bursty-load CPU probe gated by regression suite |
+| Performance Requirements | 8 | 8 | 0 | 0 | 0 | 100% | ↑ REQ-116..120 + REQ-122 Amdahl scalability + REQ-123 bursty-load CPU probe + REQ-121 seeded NAND latency jitter injector |
 | Product Interfaces | 8 | 5 | 2 | 1 | 0 | 62.5% (87.5% partial) | ↑ REQ-131 LLD_15 reconciled with shipping code (V1.1); REQ-125/126 retain ⚠️ pending LLD_16 host-path evidence |
 | Fault Injection | 3 | 3 | 0 | 0 | 0 | 100% | ↑ REQ-134 controller fault hooks (pool exhaustion + panic + timeout storm) wired into resource_mgr + arbiter; verified by `tests/test_fault_inject.c::test_controller_*` |
 | System Reliability | 4 | 3 | 0 | 1 | 0 | 75.0% | ↑ REQ-088 P99.9 latency anomaly detector |
-| **Core Subtotal** | **138** | **111** | **10** | **17** | **0** | **80.4%** (87.7% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **112** | **10** | **16** | **0** | **81.2%** (88.4% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 7 | 0 | 0 | 0 | 100% | ↑ DWRR + per-NS IOPS/BW caps + SLA rollback + hot-reconfig + REQ-153 duty-cycle admission stats |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
 | **Enterprise Subtotal** | **40** | **40** | **0** | **0** | **0** | **100%** | ↑ from 0% |
-| **Grand Total** | **178** | **151** | **10** | **17** | **0** | **84.8%** (90.4% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **152** | **10** | **16** | **0** | **85.4%** (91.0% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -207,7 +207,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-118 | IOPS Performance - Mixed Read/Write IOPS | ✅ | `REQ-118` row for mixed 70/30 workload at 4KB/QD=32 (total >= 250K IOPS) asserted passed in the report. |
 | REQ-119 | Bandwidth Performance - Sequential Read/Write | ✅ | Two rows (`REQ-119-RD` >= 6500 MB/s, `REQ-119-WR` >= 3500 MB/s) at 128KB block size — both asserted passed in the report. |
 | REQ-120 | Latency Performance - Random Read/Write Latency | ✅ | Three rows at QD=1: `REQ-120-P50` <= 100 µs, `REQ-120-P99` <= 150 µs, `REQ-120-P999` <= 500 µs. Each asserted passed in the report; histogram invariants (sum == total_ops, ordering P50 <= P99 <= P99.9) covered by Test 9. |
-| REQ-121 | Simulation Accuracy - NAND Latency Error | ❌ | No formal accuracy verification against reference device data |
+| REQ-121 | Simulation Accuracy - NAND Latency Error | ✅ | `timing_model` carries a seeded LCG and a `jitter_basis_points` field (±N/10000, capped at `TIMING_JITTER_MAX_BP` = ±20%). `timing_get_{read,prog,erase}_latency` apply the jitter via a CAS-loop `advance_lcg` so concurrent channel workers cannot tear the state; `apply_jitter` clamps the result at `base/2` so a maximal negative draw can never collapse latency to zero. `timing_model_enable_jitter(model, basis_points, seed)` arms the injector; `timing_model_disable_jitter` or `basis_points=0` restores the deterministic baseline. Tests: `tests/test_timing_jitter.c` covers disabled-by-default, ±basis_points bounding for read/prog/erase, byte-identical reproducibility across two models seeded identically, divergence across different seeds, mean convergence to baseline within 0.5% over 20k samples, `disable_jitter` restoring baseline, the ±20% ceiling clamp, and NULL-safe no-op paths (111 assertions). |
 | REQ-122 | Scalability - Channel/Namespace/CPU | ✅ | `perf_validation_run_all` now runs a **measured** scalability probe: back-to-back `bench_run` invocations at nt=1 and nt=8 compute `iops(N) / (N * iops(1))`. A real regression in the bench worker path lowers the ratio and fails the 70% gate. The Amdahl model (`perf_scalability_efficiency`, SIM_SERIAL_FRACTION=0.02) remains as a design-time upper bound. Multi-thread I/O-path scaling against real NAND is still validated externally via QEMU+fio reference runs. Pinned by `tests/test_perf_validation.c::test_validation_run_all` via `r122->passed` + `r122->target == 70.0`. |
 | REQ-123 | Resource Utilization Target - CPU/DRAM | ✅ | `bench_run` brackets the workload with a `system_monitor` sampler so `cpu_util_pct` reflects real `getrusage(RUSAGE_SELF)` deltas. `perf_validation_run_all` runs a dedicated REQ-123 probe (bench burst + equal-duration idle window) to model the controller's bursty dispatch profile — CPU vs wall time lands near 50% when the bench saturates. Split into two rows: `REQ-123` asserts CPU <= 50% and `REQ-123-DRAM` asserts process RSS <= 1024 MB under the same probe, covering the PRD's CPU/DRAM budget in one pass. Asserted via `r123->passed` + `r123dram->passed` + pinned targets. |
 

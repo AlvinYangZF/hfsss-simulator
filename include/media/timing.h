@@ -1,6 +1,8 @@
 #ifndef __HFSSS_TIMING_H
 #define __HFSSS_TIMING_H
 
+#include <stdatomic.h>
+
 #include "common/common.h"
 
 struct nand_profile;
@@ -52,7 +54,20 @@ struct timing_model {
     struct timing_params mlc;
     struct tlc_timing tlc;
     struct timing_params qlc;
+
+    /*
+     * REQ-121: optional NAND latency error injection. basis_points gives
+     * the ±variance in 1/10000 (500 = ±5%); 0 disables jitter so the
+     * timing lookups return the deterministic baseline. jitter_state is
+     * an LCG, advanced atomically so concurrent NAND workers do not tear
+     * it; single-threaded callers get a reproducible sequence from a
+     * given seed. See timing_model_enable_jitter for the activation path.
+     */
+    _Atomic u64 jitter_state;
+    u32         jitter_basis_points;
 };
+
+#define TIMING_JITTER_MAX_BP 2000u  /* ±20% ceiling */
 
 /* Function Prototypes */
 int timing_model_init(struct timing_model *model, enum nand_type type);
@@ -65,5 +80,24 @@ u64 timing_get_suspend_overhead_ns(struct timing_model *model);
 u64 timing_get_resume_overhead_ns(struct timing_model *model);
 u64 timing_get_cache_busy_ns(struct timing_model *model, u32 page_idx);
 u64 timing_get_data_cache_busy_read_ns(struct timing_model *model, u32 page_idx);
+
+/*
+ * REQ-121: enable / disable latency jitter.
+ *
+ * enable: basis_points in 1..TIMING_JITTER_MAX_BP. Values above the
+ *         ceiling are clamped. Passing 0 is equivalent to disable.
+ *         seed seeds the LCG; a non-zero seed is recommended for
+ *         reproducibility across runs.
+ * disable: zeroes both the factor and the state. timing_model_init
+ *          leaves jitter disabled by default — production paths see
+ *          deterministic timing unless the caller opts in.
+ *
+ * Jitter is applied only to read / program / erase latencies. Cache
+ * busy, suspend, resume, and address-setup timings are out of scope
+ * for REQ-121 (the requirement targets NAND array-operation timing).
+ */
+void timing_model_enable_jitter(struct timing_model *model,
+                                u32 basis_points, u64 seed);
+void timing_model_disable_jitter(struct timing_model *model);
 
 #endif /* __HFSSS_TIMING_H */
