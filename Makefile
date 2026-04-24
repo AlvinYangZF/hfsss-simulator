@@ -109,6 +109,7 @@ TEST_COMMON = $(BIN_DIR)/test_common
 TEST_MEDIA = $(BIN_DIR)/test_media
 TEST_TIMING_JITTER = $(BIN_DIR)/test_timing_jitter
 TEST_RETENTION = $(BIN_DIR)/test_retention
+TEST_STRESS_BURN_IN = $(BIN_DIR)/test_stress_burn_in
 TEST_HAL = $(BIN_DIR)/test_hal
 TEST_FTL = $(BIN_DIR)/test_ftl
 TEST_CTRL = $(BIN_DIR)/test_controller
@@ -235,16 +236,18 @@ COVERAGE_UT_BINS = $(COVERAGE_BIN_DIR)/test_common $(COVERAGE_BIN_DIR)/test_medi
 	$(COVERAGE_BIN_DIR)/test_ftl_profile \
 	$(COVERAGE_BIN_DIR)/test_sssim_profile \
 	$(COVERAGE_BIN_DIR)/test_trace \
-	$(COVERAGE_BIN_DIR)/test_retention
+	$(COVERAGE_BIN_DIR)/test_retention \
+	$(COVERAGE_BIN_DIR)/test_timing_jitter \
+	$(COVERAGE_BIN_DIR)/test_stress_burn_in
 COVERAGE_E2E_BINS = $(COVERAGE_BIN_DIR)/hfsss-nbd-server
 COVERAGE_BINS = $(COVERAGE_UT_BINS) $(COVERAGE_E2E_BINS)
 
 # Targets
-.PHONY: all clean directories test systest stress-long help \
+.PHONY: all clean directories test systest stress-long stress-burn-in help \
 	coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage-frontend coverage-frontend-update coverage coverage-selftest \
 	qemu-blackbox qemu-blackbox-list qemu-blackbox-ci qemu-blackbox-soak pre-checkin
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_TIMING_JITTER) $(TEST_RETENTION) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_SHMEM_IF) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_TRACE) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT) $(TEST_MSGQ) $(TEST_NVME_ADMIN) $(TEST_NVME_IO) $(TEST_CMD_INTEG_BASIC) $(TEST_CMD_INTEG_MID) $(TEST_CMD_INTEG_HEAVY) $(TEST_PROFILE_MATRIX) $(TEST_MP_CONCURRENCY) $(TEST_CHANNEL_WORKER) $(SYSTEST_NVME_CLI) $(SYSTEST_FIO_COMPAT) $(SYSTEST_PHASE7_INT) $(TEST_RESET_ABORT_RACE) $(TEST_FTL_PROFILE) $(TEST_SSSIM_PROFILE) $(FTL_MFC_REPRO)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_TIMING_JITTER) $(TEST_RETENTION) $(TEST_STRESS_BURN_IN) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_SHMEM_IF) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_TRACE) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT) $(TEST_MSGQ) $(TEST_NVME_ADMIN) $(TEST_NVME_IO) $(TEST_CMD_INTEG_BASIC) $(TEST_CMD_INTEG_MID) $(TEST_CMD_INTEG_HEAVY) $(TEST_PROFILE_MATRIX) $(TEST_MP_CONCURRENCY) $(TEST_CHANNEL_WORKER) $(SYSTEST_NVME_CLI) $(SYSTEST_FIO_COMPAT) $(SYSTEST_PHASE7_INT) $(TEST_RESET_ABORT_RACE) $(TEST_FTL_PROFILE) $(TEST_SSSIM_PROFILE) $(FTL_MFC_REPRO)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -350,6 +353,10 @@ $(TEST_TIMING_JITTER): $(TEST_DIR)/test_timing_jitter.c $(LIBHFSSS_MEDIA) $(LIBH
 $(TEST_RETENTION): $(TEST_DIR)/test_retention.c $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-media -lhfsss-common $(LDFLAGS)
+
+$(TEST_STRESS_BURN_IN): $(TEST_DIR)/test_stress_burn_in.c $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-common $(LDFLAGS)
 
 $(TEST_CMD_INTEG_BASIC): $(TEST_DIR)/test_cmd_integration_basic.c $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
@@ -642,6 +649,20 @@ stress-long: all
 	@echo "Running stability stress test (duration=$(or $(STRESS_DURATION),60)s)..."
 	@STRESS_DURATION=$(or $(STRESS_DURATION),60) $(STRESS_STABILITY)
 
+# REQ-137: extended burn-in run with system_monitor sampling + CI-parseable
+# results artifact. Defaults to 1 hour; override with
+#   make stress-burn-in STRESS_BURN_DURATION=7200
+# Optional peak-RSS ceiling in MB trips a FAIL exit when exceeded.
+STRESS_BURN_DURATION ?= 3600
+STRESS_BURN_RESULTS  ?= $(BUILD_DIR)/stress-burn-in-results.txt
+stress-burn-in: all
+	@echo "Running stability burn-in (duration=$(STRESS_BURN_DURATION)s)..."
+	@echo "Results summary will be written to $(STRESS_BURN_RESULTS)"
+	@STRESS_DURATION=$(STRESS_BURN_DURATION) \
+	 STRESS_RESULTS_FILE=$(STRESS_BURN_RESULTS) \
+	 STRESS_PEAK_RSS_LIMIT_MB=$(STRESS_PEAK_RSS_LIMIT_MB) \
+	 $(STRESS_STABILITY)
+
 # System-level tests (Tier 1)
 .PHONY: systest
 systest: directories $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR) $(SYSTEST_NVME_CLI) $(SYSTEST_FIO_COMPAT)
@@ -680,6 +701,8 @@ test: all
 	@$(TEST_TIMING_JITTER)
 	@echo ""
 	@$(TEST_RETENTION)
+	@echo ""
+	@$(TEST_STRESS_BURN_IN)
 	@echo ""
 	@$(TEST_CMD_INTEG_BASIC)
 	@echo ""
@@ -787,6 +810,7 @@ help:
 	@echo "  test               - Run unit tests"
 	@echo "  systest            - Run system-level tests"
 	@echo "  stress-long        - Run extended stability stress test"
+	@echo "  stress-burn-in     - Run 1h burn-in (REQ-137) with system_monitor sampling"
 	@echo "  clean              - Clean build/ directory"
 	@echo "  help               - Show this help message"
 	@echo ""
