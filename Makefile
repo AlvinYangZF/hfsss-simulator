@@ -658,9 +658,9 @@ STRESS_BURN_RESULTS  ?= $(BUILD_DIR)/stress-burn-in-results.txt
 stress-burn-in: all
 	@echo "Running stability burn-in (duration=$(STRESS_BURN_DURATION)s)..."
 	@echo "Results summary will be written to $(STRESS_BURN_RESULTS)"
-	@STRESS_DURATION=$(STRESS_BURN_DURATION) \
-	 STRESS_RESULTS_FILE=$(STRESS_BURN_RESULTS) \
-	 STRESS_PEAK_RSS_LIMIT_MB=$(STRESS_PEAK_RSS_LIMIT_MB) \
+	@STRESS_DURATION='$(STRESS_BURN_DURATION)' \
+	 STRESS_RESULTS_FILE='$(STRESS_BURN_RESULTS)' \
+	 STRESS_PEAK_RSS_LIMIT_MB='$(STRESS_PEAK_RSS_LIMIT_MB)' \
 	 $(STRESS_STABILITY)
 
 # System-level tests (Tier 1)

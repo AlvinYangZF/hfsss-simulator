@@ -39,7 +39,13 @@ static u32 one_thread_cb(void *ctx) { (void)ctx; return 1u; }
  * has time to collect two or three data points at 100 Hz. Using a
  * clock_gettime loop instead of usleep avoids any weirdness where
  * a sleeping thread under-reports CPU usage and confuses the
- * fixed-rate samples. */
+ * fixed-rate samples.
+ *
+ * The elapsed computation is in signed ns to avoid an u64 underflow
+ * when the loop straddles a 1-second boundary with now.tv_nsec <
+ * start.tv_nsec — without the signed intermediate the u64 subtract
+ * wraps to ~2^64 and the loop exits on the next iteration, making
+ * the caller's "samples >= 2" assertion flaky under load. */
 static void burn_cpu_ms(u32 ms)
 {
     struct timespec start, now;
@@ -47,10 +53,11 @@ static void burn_cpu_ms(u32 ms)
     volatile u64 acc = 0;
     for (;;) {
         clock_gettime(CLOCK_MONOTONIC, &now);
-        u64 elapsed_ms =
-            ((u64)now.tv_sec  - (u64)start.tv_sec)  * 1000ULL +
-            ((u64)now.tv_nsec - (u64)start.tv_nsec) / 1000000ULL;
-        if (elapsed_ms >= ms) break;
+        int64_t elapsed_ns =
+            ((int64_t)now.tv_sec  - (int64_t)start.tv_sec)  * 1000000000LL +
+            ((int64_t)now.tv_nsec - (int64_t)start.tv_nsec);
+        if (elapsed_ns < 0) elapsed_ns = 0;  /* monotonic but belt+suspenders */
+        if ((u64)(elapsed_ns / 1000000LL) >= (u64)ms) break;
         for (int i = 0; i < 10000; i++) acc += (u64)i;
     }
     (void)acc;

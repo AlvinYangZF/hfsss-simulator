@@ -43,6 +43,33 @@ jobs:
       - name: Build project
         run: make all
 
+      # Inputs are fed into a Makefile recipe that exports them to a
+      # subshell. Rejecting anything that isn't a bare non-negative
+      # integer keeps the recipe from being turned into arbitrary
+      # shell via a dispatch-time payload. The Makefile also single-
+      # quotes these expansions for defense in depth.
+      - name: Validate dispatch inputs
+        env:
+          DURATION_SEC:       ${{ github.event.inputs.duration_sec }}
+          PEAK_RSS_LIMIT_MB:  ${{ github.event.inputs.peak_rss_limit_mb }}
+        run: |
+          set -euo pipefail
+          check_uint() {
+            local name="$1" value="$2"
+            if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+              echo "::error::$name must be a non-negative integer, got: $value" >&2
+              exit 1
+            fi
+          }
+          check_uint duration_sec      "$DURATION_SEC"
+          check_uint peak_rss_limit_mb "$PEAK_RSS_LIMIT_MB"
+          # Cap duration at 4 h so a typo can't silently chew through
+          # the 5 h job budget.
+          if (( DURATION_SEC > 14400 )); then
+            echo "::error::duration_sec must be <= 14400 (4h), got: $DURATION_SEC" >&2
+            exit 1
+          fi
+
       - name: Run burn-in
         env:
           STRESS_BURN_DURATION:     ${{ github.event.inputs.duration_sec }}
