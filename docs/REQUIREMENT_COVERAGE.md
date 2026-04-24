@@ -29,7 +29,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 |--------|------:|---:|---:|---:|---:|-----------:|--------|
 | PCIe/NVMe Device Emulation | 22 | 13 | 1 | 8 | 0 | 59.1% | ↑ REQ-002 PCIe cap linked-list walk flipped after REQ-069 config space landed |
 | Controller Thread | 15 | 12 | 1 | 2 | 0 | 80.0% | -- |
-| Media Threads | 20 | 17 | 3 | 0 | 0 | 85.0% | ↑ REQ-042 multi-plane concurrency + REQ-044 per-channel worker runtime; REQ-045 scaffolding landed (Partial — full lock-free CQ outstanding) |
+| Media Threads | 20 | 18 | 2 | 0 | 0 | 90.0% | ↑ REQ-042 multi-plane concurrency + REQ-044 per-channel worker runtime; REQ-045 scaffolding landed (Partial — full lock-free CQ outstanding); REQ-048 retention-age-driven RBER validated via `tests/test_retention.c` unit + integration |
 | HAL | 12 | 12 | 0 | 0 | 0 | 100% | ↑ REQ-063 AER + REQ-064 PCIe link state + REQ-069 byte-level config space (LLD_13) |
 | Common Services | 24 | 20 | 2 | 2 | 0 | 83.3% | ↑ REQ-085 SPSC ring + REQ-087 system resource monitor on top of boot/power/OOB/SMART/trace |
 | Algorithm Task Layer (FTL) | 22 | 19 | 1 | 2 | 0 | 86.4% | ↑ +6 (cmd state machine, retries, flow ctl, wear monitor, Error Log Page) |
@@ -37,7 +37,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Product Interfaces | 8 | 5 | 2 | 1 | 0 | 62.5% (87.5% partial) | ↑ REQ-131 LLD_15 reconciled with shipping code (V1.1); REQ-125/126 retain ⚠️ pending LLD_16 host-path evidence |
 | Fault Injection | 3 | 3 | 0 | 0 | 0 | 100% | ↑ REQ-134 controller fault hooks (pool exhaustion + panic + timeout storm) wired into resource_mgr + arbiter; verified by `tests/test_fault_inject.c::test_controller_*` |
 | System Reliability | 4 | 3 | 0 | 1 | 0 | 75.0% | ↑ REQ-088 P99.9 latency anomaly detector |
-| **Core Subtotal** | **138** | **112** | **10** | **16** | **0** | **81.2%** (88.4% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **113** | **9** | **16** | **0** | **81.9%** (88.4% partial) | ↑ from 50.0% |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 7 | 0 | 0 | 0 | 100% | ↑ DWRR + per-NS IOPS/BW caps + SLA rollback + hot-reconfig + REQ-153 duty-cycle admission stats |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
 | **Enterprise Subtotal** | **40** | **40** | **0** | **0** | **0** | **100%** | ↑ from 0% |
-| **Grand Total** | **178** | **152** | **10** | **16** | **0** | **85.4%** (91.0% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **153** | **9** | **16** | **0** | **86.0%** (91.0% partial) | ↑ from 38.8% |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -114,7 +114,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-045 | NAND Media Command Execution Engine - Completion Notification | ⚠️ | Async scaffolding landed via `channel_worker`: callback + atomic `done` flag + `channel_cmd_wait` poll barrier. Lock-free completion queue with per-command timestamp / actual latency / batch drain (the PRD wording) is a follow-up |
 | REQ-046 | NAND Reliability Modeling - P/E Cycle Degradation Model | ✅ | Reliability model in `reliability.h/c` |
 | REQ-047 | NAND Reliability Modeling - Read Disturb Model | ✅ | Read disturb implemented |
-| REQ-048 | NAND Reliability Modeling - Data Retention Model | ⚠️ | Basic model, no time acceleration |
+| REQ-048 | NAND Reliability Modeling - Data Retention Model | ✅ | Retention term already consumed in `reliability_calculate_bit_errors` (`src/media/reliability.c`) via `retention_ns` → days × `data_retention_rate`; `tests/test_retention.c` exercises 0..1000y via unit sweeps (monotone growth, QLC/TLC/MLC/SLC ordering, 10y TLC magnitude ≈ 478 bit errors matches model, saturation cap at page_bits/10) and one integration case (`media_nand_program` → rewind `nand_page.program_ts` by 10y → `media_nand_read` reports materially elevated bit errors). Scope of closure: REQ-048 is read as "the simulator exposes a time-dependent retention RBER model"; closure covers the mechanism + validation harness, not calibration against any specific vendor device. Follow-up (not gated on this REQ): surface aggregated retention age / retention-driven bit errors via SMART, and wire reference-device curves into `nand_profile.reliability_params` |
 | REQ-049 | NAND Reliability Modeling - Bad Block Management | ✅ | BBT in `bbt.h/c` |
 | REQ-050 | NAND Data Storage - DRAM Storage Layout | ✅ | DRAM storage in `nand.c` |
 | REQ-051 | NAND Data Storage - Persistence Strategy | ✅ | Incremental checkpointing implemented (Phase 4 partial) |
@@ -375,7 +375,7 @@ The PRD and HLD/LLD documents describe a Linux **kernel module** (`hfsss_nvme.ko
 Current position: **core + enterprise features largely landed; polish and gap-closure in progress.**
 
 Near-term priorities:
-1. Core gaps: REQ-010 PRP/SGL, REQ-025 dispatch FSM, REQ-096 Format NVM OP%, REQ-048 data retention time acceleration, REQ-074 task binding.
+1. Core gaps: REQ-010 PRP/SGL, REQ-025 dispatch FSM, REQ-096 Format NVM OP%, REQ-074 task binding.
 2. Wire **real producers** for `system_monitor` (REQ-087) and the QoS hot-reconfig entry point into the NBD / vhost / exporter mains — hooks exist, callers still need to attach real sensors + config surfaces.
 3. Retarget FTL / GC on top of the new `channel_worker` runtime to realise the async NAND-completion benefit in the hot path (scaffold and tests already in place).
 
