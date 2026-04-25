@@ -31,6 +31,12 @@ static int dispatch_one(struct channel_worker *w, struct channel_cmd *cmd)
 
 static void complete_one(struct channel_worker *w, struct channel_cmd *cmd)
 {
+    /* REQ-045: stamp the completion timestamp BEFORE publishing done.
+     * The release on done carries this store, so any reader that
+     * observes done == 1 with acquire ordering also sees the final
+     * complete_ts_ns. */
+    cmd->complete_ts_ns = get_time_ns();
+
     /* Publish completion BEFORE invoking the user callback. This lets
      * a callback safely reclaim the command (including cb_ctx) without
      * racing the worker's subsequent publication of done. Waiters and
@@ -145,6 +151,16 @@ int channel_worker_submit(struct channel_worker *w, struct channel_cmd *cmd)
         return HFSSS_ERR_INVAL;
     }
 
+    /* REQ-045: three-path mutual exclusion. CQ-enabled worker refuses
+     * cmds that carry an on_complete callback — the CQ is the
+     * delivery channel in that mode and a callback would race with
+     * a CQ consumer that pops the same cmd. Reject before any
+     * mutation so the caller can flip the cmd back to a non-CQ worker
+     * if needed. */
+    if (w->cq_enabled && cmd->on_complete != NULL) {
+        return HFSSS_ERR_INVAL;
+    }
+
     /* Reject submits once stop has been signalled. The acquire load
      * pairs with the release store in channel_worker_stop; together
      * they close the window in which a late submit could land in the
@@ -158,6 +174,15 @@ int channel_worker_submit(struct channel_worker *w, struct channel_cmd *cmd)
     atomic_store_explicit(&cmd->done, 0, memory_order_relaxed);
     cmd->status = 0;
 
+    /* REQ-045: producer-side timestamp + owner back-pointer set BEFORE
+     * the ring put. The worker thread does an acquire load on the ring
+     * tail when it dequeues; that pairs with the ring's release on
+     * head and carries these stores. The owner pointer is read by
+     * channel_cmd_wait for the CQ-mode wait rejection check. */
+    cmd->submit_ts_ns  = get_time_ns();
+    cmd->complete_ts_ns = 0;
+    cmd->owner = w;
+
     int rc = spsc_ring_tryput(&w->ring, &cmd);
     if (rc != HFSSS_OK) {
         return HFSSS_ERR_BUSY;
@@ -169,6 +194,15 @@ int channel_worker_submit(struct channel_worker *w, struct channel_cmd *cmd)
 int channel_cmd_wait(struct channel_cmd *cmd)
 {
     if (!cmd) {
+        return HFSSS_ERR_INVAL;
+    }
+    /* REQ-045: refuse the legacy poll path when the cmd's owner is in
+     * CQ mode. Reading owner is safe here because submit set it before
+     * the ring put and we are by contract the only legitimate waiter.
+     * The cmd still completes via the CQ — this only refuses the
+     * caller's attempt to reach for the wrong reaping API. */
+    struct channel_worker *owner = cmd->owner;
+    if (owner != NULL && owner->cq_enabled) {
         return HFSSS_ERR_INVAL;
     }
     while (atomic_load_explicit(&cmd->done, memory_order_acquire) == 0) {
