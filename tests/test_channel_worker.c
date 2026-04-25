@@ -435,8 +435,10 @@ static int test_cq_basic_drain(void)
                     "CQ pops in submit order (FIFO)");
         TEST_ASSERT(cmds[i].submit_ts_ns > 0,
                     "submit_ts_ns populated");
-        TEST_ASSERT(cmds[i].complete_ts_ns >= cmds[i].submit_ts_ns,
-                    "complete_ts_ns >= submit_ts_ns");
+        TEST_ASSERT(cmds[i].complete_ts_ns > 0,
+                    "complete_ts_ns populated");
+        TEST_ASSERT(cmds[i].complete_ts_ns > cmds[i].submit_ts_ns,
+                    "complete_ts_ns > submit_ts_ns (strict)");
         TEST_ASSERT(atomic_load(&cmds[i].done) == 1,
                     "done flag set");
     }
@@ -453,10 +455,11 @@ static int test_cq_empty_drain(void)
 
     struct media_config cfg = make_cfg();
     struct media_ctx media;
-    media_init(&media, &cfg);
+    int rc = media_init(&media, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
     struct channel_worker w;
-    int rc = channel_worker_init(&w, 0, &media, 16, 8);
+    rc = channel_worker_init(&w, 0, &media, 16, 8);
     TEST_ASSERT(rc == HFSSS_OK, "init OK");
 
     struct channel_cmd *out[4] = {0};
@@ -477,11 +480,12 @@ static int test_cq_batching_under_slow_consumer(void)
 
     struct media_config cfg = make_cfg();
     struct media_ctx media;
-    media_init(&media, &cfg);
+    int rc = media_init(&media, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
     struct channel_worker w;
     /* CQ capacity 4 forces back-pressure since we'll submit 16. */
-    int rc = channel_worker_init(&w, 0, &media, 16, 4);
+    rc = channel_worker_init(&w, 0, &media, 16, 4);
     TEST_ASSERT(rc == HFSSS_OK, "init cq_capacity=4 OK");
 
     enum { N = 16 };
@@ -516,12 +520,13 @@ static int test_cq_batching_under_slow_consumer(void)
     int bad_pair = 0;
     for (int i = 0; i < N; i++) {
         if (cmds[i].submit_ts_ns == 0 ||
-            cmds[i].complete_ts_ns < cmds[i].submit_ts_ns) {
+            cmds[i].complete_ts_ns == 0 ||
+            cmds[i].complete_ts_ns <= cmds[i].submit_ts_ns) {
             bad_pair++;
         }
     }
     TEST_ASSERT(bad_pair == 0,
-                "every cmd has submit_ts_ns > 0 and complete_ts_ns >= submit_ts_ns");
+                "every cmd has submit_ts_ns > 0, complete_ts_ns > 0, complete_ts_ns > submit_ts_ns");
 
     channel_worker_cleanup(&w);
     media_cleanup(&media);
@@ -538,10 +543,11 @@ static int test_cq_back_pressure_to_submit_ring(void)
 
     struct media_config cfg = make_cfg();
     struct media_ctx media;
-    media_init(&media, &cfg);
+    int rc = media_init(&media, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
     struct channel_worker w;
-    int rc = channel_worker_init(&w, 0, &media, 4, 2);
+    rc = channel_worker_init(&w, 0, &media, 4, 2);
     TEST_ASSERT(rc == HFSSS_OK, "init small ring + tiny cq OK");
 
     /* Submit until BUSY. Without back-pressure (or with silent drops)
@@ -583,10 +589,11 @@ static int test_cq_rejects_on_complete(void)
 
     struct media_config cfg = make_cfg();
     struct media_ctx media;
-    media_init(&media, &cfg);
+    int rc = media_init(&media, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
     struct channel_worker w;
-    int rc = channel_worker_init(&w, 0, &media, 8, 4);
+    rc = channel_worker_init(&w, 0, &media, 8, 4);
     TEST_ASSERT(rc == HFSSS_OK, "init cq=4 OK");
 
     struct sink s;
@@ -620,10 +627,11 @@ static int test_cq_rejects_wait(void)
 
     struct media_config cfg = make_cfg();
     struct media_ctx media;
-    media_init(&media, &cfg);
+    int rc = media_init(&media, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
     struct channel_worker w;
-    int rc = channel_worker_init(&w, 0, &media, 8, 4);
+    rc = channel_worker_init(&w, 0, &media, 8, 4);
     TEST_ASSERT(rc == HFSSS_OK, "init cq=4 OK");
 
     struct channel_cmd cmd;
@@ -657,10 +665,11 @@ static int test_cq_disabled_drain_rejects(void)
 
     struct media_config cfg = make_cfg();
     struct media_ctx media;
-    media_init(&media, &cfg);
+    int rc = media_init(&media, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
     struct channel_worker w;
-    int rc = channel_worker_init(&w, 0, &media, 8, 0);
+    rc = channel_worker_init(&w, 0, &media, 8, 0);
     TEST_ASSERT(rc == HFSSS_OK, "init cq=0 OK");
 
     struct channel_cmd *out[2] = {0};
@@ -681,10 +690,11 @@ static int test_timestamps_present_on_legacy_path(void)
 
     struct media_config cfg = make_cfg();
     struct media_ctx media;
-    media_init(&media, &cfg);
+    int rc = media_init(&media, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
     struct channel_worker w;
-    int rc = channel_worker_init(&w, 0, &media, 8, 0);
+    rc = channel_worker_init(&w, 0, &media, 8, 0);
     TEST_ASSERT(rc == HFSSS_OK, "init cq=0 OK");
 
     struct channel_cmd cmd;
@@ -697,8 +707,10 @@ static int test_timestamps_present_on_legacy_path(void)
                 "wait completes (legacy path still works)");
     TEST_ASSERT(cmd.submit_ts_ns > 0,
                 "submit_ts_ns set on legacy path");
-    TEST_ASSERT(cmd.complete_ts_ns >= cmd.submit_ts_ns,
-                "complete_ts_ns >= submit_ts_ns on legacy path");
+    TEST_ASSERT(cmd.complete_ts_ns > 0,
+                "complete_ts_ns set on legacy path");
+    TEST_ASSERT(cmd.complete_ts_ns > cmd.submit_ts_ns,
+                "complete_ts_ns > submit_ts_ns on legacy path");
 
     channel_worker_cleanup(&w);
     media_cleanup(&media);
