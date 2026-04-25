@@ -111,7 +111,14 @@ struct channel_cmd {
      * acquire ordering — the release on done carries the prior stores.
      * Recorded unconditionally (cost: two clock_gettime calls per
      * submission), so callers using channel_cmd_wait or on_complete
-     * see them too, not just CQ consumers. */
+     * see them too, not just CQ consumers.
+     *
+     * Reuse caveat: a caller that recycles the same cmd for a new
+     * submission must ensure no other thread is still reading the
+     * prior completion's fields. The runtime resets complete_ts_ns
+     * to 0 and re-stamps submit_ts_ns on each submit, but those
+     * stores are plain (not atomic) and only become visible to a
+     * worker / consumer through the ring's release-on-head edge. */
     u64 submit_ts_ns;
     u64 complete_ts_ns;
 
@@ -199,6 +206,12 @@ int channel_worker_submit(struct channel_worker *w, struct channel_cmd *cmd);
  * with sched_yield; a condvar variant can replace this if a workload
  * demonstrates producer-side idle cost. Returns cmd->status after
  * completion.
+ *
+ * Returns HFSSS_ERR_INVAL when cmd is NULL, or when cmd's owning
+ * worker was initialized with cq_capacity > 0 — CQ-mode workers
+ * deliver via channel_worker_drain only, and the legacy poll path
+ * is refused at wait entry. See the file-header three-path
+ * delivery contract for the full rule set.
  */
 int channel_cmd_wait(struct channel_cmd *cmd);
 
