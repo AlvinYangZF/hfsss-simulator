@@ -717,6 +717,76 @@ static int test_timestamps_present_on_legacy_path(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/*
+ * REQ-045 race-window test (added per PR #111 Codex review).
+ *
+ * The CQ delivery contract says: a cmd popped via channel_worker_drain
+ * is the consumer's to own — they may reuse / free it. The previous
+ * worker ordering set done == 1 AFTER the SPSC tryput, meaning a
+ * tight-spinning drain could observe a popped cmd whose done flag was
+ * still 0 and the worker was about to write to. This test pins the
+ * fixed ordering: the cmd, immediately after pop in a tight spin,
+ * must already have done == 1, and reusing it (resubmitting) must
+ * not race with any straggling worker write.
+ */
+static int test_cq_drain_then_reuse_race(void)
+{
+    printf("\n=== channel_worker: CQ drain -> reuse race window ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx media;
+    int rc = media_init(&media, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
+
+    struct channel_worker w;
+    rc = channel_worker_init(&w, 0, &media, 16, 16);
+    TEST_ASSERT(rc == HFSSS_OK, "init cq=16 OK");
+
+    struct channel_cmd cmd;
+    prep_erase_cmd(&cmd, 0, 0);
+    rc = channel_worker_submit(&w, &cmd);
+    TEST_ASSERT(rc == HFSSS_OK, "first submit OK");
+
+    /* Tight spin — no sched_yield between drain attempts. Maximises
+     * the chance of catching the worker mid-publish if the ordering
+     * regressed. */
+    struct channel_cmd *out = NULL;
+    int found = 0;
+    for (int spins = 0; spins < 10000000 && !found; spins++) {
+        int n = channel_worker_drain(&w, &out, 1);
+        if (n == 1) found = 1;
+    }
+    TEST_ASSERT(found == 1, "drained the submitted cmd");
+    TEST_ASSERT(out == &cmd, "drained cmd matches submitted cmd");
+    /* The contract: at the instant of pop, done is observable as 1. */
+    TEST_ASSERT(atomic_load(&out->done) == 1,
+                "done == 1 immediately after drain pop");
+    TEST_ASSERT(out->complete_ts_ns > 0,
+                "complete_ts_ns published with the pop");
+
+    /* Reuse path: re-submit the same cmd struct. The worker must not
+     * be holding a stale reference; if it were, this resubmit would
+     * race the worker's would-be write to done. */
+    prep_erase_cmd(&cmd, 0, 1);
+    rc = channel_worker_submit(&w, &cmd);
+    TEST_ASSERT(rc == HFSSS_OK, "reuse-after-drain submit OK");
+
+    /* Drain the reused cmd to keep cleanup tidy. */
+    found = 0;
+    for (int spins = 0; spins < 100000 && !found; spins++) {
+        int n = channel_worker_drain(&w, &out, 1);
+        if (n == 1) found = 1;
+        else sched_yield();
+    }
+    TEST_ASSERT(found == 1, "reused cmd drained");
+    TEST_ASSERT(atomic_load(&out->done) == 1,
+                "reused cmd done == 1 on pop");
+
+    channel_worker_cleanup(&w);
+    media_cleanup(&media);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     printf("========================================\n");
@@ -738,6 +808,7 @@ int main(void)
     test_cq_rejects_wait();
     test_cq_disabled_drain_rejects();
     test_timestamps_present_on_legacy_path();
+    test_cq_drain_then_reuse_race();
 
     printf("\n========================================\n");
     printf("Tests run:    %d\n", tests_run);

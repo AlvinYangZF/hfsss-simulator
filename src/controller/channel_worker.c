@@ -31,43 +31,53 @@ static int dispatch_one(struct channel_worker *w, struct channel_cmd *cmd)
 
 static void complete_one(struct channel_worker *w, struct channel_cmd *cmd)
 {
-    /* REQ-045: stamp the completion timestamp BEFORE publishing done.
-     * The release on done carries this store, so any reader that
-     * observes done == 1 with acquire ordering also sees the final
-     * complete_ts_ns. */
+    /* REQ-045: stamp the completion timestamp before any publish.
+     * The publish edges (done release on the legacy path; cq.head
+     * release on the CQ path) carry this plain store. */
     cmd->complete_ts_ns = get_time_ns();
 
-    /* REQ-045: when the worker has the CQ enabled, deliver the cmd
-     * into the CQ. The push happens BEFORE the done store so a CQ
-     * consumer popping the cmd never observes done == 0 — by the
-     * time spsc_ring_tryput's release on cq.head is visible, the
-     * preceding stores (timestamps + status) are visible too.
-     *
-     * CQ full is back-pressure, never a drop: spin-retry with
-     * sched_yield until either the consumer makes room or stop has
-     * been signaled. On stop we bail out without setting done; the
-     * cmd stays in the request-ring drain semantics handled by the
-     * worker loop and cleanup path (i.e. it's discarded along with
-     * any other in-flight work, same as the legacy path).
-     *
-     * on_complete is rejected at submit-time when CQ is enabled, so
-     * the legacy callback branch below is unreachable in CQ mode. */
     if (w->cq_enabled) {
+        /* CQ mode publishes ALL completion state — timestamps,
+         * status, done — BEFORE the SPSC tryput. The ring's release
+         * on cq.head carries the entire prior write set; a consumer
+         * that drains the cmd via channel_worker_drain observes
+         * done == 1 and may safely take ownership (free, reuse,
+         * resubmit) immediately. The worker MUST NOT touch cmd
+         * again after a successful tryput.
+         *
+         * Counter-incrementing also happens before tryput so the
+         * CQ pop and the completed-counter advance are jointly
+         * visible to a consumer's acquire on cq.tail.
+         *
+         * CQ full is back-pressure, never a drop: spin-retry with
+         * sched_yield until either the consumer makes room or stop
+         * has been signaled. On stop we bail; cmd has done == 1 set
+         * but no CQ entry was published, so no consumer can observe
+         * the cmd through the CQ — it is effectively discarded along
+         * with any other in-flight work, matching the legacy
+         * stop-during-cleanup behavior.
+         *
+         * on_complete is rejected at submit-time when CQ is enabled,
+         * so we never invoke it on this path. */
+        atomic_store_explicit(&cmd->done, 1, memory_order_release);
+        atomic_fetch_add_explicit(&w->completed, 1, memory_order_relaxed);
+
         for (;;) {
             int rc = spsc_ring_tryput(&w->cq, &cmd);
             if (rc == HFSSS_OK) {
-                break;
+                return;  /* cmd is the consumer's now */
             }
             if (atomic_load_explicit(&w->stop, memory_order_acquire)) {
-                /* Bail without publishing done — caller's cleanup
-                 * discards in-flight work just like the request-ring
-                 * stop path does. */
                 return;
             }
             sched_yield();
         }
     }
 
+    /* Legacy path: publish done with release ordering, then optionally
+     * fire the user callback. Waiters polling done observe the final
+     * state under acquire; callbacks see done == 1 already set so a
+     * reclaiming callback may free/reuse the cmd safely. */
     atomic_store_explicit(&cmd->done, 1, memory_order_release);
     atomic_fetch_add_explicit(&w->completed, 1, memory_order_relaxed);
     if (cmd->on_complete) {
