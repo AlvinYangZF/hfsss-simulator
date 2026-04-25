@@ -88,7 +88,7 @@ static int test_submit_wait_completion_cb(void)
     TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
     struct channel_worker w;
-    rc = channel_worker_init(&w, 0, &media, 64);
+    rc = channel_worker_init(&w, 0, &media, 64, 0);
     TEST_ASSERT(rc == HFSSS_OK, "channel_worker_init OK");
 
     struct sink sink;
@@ -138,7 +138,7 @@ static int test_erase_program_read_roundtrip(void)
     TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
     struct channel_worker w;
-    rc = channel_worker_init(&w, 0, &media, 32);
+    rc = channel_worker_init(&w, 0, &media, 32, 0);
     TEST_ASSERT(rc == HFSSS_OK, "channel_worker_init OK");
 
     /* ERASE plane 0 block 0 */
@@ -199,7 +199,7 @@ static int test_full_ring_returns_busy(void)
     TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
     struct channel_worker w;
-    rc = channel_worker_init(&w, 0, &media, 2);
+    rc = channel_worker_init(&w, 0, &media, 2, 0);
     TEST_ASSERT(rc == HFSSS_OK, "channel_worker_init OK (cap=2)");
 
     static struct channel_cmd burst[BURST_COUNT];
@@ -270,7 +270,7 @@ static int test_submit_after_stop_returns_busy(void)
     TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
 
     struct channel_worker w;
-    rc = channel_worker_init(&w, 0, &media, 16);
+    rc = channel_worker_init(&w, 0, &media, 16, 0);
     TEST_ASSERT(rc == HFSSS_OK, "channel_worker_init OK");
 
     channel_worker_stop(&w);
@@ -302,7 +302,7 @@ static int test_cross_channel_cmd_rejected(void)
     TEST_ASSERT(rc == HFSSS_OK, "media_init OK (2 channels)");
 
     struct channel_worker w0;
-    rc = channel_worker_init(&w0, 0, &media, 8);
+    rc = channel_worker_init(&w0, 0, &media, 8, 0);
     TEST_ASSERT(rc == HFSSS_OK, "worker 0 init");
 
     struct channel_cmd miscmd;
@@ -335,8 +335,8 @@ static int test_two_workers_isolated(void)
     TEST_ASSERT(rc == HFSSS_OK, "media_init OK (2 channels)");
 
     struct channel_worker w0, w1;
-    TEST_ASSERT(channel_worker_init(&w0, 0, &media, 16) == HFSSS_OK, "worker 0 init");
-    TEST_ASSERT(channel_worker_init(&w1, 1, &media, 16) == HFSSS_OK, "worker 1 init");
+    TEST_ASSERT(channel_worker_init(&w0, 0, &media, 16, 0) == HFSSS_OK, "worker 0 init");
+    TEST_ASSERT(channel_worker_init(&w1, 1, &media, 16, 0) == HFSSS_OK, "worker 1 init");
 
     struct channel_cmd e0, e1;
     memset(&e0, 0, sizeof(e0));
@@ -370,7 +370,7 @@ static int test_null_inputs(void)
 {
     printf("\n=== channel_worker: NULL-input hardening ===\n");
 
-    TEST_ASSERT(channel_worker_init(NULL, 0, NULL, 16) == HFSSS_ERR_INVAL, "init(NULL, 0, NULL, _) INVAL");
+    TEST_ASSERT(channel_worker_init(NULL, 0, NULL, 16, 0) == HFSSS_ERR_INVAL, "init(NULL, 0, NULL, _) INVAL");
     channel_worker_stop(NULL);
     channel_worker_cleanup(NULL);
     TEST_ASSERT(channel_worker_submit(NULL, NULL) == HFSSS_ERR_INVAL, "submit(NULL, NULL) INVAL");

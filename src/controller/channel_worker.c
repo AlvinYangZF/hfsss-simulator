@@ -70,7 +70,8 @@ static void *channel_worker_loop(void *arg)
     return NULL;
 }
 
-int channel_worker_init(struct channel_worker *w, u32 channel_id, struct media_ctx *media, u32 ring_capacity)
+int channel_worker_init(struct channel_worker *w, u32 channel_id, struct media_ctx *media,
+                        u32 ring_capacity, u32 cq_capacity)
 {
     if (!w || !media || ring_capacity == 0) {
         return HFSSS_ERR_INVAL;
@@ -88,7 +89,23 @@ int channel_worker_init(struct channel_worker *w, u32 channel_id, struct media_c
         return rc;
     }
 
+    /* REQ-045: opt-in completion queue. Allocated only when caller
+     * asks for it. cq_capacity inherits the same power-of-two
+     * requirement as ring_capacity; spsc_ring_init enforces it. */
+    w->cq_enabled = false;
+    if (cq_capacity > 0) {
+        rc = spsc_ring_init(&w->cq, (u32)sizeof(struct channel_cmd *), cq_capacity);
+        if (rc != HFSSS_OK) {
+            spsc_ring_cleanup(&w->ring);
+            return rc;
+        }
+        w->cq_enabled = true;
+    }
+
     if (pthread_create(&w->thread, NULL, channel_worker_loop, w) != 0) {
+        if (w->cq_enabled) {
+            spsc_ring_cleanup(&w->cq);
+        }
         spsc_ring_cleanup(&w->ring);
         return HFSSS_ERR_NOMEM;
     }
@@ -113,6 +130,10 @@ void channel_worker_cleanup(struct channel_worker *w)
         atomic_store_explicit(&w->stop, 1, memory_order_release);
         pthread_join(w->thread, NULL);
         w->thread_started = false;
+    }
+    if (w->cq_enabled) {
+        spsc_ring_cleanup(&w->cq);
+        w->cq_enabled = false;
     }
     spsc_ring_cleanup(&w->ring);
     memset(w, 0, sizeof(*w));
@@ -154,4 +175,16 @@ int channel_cmd_wait(struct channel_cmd *cmd)
         sched_yield();
     }
     return cmd->status;
+}
+
+int channel_worker_drain(struct channel_worker *w, struct channel_cmd **buf, u32 buf_cap)
+{
+    if (!w || !buf || buf_cap == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (!w->cq_enabled) {
+        return HFSSS_ERR_INVAL;
+    }
+    /* REQ-045 Task 4 lands the actual SPSC pops here. */
+    return 0;
 }

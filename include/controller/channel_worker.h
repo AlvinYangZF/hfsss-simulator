@@ -40,12 +40,21 @@ struct channel_cmd;
  *     channel_id are failed at dispatch with HFSSS_ERR_INVAL; they
  *     still complete via the normal callback/done path.
  *
- * Completion model — callers pick ONE of these patterns, not both:
- *   - Poll with channel_cmd_wait: the waiter blocks until done == 1
- *     and reads status. Waiter owns reclamation of the cmd afterwards.
- *   - Install on_complete: the callback fires AFTER done is published
- *     and is the authoritative reclamation hook; the waiter path must
- *     not run concurrently with a reclaiming callback on the same cmd.
+ * Completion model — callers pick EXACTLY ONE of these patterns per
+ * worker, decided at channel_worker_init time:
+ *   - cq_capacity == 0  (default / back-compat):
+ *       * Poll with channel_cmd_wait: the waiter blocks until done == 1
+ *         and reads status. Waiter owns reclamation of the cmd afterwards.
+ *       * Install on_complete: the callback fires AFTER done is published
+ *         and is the authoritative reclamation hook; the waiter path must
+ *         not run concurrently with a reclaiming callback on the same cmd.
+ *   - cq_capacity >  0  (REQ-045 batch-drain mode):
+ *       * channel_worker_drain pops completed cmd pointers from the
+ *         dedicated completion queue. on_complete on submitted cmds is
+ *         rejected at submit time; channel_cmd_wait is rejected at wait
+ *         time. The worker spin-retries CQ pushes when the CQ fills, so
+ *         no completion is ever dropped — back-pressure flows through to
+ *         the submit ring instead.
  *
  * Ordering: commands are dispatched in submit order because the SPSC
  * ring is FIFO. In-flight media ops can themselves be reordered by the
@@ -60,6 +69,8 @@ enum channel_cmd_op {
 };
 
 typedef void (*channel_cmd_complete_fn)(struct channel_cmd *cmd, void *ctx);
+
+struct channel_worker; /* forward; full def appears later in this header */
 
 struct channel_cmd {
     enum channel_cmd_op op;
@@ -77,7 +88,9 @@ struct channel_cmd {
 
     /* Completion hook. Invoked exactly once by the worker thread after
      * the underlying media op returns, before done is published. NULL is
-     * legal; pollers rely on the done flag instead. */
+     * legal; pollers rely on the done flag instead. Must be NULL when
+     * the owning worker has cq_capacity > 0; that path delivers via
+     * channel_worker_drain instead. */
     channel_cmd_complete_fn on_complete;
     void *cb_ctx;
 
@@ -87,6 +100,27 @@ struct channel_cmd {
      * can safely read status after seeing done == 1. */
     int status;
     _Atomic int done;
+
+    /* REQ-045: wall-clock timestamps. submit_ts_ns is stamped by the
+     * producer thread inside channel_worker_submit before the ring put.
+     * complete_ts_ns is stamped by the worker thread immediately after
+     * the underlying media_nand_* call returns and BEFORE done is
+     * published. Both come from get_time_ns() (CLOCK_MONOTONIC).
+     * Consumers compute actual_latency = complete_ts_ns - submit_ts_ns
+     * and may safely read both fields after observing done == 1 with
+     * acquire ordering — the release on done carries the prior stores.
+     * Recorded unconditionally (cost: two clock_gettime calls per
+     * submission), so callers using channel_cmd_wait or on_complete
+     * see them too, not just CQ consumers. */
+    u64 submit_ts_ns;
+    u64 complete_ts_ns;
+
+    /* REQ-045: back-pointer to the worker that owns this cmd. Set
+     * exactly once by channel_worker_submit; read only by
+     * channel_cmd_wait to enforce CQ-mode mutual exclusion. Never
+     * dereferenced after completion; cmd lifetime does not depend on
+     * worker lifetime once done is observed. */
+    struct channel_worker *owner;
 };
 
 struct channel_worker {
@@ -109,15 +143,34 @@ struct channel_worker {
      * saturation. */
     _Atomic u64 submitted;
     _Atomic u64 completed;
+
+    /* REQ-045: opt-in completion queue. cq_enabled is set by
+     * channel_worker_init when cq_capacity > 0; cq is the second
+     * SPSC ring whose payload is struct channel_cmd *. When enabled,
+     * the worker spin-retries cq tryput after each completion (it
+     * never drops a completion); when disabled, both fields stay
+     * zero-initialised and the runtime behaves as before. */
+    bool             cq_enabled;
+    struct spsc_ring cq;
 };
 
 /*
  * Initialize a channel_worker. ring_capacity must be a power of two.
- * media must outlive the worker. Returns HFSSS_OK on success. On
- * failure the worker is left in an unusable state and cleanup is a
- * no-op.
+ * media must outlive the worker. cq_capacity == 0 disables the
+ * completion queue and preserves the existing wait/callback delivery
+ * model. cq_capacity > 0 must be a power of two, allocates a second
+ * SPSC ring as the dedicated completion queue, and switches delivery
+ * to channel_worker_drain (in this mode, on_complete on submitted
+ * cmds and channel_cmd_wait calls are rejected — see the three-path
+ * mutual exclusion contract in the file header). Returns HFSSS_OK on
+ * success. On failure the worker is left in an unusable state and
+ * cleanup is a no-op.
  */
-int channel_worker_init(struct channel_worker *w, u32 channel_id, struct media_ctx *media, u32 ring_capacity);
+int channel_worker_init(struct channel_worker *w,
+                        u32 channel_id,
+                        struct media_ctx *media,
+                        u32 ring_capacity,
+                        u32 cq_capacity);
 
 /*
  * Signal the worker to stop, join the thread, and release ring memory.
@@ -148,5 +201,28 @@ int channel_worker_submit(struct channel_worker *w, struct channel_cmd *cmd);
  * completion.
  */
 int channel_cmd_wait(struct channel_cmd *cmd);
+
+/*
+ * REQ-045: non-blocking batch drain of the completion queue.
+ *
+ *   buf     — caller-provided array of struct channel_cmd * slots.
+ *   buf_cap — number of slots in buf. Must be > 0.
+ *
+ * Returns the number of commands popped (0..buf_cap). Returns 0
+ * immediately when the CQ is empty; never blocks or yields. Returns
+ * HFSSS_ERR_INVAL when cq_enabled is false (CQ disabled at init) or
+ * when buf is NULL or buf_cap == 0.
+ *
+ * Ordering: pops happen in worker-enqueue order (SPSC FIFO). Media-
+ * layer reordering (per EAT) is upstream of the CQ, so this FIFO does
+ * not imply submit-time FIFO.
+ *
+ * Safety: exactly one thread may call this at a time (SPSC consumer).
+ * Command ownership/reclamation is the caller's responsibility, same
+ * as on the wait/callback paths.
+ */
+int channel_worker_drain(struct channel_worker *w,
+                         struct channel_cmd **buf,
+                         u32 buf_cap);
 
 #endif /* __HFSSS_CHANNEL_WORKER_H */
