@@ -31,12 +31,53 @@ static int dispatch_one(struct channel_worker *w, struct channel_cmd *cmd)
 
 static void complete_one(struct channel_worker *w, struct channel_cmd *cmd)
 {
-    /* Publish completion BEFORE invoking the user callback. This lets
-     * a callback safely reclaim the command (including cb_ctx) without
-     * racing the worker's subsequent publication of done. Waiters and
-     * callbacks are therefore alternative completion paths: a caller
-     * that both polls via channel_cmd_wait AND installs a reclaiming
-     * callback is responsible for serialising them. */
+    /* REQ-045: stamp the completion timestamp before any publish.
+     * The publish edges (done release on the legacy path; cq.head
+     * release on the CQ path) carry this plain store. */
+    cmd->complete_ts_ns = get_time_ns();
+
+    if (w->cq_enabled) {
+        /* CQ mode publishes ALL completion state — timestamps,
+         * status, done — BEFORE the SPSC tryput. The ring's release
+         * on cq.head carries the entire prior write set; a consumer
+         * that drains the cmd via channel_worker_drain observes
+         * done == 1 and may safely take ownership (free, reuse,
+         * resubmit) immediately. The worker MUST NOT touch cmd
+         * again after a successful tryput.
+         *
+         * Counter-incrementing also happens before tryput so the
+         * CQ pop and the completed-counter advance are jointly
+         * visible to a consumer's acquire on cq.tail.
+         *
+         * CQ full is back-pressure, never a drop: spin-retry with
+         * sched_yield until either the consumer makes room or stop
+         * has been signaled. On stop we bail; cmd has done == 1 set
+         * but no CQ entry was published, so no consumer can observe
+         * the cmd through the CQ — it is effectively discarded along
+         * with any other in-flight work, matching the legacy
+         * stop-during-cleanup behavior.
+         *
+         * on_complete is rejected at submit-time when CQ is enabled,
+         * so we never invoke it on this path. */
+        atomic_store_explicit(&cmd->done, 1, memory_order_release);
+        atomic_fetch_add_explicit(&w->completed, 1, memory_order_relaxed);
+
+        for (;;) {
+            int rc = spsc_ring_tryput(&w->cq, &cmd);
+            if (rc == HFSSS_OK) {
+                return;  /* cmd is the consumer's now */
+            }
+            if (atomic_load_explicit(&w->stop, memory_order_acquire)) {
+                return;
+            }
+            sched_yield();
+        }
+    }
+
+    /* Legacy path: publish done with release ordering, then optionally
+     * fire the user callback. Waiters polling done observe the final
+     * state under acquire; callbacks see done == 1 already set so a
+     * reclaiming callback may free/reuse the cmd safely. */
     atomic_store_explicit(&cmd->done, 1, memory_order_release);
     atomic_fetch_add_explicit(&w->completed, 1, memory_order_relaxed);
     if (cmd->on_complete) {
@@ -70,7 +111,8 @@ static void *channel_worker_loop(void *arg)
     return NULL;
 }
 
-int channel_worker_init(struct channel_worker *w, u32 channel_id, struct media_ctx *media, u32 ring_capacity)
+int channel_worker_init(struct channel_worker *w, u32 channel_id, struct media_ctx *media,
+                        u32 ring_capacity, u32 cq_capacity)
 {
     if (!w || !media || ring_capacity == 0) {
         return HFSSS_ERR_INVAL;
@@ -88,7 +130,23 @@ int channel_worker_init(struct channel_worker *w, u32 channel_id, struct media_c
         return rc;
     }
 
+    /* REQ-045: opt-in completion queue. Allocated only when caller
+     * asks for it. cq_capacity inherits the same power-of-two
+     * requirement as ring_capacity; spsc_ring_init enforces it. */
+    w->cq_enabled = false;
+    if (cq_capacity > 0) {
+        rc = spsc_ring_init(&w->cq, (u32)sizeof(struct channel_cmd *), cq_capacity);
+        if (rc != HFSSS_OK) {
+            spsc_ring_cleanup(&w->ring);
+            return rc;
+        }
+        w->cq_enabled = true;
+    }
+
     if (pthread_create(&w->thread, NULL, channel_worker_loop, w) != 0) {
+        if (w->cq_enabled) {
+            spsc_ring_cleanup(&w->cq);
+        }
         spsc_ring_cleanup(&w->ring);
         return HFSSS_ERR_NOMEM;
     }
@@ -114,6 +172,10 @@ void channel_worker_cleanup(struct channel_worker *w)
         pthread_join(w->thread, NULL);
         w->thread_started = false;
     }
+    if (w->cq_enabled) {
+        spsc_ring_cleanup(&w->cq);
+        w->cq_enabled = false;
+    }
     spsc_ring_cleanup(&w->ring);
     memset(w, 0, sizeof(*w));
 }
@@ -121,6 +183,16 @@ void channel_worker_cleanup(struct channel_worker *w)
 int channel_worker_submit(struct channel_worker *w, struct channel_cmd *cmd)
 {
     if (!w || !cmd) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    /* REQ-045: three-path mutual exclusion. CQ-enabled worker refuses
+     * cmds that carry an on_complete callback — the CQ is the
+     * delivery channel in that mode and a callback would race with
+     * a CQ consumer that pops the same cmd. Reject before any
+     * mutation so the caller can flip the cmd back to a non-CQ worker
+     * if needed. */
+    if (w->cq_enabled && cmd->on_complete != NULL) {
         return HFSSS_ERR_INVAL;
     }
 
@@ -137,6 +209,15 @@ int channel_worker_submit(struct channel_worker *w, struct channel_cmd *cmd)
     atomic_store_explicit(&cmd->done, 0, memory_order_relaxed);
     cmd->status = 0;
 
+    /* REQ-045: producer-side timestamp + owner back-pointer set BEFORE
+     * the ring put. The worker thread does an acquire load on the ring
+     * tail when it dequeues; that pairs with the ring's release on
+     * head and carries these stores. The owner pointer is read by
+     * channel_cmd_wait for the CQ-mode wait rejection check. */
+    cmd->submit_ts_ns  = get_time_ns();
+    cmd->complete_ts_ns = 0;
+    cmd->owner = w;
+
     int rc = spsc_ring_tryput(&w->ring, &cmd);
     if (rc != HFSSS_OK) {
         return HFSSS_ERR_BUSY;
@@ -150,8 +231,40 @@ int channel_cmd_wait(struct channel_cmd *cmd)
     if (!cmd) {
         return HFSSS_ERR_INVAL;
     }
+    /* REQ-045: refuse the legacy poll path when the cmd's owner is in
+     * CQ mode. Reading owner is safe here because submit set it before
+     * the ring put and we are by contract the only legitimate waiter.
+     * The cmd still completes via the CQ — this only refuses the
+     * caller's attempt to reach for the wrong reaping API. */
+    struct channel_worker *owner = cmd->owner;
+    if (owner != NULL && owner->cq_enabled) {
+        return HFSSS_ERR_INVAL;
+    }
     while (atomic_load_explicit(&cmd->done, memory_order_acquire) == 0) {
         sched_yield();
     }
     return cmd->status;
+}
+
+int channel_worker_drain(struct channel_worker *w, struct channel_cmd **buf, u32 buf_cap)
+{
+    if (!w || !buf || buf_cap == 0) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (!w->cq_enabled) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    u32 popped = 0;
+    while (popped < buf_cap) {
+        struct channel_cmd *next = NULL;
+        int rc = spsc_ring_tryget(&w->cq, &next);
+        if (rc != HFSSS_OK || next == NULL) {
+            /* Ring empty (or transient race lost): return whatever we
+             * already collected. Drain is non-blocking by contract. */
+            break;
+        }
+        buf[popped++] = next;
+    }
+    return (int)popped;
 }
