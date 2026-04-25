@@ -1,4 +1,5 @@
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +52,21 @@ static void fill(void *buf, u32 n, u8 seed)
     for (u32 i = 0; i < n; i++) {
         p[i] = (u8)((seed + i) & 0xFF);
     }
+}
+
+/* Submit one ERASE on (ch=0,chip=0,die=0,plane=0,block=K) and return
+ * the prepared cmd. Caller fills program/read forms inline. The block
+ * id is a parameter so each test exercises different physical state
+ * and avoids retry-on-already-erased-block surprises. */
+static void prep_erase_cmd(struct channel_cmd *cmd, u32 ch, u32 block)
+{
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->op    = CHANNEL_CMD_ERASE;
+    cmd->ch    = ch;
+    cmd->chip  = 0;
+    cmd->die   = 0;
+    cmd->plane = 0;
+    cmd->block = block;
 }
 
 /*
@@ -378,6 +394,317 @@ static int test_null_inputs(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* REQ-045: submit 4 cmds with CQ enabled, drain, assert order +
+ * timestamps. Tests the hot-path delivery shape end to end. */
+static int test_cq_basic_drain(void)
+{
+    printf("\n=== channel_worker: CQ basic drain ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx media;
+    int rc = media_init(&media, &cfg);
+    TEST_ASSERT(rc == HFSSS_OK, "media_init OK");
+
+    struct channel_worker w;
+    rc = channel_worker_init(&w, 0, &media, 16, 16);
+    TEST_ASSERT(rc == HFSSS_OK, "init with cq_capacity=16 OK");
+
+    struct channel_cmd cmds[4];
+    for (int i = 0; i < 4; i++) {
+        prep_erase_cmd(&cmds[i], 0, (u32)i);
+        TEST_ASSERT(channel_worker_submit(&w, &cmds[i]) == HFSSS_OK,
+                    "submit OK");
+    }
+
+    /* Spin-drain until we've collected all 4. The worker may interleave
+     * dispatch + CQ push with our drain calls, so accumulate. */
+    struct channel_cmd *out[8] = {0};
+    int drained = 0;
+    for (int spins = 0; spins < 100000 && drained < 4; spins++) {
+        int n = channel_worker_drain(&w, &out[drained], (u32)(8 - drained));
+        TEST_ASSERT(n >= 0, "drain returns non-negative");
+        drained += n;
+        if (n == 0) sched_yield();
+    }
+    TEST_ASSERT(drained == 4, "drained exactly 4 commands");
+
+    /* SPSC FIFO: the order of CQ pops mirrors worker dispatch order,
+     * which mirrors submit order in this single-producer test. */
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT(out[i] == &cmds[i],
+                    "CQ pops in submit order (FIFO)");
+        TEST_ASSERT(cmds[i].submit_ts_ns > 0,
+                    "submit_ts_ns populated");
+        TEST_ASSERT(cmds[i].complete_ts_ns >= cmds[i].submit_ts_ns,
+                    "complete_ts_ns >= submit_ts_ns");
+        TEST_ASSERT(atomic_load(&cmds[i].done) == 1,
+                    "done flag set");
+    }
+
+    channel_worker_cleanup(&w);
+    media_cleanup(&media);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-045: drain on an idle CQ-enabled worker returns 0, not an error. */
+static int test_cq_empty_drain(void)
+{
+    printf("\n=== channel_worker: CQ empty drain returns 0 ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx media;
+    media_init(&media, &cfg);
+
+    struct channel_worker w;
+    int rc = channel_worker_init(&w, 0, &media, 16, 8);
+    TEST_ASSERT(rc == HFSSS_OK, "init OK");
+
+    struct channel_cmd *out[4] = {0};
+    int n = channel_worker_drain(&w, out, 4);
+    TEST_ASSERT(n == 0, "empty drain returns 0");
+
+    channel_worker_cleanup(&w);
+    media_cleanup(&media);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-045: submit > cq_capacity commands while the consumer drains
+ * slowly. No completion may be lost; total drained must equal total
+ * submitted; per-cmd timestamps must be monotone. */
+static int test_cq_batching_under_slow_consumer(void)
+{
+    printf("\n=== channel_worker: CQ batching with slow consumer ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx media;
+    media_init(&media, &cfg);
+
+    struct channel_worker w;
+    /* CQ capacity 4 forces back-pressure since we'll submit 16. */
+    int rc = channel_worker_init(&w, 0, &media, 16, 4);
+    TEST_ASSERT(rc == HFSSS_OK, "init cq_capacity=4 OK");
+
+    enum { N = 16 };
+    struct channel_cmd cmds[N];
+    for (int i = 0; i < N; i++) {
+        prep_erase_cmd(&cmds[i], 0, (u32)i);
+        /* Submit ring is 16; CQ is 4; worker stalls on CQ-full when it
+         * tries to push past slot 3 until the test drains. We submit
+         * eagerly and let the worker stall — that exercises the spin-
+         * retry path. */
+        TEST_ASSERT(channel_worker_submit(&w, &cmds[i]) == HFSSS_OK,
+                    "submit OK");
+    }
+
+    /* Drain in small batches to keep the CQ alternating between full
+     * and partial. Bound the total spin so a stuck worker fails the
+     * test instead of hanging it. */
+    struct channel_cmd *out[N] = {0};
+    int drained = 0;
+    for (int spins = 0; spins < 1000000 && drained < N; spins++) {
+        struct channel_cmd *batch[2];
+        int n = channel_worker_drain(&w, batch, 2);
+        for (int i = 0; i < n; i++) {
+            out[drained++] = batch[i];
+        }
+        if (n == 0) sched_yield();
+    }
+    TEST_ASSERT(drained == N,
+                "drained == submitted under back-pressure");
+
+    /* Per-cmd: each cmd timestamp pair is internally consistent. */
+    int bad_pair = 0;
+    for (int i = 0; i < N; i++) {
+        if (cmds[i].submit_ts_ns == 0 ||
+            cmds[i].complete_ts_ns < cmds[i].submit_ts_ns) {
+            bad_pair++;
+        }
+    }
+    TEST_ASSERT(bad_pair == 0,
+                "every cmd has submit_ts_ns > 0 and complete_ts_ns >= submit_ts_ns");
+
+    channel_worker_cleanup(&w);
+    media_cleanup(&media);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-045: with the consumer drained-out-never, the submit ring
+ * eventually returns HFSSS_ERR_BUSY because the worker stalls
+ * spin-retrying the full CQ. Proves back-pressure flows from CQ
+ * full into submit-ring full. */
+static int test_cq_back_pressure_to_submit_ring(void)
+{
+    printf("\n=== channel_worker: CQ back-pressure to submit ring ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx media;
+    media_init(&media, &cfg);
+
+    struct channel_worker w;
+    int rc = channel_worker_init(&w, 0, &media, 4, 2);
+    TEST_ASSERT(rc == HFSSS_OK, "init small ring + tiny cq OK");
+
+    /* Submit until BUSY. Without back-pressure (or with silent drops)
+     * we'd never see BUSY. The submit ring is 4; CQ is 2; on a normal
+     * machine the worker fills the CQ within the first 2 ops, then
+     * spins on CQ-full, then the producer fills the submit ring. */
+    enum { CAP = 64 };
+    struct channel_cmd cmds[CAP];
+    int got_busy = 0;
+    int submitted = 0;
+    for (int i = 0; i < CAP; i++) {
+        prep_erase_cmd(&cmds[i], 0, (u32)(i & 3)); /* recycle blocks */
+        rc = channel_worker_submit(&w, &cmds[i]);
+        if (rc == HFSSS_ERR_BUSY) { got_busy = 1; break; }
+        TEST_ASSERT(rc == HFSSS_OK, "submit OK pre-BUSY");
+        submitted++;
+    }
+    TEST_ASSERT(got_busy == 1, "submit ring eventually returns BUSY");
+
+    /* Drain everything to release the worker so cleanup doesn't hang. */
+    struct channel_cmd *out[CAP] = {0};
+    int drained = 0;
+    for (int spins = 0; spins < 1000000 && drained < submitted; spins++) {
+        int n = channel_worker_drain(&w, out + drained, (u32)(CAP - drained));
+        if (n > 0) drained += n;
+        else sched_yield();
+    }
+
+    channel_worker_cleanup(&w);
+    media_cleanup(&media);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-045: submitting a cmd with a non-NULL on_complete to a
+ * CQ-enabled worker returns HFSSS_ERR_INVAL. */
+static int test_cq_rejects_on_complete(void)
+{
+    printf("\n=== channel_worker: CQ rejects on_complete ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx media;
+    media_init(&media, &cfg);
+
+    struct channel_worker w;
+    int rc = channel_worker_init(&w, 0, &media, 8, 4);
+    TEST_ASSERT(rc == HFSSS_OK, "init cq=4 OK");
+
+    struct sink s;
+    atomic_store(&s.fired_count, 0);
+    atomic_store(&s.last_status, 0);
+
+    struct channel_cmd cmd;
+    prep_erase_cmd(&cmd, 0, 0);
+    cmd.on_complete = sink_cb;
+    cmd.cb_ctx = &s;
+
+    rc = channel_worker_submit(&w, &cmd);
+    TEST_ASSERT(rc == HFSSS_ERR_INVAL,
+                "submit rejects on_complete in CQ mode");
+
+    /* And the canary callback never fired. */
+    TEST_ASSERT(atomic_load(&s.fired_count) == 0,
+                "on_complete did not fire on rejected submit");
+
+    channel_worker_cleanup(&w);
+    media_cleanup(&media);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-045: channel_cmd_wait on a cmd whose owner is a CQ-enabled
+ * worker returns HFSSS_ERR_INVAL. The cmd still completes through
+ * the CQ; this just refuses the legacy poll path. */
+static int test_cq_rejects_wait(void)
+{
+    printf("\n=== channel_worker: CQ rejects channel_cmd_wait ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx media;
+    media_init(&media, &cfg);
+
+    struct channel_worker w;
+    int rc = channel_worker_init(&w, 0, &media, 8, 4);
+    TEST_ASSERT(rc == HFSSS_OK, "init cq=4 OK");
+
+    struct channel_cmd cmd;
+    prep_erase_cmd(&cmd, 0, 0);
+    rc = channel_worker_submit(&w, &cmd);
+    TEST_ASSERT(rc == HFSSS_OK, "submit OK without on_complete");
+
+    /* Refused immediately; not a busy-spin. */
+    int wait_rc = channel_cmd_wait(&cmd);
+    TEST_ASSERT(wait_rc == HFSSS_ERR_INVAL,
+                "wait rejected for CQ-mode cmd");
+
+    /* Drain so cleanup is clean. */
+    struct channel_cmd *out[2] = {0};
+    for (int spins = 0; spins < 100000; spins++) {
+        if (channel_worker_drain(&w, out, 2) > 0) break;
+        sched_yield();
+    }
+
+    channel_worker_cleanup(&w);
+    media_cleanup(&media);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-045: drain on a worker initialised with cq_capacity=0 returns
+ * HFSSS_ERR_INVAL. Confirms the legacy/back-compat path stays
+ * unambiguously distinct. */
+static int test_cq_disabled_drain_rejects(void)
+{
+    printf("\n=== channel_worker: drain on cq=0 worker rejects ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx media;
+    media_init(&media, &cfg);
+
+    struct channel_worker w;
+    int rc = channel_worker_init(&w, 0, &media, 8, 0);
+    TEST_ASSERT(rc == HFSSS_OK, "init cq=0 OK");
+
+    struct channel_cmd *out[2] = {0};
+    int n = channel_worker_drain(&w, out, 2);
+    TEST_ASSERT(n == HFSSS_ERR_INVAL,
+                "drain rejected when CQ disabled");
+
+    channel_worker_cleanup(&w);
+    media_cleanup(&media);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* REQ-045: timestamps are recorded unconditionally — even on the
+ * legacy wait/callback path, NOT only when CQ is enabled. */
+static int test_timestamps_present_on_legacy_path(void)
+{
+    printf("\n=== channel_worker: timestamps on cq=0 wait path ===\n");
+
+    struct media_config cfg = make_cfg();
+    struct media_ctx media;
+    media_init(&media, &cfg);
+
+    struct channel_worker w;
+    int rc = channel_worker_init(&w, 0, &media, 8, 0);
+    TEST_ASSERT(rc == HFSSS_OK, "init cq=0 OK");
+
+    struct channel_cmd cmd;
+    prep_erase_cmd(&cmd, 0, 0);
+    rc = channel_worker_submit(&w, &cmd);
+    TEST_ASSERT(rc == HFSSS_OK, "submit OK");
+
+    int wait_rc = channel_cmd_wait(&cmd);
+    TEST_ASSERT(wait_rc == HFSSS_OK || wait_rc == 0,
+                "wait completes (legacy path still works)");
+    TEST_ASSERT(cmd.submit_ts_ns > 0,
+                "submit_ts_ns set on legacy path");
+    TEST_ASSERT(cmd.complete_ts_ns >= cmd.submit_ts_ns,
+                "complete_ts_ns >= submit_ts_ns on legacy path");
+
+    channel_worker_cleanup(&w);
+    media_cleanup(&media);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     printf("========================================\n");
@@ -391,6 +718,14 @@ int main(void)
     test_cross_channel_cmd_rejected();
     test_two_workers_isolated();
     test_null_inputs();
+    test_cq_basic_drain();
+    test_cq_empty_drain();
+    test_cq_batching_under_slow_consumer();
+    test_cq_back_pressure_to_submit_ring();
+    test_cq_rejects_on_complete();
+    test_cq_rejects_wait();
+    test_cq_disabled_drain_rejects();
+    test_timestamps_present_on_legacy_path();
 
     printf("\n========================================\n");
     printf("Tests run:    %d\n", tests_run);
