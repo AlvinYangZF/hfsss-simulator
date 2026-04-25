@@ -37,12 +37,37 @@ static void complete_one(struct channel_worker *w, struct channel_cmd *cmd)
      * complete_ts_ns. */
     cmd->complete_ts_ns = get_time_ns();
 
-    /* Publish completion BEFORE invoking the user callback. This lets
-     * a callback safely reclaim the command (including cb_ctx) without
-     * racing the worker's subsequent publication of done. Waiters and
-     * callbacks are therefore alternative completion paths: a caller
-     * that both polls via channel_cmd_wait AND installs a reclaiming
-     * callback is responsible for serialising them. */
+    /* REQ-045: when the worker has the CQ enabled, deliver the cmd
+     * into the CQ. The push happens BEFORE the done store so a CQ
+     * consumer popping the cmd never observes done == 0 — by the
+     * time spsc_ring_tryput's release on cq.head is visible, the
+     * preceding stores (timestamps + status) are visible too.
+     *
+     * CQ full is back-pressure, never a drop: spin-retry with
+     * sched_yield until either the consumer makes room or stop has
+     * been signaled. On stop we bail out without setting done; the
+     * cmd stays in the request-ring drain semantics handled by the
+     * worker loop and cleanup path (i.e. it's discarded along with
+     * any other in-flight work, same as the legacy path).
+     *
+     * on_complete is rejected at submit-time when CQ is enabled, so
+     * the legacy callback branch below is unreachable in CQ mode. */
+    if (w->cq_enabled) {
+        for (;;) {
+            int rc = spsc_ring_tryput(&w->cq, &cmd);
+            if (rc == HFSSS_OK) {
+                break;
+            }
+            if (atomic_load_explicit(&w->stop, memory_order_acquire)) {
+                /* Bail without publishing done — caller's cleanup
+                 * discards in-flight work just like the request-ring
+                 * stop path does. */
+                return;
+            }
+            sched_yield();
+        }
+    }
+
     atomic_store_explicit(&cmd->done, 1, memory_order_release);
     atomic_fetch_add_explicit(&w->completed, 1, memory_order_relaxed);
     if (cmd->on_complete) {
@@ -219,6 +244,17 @@ int channel_worker_drain(struct channel_worker *w, struct channel_cmd **buf, u32
     if (!w->cq_enabled) {
         return HFSSS_ERR_INVAL;
     }
-    /* REQ-045 Task 4 lands the actual SPSC pops here. */
-    return 0;
+
+    u32 popped = 0;
+    while (popped < buf_cap) {
+        struct channel_cmd *next = NULL;
+        int rc = spsc_ring_tryget(&w->cq, &next);
+        if (rc != HFSSS_OK || next == NULL) {
+            /* Ring empty (or transient race lost): return whatever we
+             * already collected. Drain is non-blocking by contract. */
+            break;
+        }
+        buf[popped++] = next;
+    }
+    return (int)popped;
 }
