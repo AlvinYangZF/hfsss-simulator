@@ -1,6 +1,21 @@
 #!/bin/bash
 # HFSSS + QEMU NVMe Setup Script
-# Starts the simulator as a vhost-user-blk backend, then launches QEMU
+# Starts the simulator as a vhost-user-blk backend, then launches QEMU.
+#
+# This script uses an alternative direct-kernel-boot path (vmlinuz-lts +
+# initramfs-lts + rootfs.qcow2) rather than the cloud-init bootstrapped
+# alpine-hfsss.qcow2 used by the blackbox suite. The guest assets it
+# needs are NOT included in the published guest-bundle-* releases —
+# fetch them from upstream Alpine:
+#
+#   cd guest/
+#   curl -LO https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/netboot/vmlinuz-lts
+#   curl -LO https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/netboot/initramfs-lts
+#   curl -LO https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/netboot/modloop-lts
+#   qemu-img create -f qcow2 rootfs.qcow2 8G
+#
+# For the standard pre-checkin / blackbox flow, prefer `make setup-guest`
+# which fetches the released alpine-hfsss.qcow2 + ovmf vars bundle.
 
 set -e
 

@@ -55,13 +55,40 @@ Anything else is a FAIL. Do not commit on a FAIL.
 ### Prerequisites (one-time)
 
 - QEMU with HVF support: `brew install qemu` (Apple Silicon).
+- GitHub CLI: `brew install gh` (for `make setup-guest`; also handy for PR work).
 - Guest assets under `guest/`:
   - `alpine-hfsss.qcow2` — the HFSSS-enabled Alpine guest image
-  - `cidata.iso` — cloud-init seed
+  - `cidata.iso` — cloud-init seed (built locally for your SSH key)
   - `ovmf_vars-saved.fd` — pre-initialised UEFI vars
-- SSH key at `/tmp/hfsss_qemu_key` (generated on first `start_nvme_test.sh` run).
 
-See `scripts/start_nvme_test.sh` for how those assets are bootstrapped.
+The fastest way to bootstrap the three files is:
+
+```
+make setup-guest
+```
+
+That target downloads the latest published `guest-bundle-*` GitHub
+release, verifies the SHA-256, extracts `alpine-hfsss.qcow2` and
+`ovmf_vars-saved.fd` into `guest/`, then builds a fresh `cidata.iso`
+authorising your local SSH key
+(`~/.ssh/hfsss_qemu_key`, generated on first run if missing).
+
+Pin to a specific release if needed:
+
+```
+make setup-guest SETUP_GUEST_TAG=guest-bundle-2026-04-26-v0.001
+```
+
+The ssh keypair lives at `~/.ssh/hfsss_qemu_key{,.pub}` (persistent
+across reboots — the runner used to default to `/tmp/` which macOS
+wipes, so the cidata.iso authorisation kept drifting). Override the
+location with `HFSSS_SSH_KEY=/path/to/key` if your environment requires
+a different path.
+
+If you build the bundle yourself rather than downloading,
+`scripts/scrub-guest-image.sh` produces a privacy-clean qcow2 from a
+running guest, and `scripts/build-guest-bundle.sh <version>` packages
+the result with a built-in PII final scan.
 
 ### Every commit
 
