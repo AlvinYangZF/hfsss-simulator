@@ -1,6 +1,7 @@
 #include "vhost/nbd_async.h"
 #include "ftl/ftl_worker.h"
 #include "ftl/io_queue.h"
+#include "common/io_err_trace.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -430,6 +431,12 @@ static void *nbd_cq_thread_main(void *arg)
 
                 slot->status = slot->completion_status;
                 uint32_t error = (slot->status == HFSSS_OK) ? 0 : NBD_EIO;
+                if (error) {
+                    IO_ERR_TRACE("L=nbd_async_cq cmd=%u handle=0x%016llx length=%u byte_off=%u rc=%d -> EIO",
+                                 (unsigned)slot->nbd_cmd,
+                                 (unsigned long long)slot->nbd_handle,
+                                 slot->length, slot->byte_off, slot->status);
+                }
 
                 replies[batch_count].magic = htonl(NBD_REPLY_MAGIC);
                 replies[batch_count].error = htonl(error);

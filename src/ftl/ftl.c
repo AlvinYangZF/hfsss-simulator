@@ -1,6 +1,7 @@
 #include "ftl/ftl.h"
 #include "ftl/io_queue.h"
 #include "common/trace.h"
+#include "common/io_err_trace.h"
 #include "media/nand_profile.h"
 #include <pthread.h>
 #include <stdlib.h>
@@ -748,6 +749,8 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     const int max_write_retries = 3;
 
     if (!ctx || !taa || !data) {
+        IO_ERR_TRACE("L=ftl_write_page_mt site=bad-arg lba=%llu rc=%d",
+                     (unsigned long long)lba, HFSSS_ERR_INVAL);
         return HFSSS_ERR_INVAL;
     }
 
@@ -758,6 +761,8 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     /* Get CWB */
     cwb = ftl_get_cwb(ctx, ch, plane);
     if (!cwb) {
+        IO_ERR_TRACE("L=ftl_write_page_mt site=no-cwb lba=%llu ch=%u plane=%u rc=%d",
+                     (unsigned long long)lba, ch, plane, HFSSS_ERR_INVAL);
         return HFSSS_ERR_INVAL;
     }
 
@@ -776,6 +781,8 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         ret = ftl_allocate_cwb(ctx, ch, plane);
     }
     if (ret != HFSSS_OK) {
+        IO_ERR_TRACE("L=ftl_write_page_mt site=allocate-cwb lba=%llu ch=%u plane=%u rc=%d",
+                     (unsigned long long)lba, ch, plane, ret);
         pthread_mutex_unlock(&cwb->lock);
         return ret;
     }
@@ -815,10 +822,16 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         if (ret == HFSSS_OK) {
             break;
         }
+        IO_ERR_TRACE("L=ftl_write_page_mt site=hal-prog-retry lba=%llu ppn=0x%016llx retry=%d/%d rc=%d",
+                     (unsigned long long)lba, (unsigned long long)ppn.raw,
+                     write_retry, max_write_retries, ret);
         ctx->error.write_error_count++;
     }
 
     if (ret != HFSSS_OK) {
+        IO_ERR_TRACE("L=ftl_write_page_mt site=hal-prog-final lba=%llu ppn=0x%016llx rc=%d action=%s",
+                     (unsigned long long)lba, (unsigned long long)ppn.raw, ret,
+                     (ret == HFSSS_ERR_IO) ? "mark-bad" : "mark-closed");
         if (cwb->block) {
             if (ret == HFSSS_ERR_IO) {
                 block_mark_bad(&ctx->block_mgr, cwb->block);
@@ -886,6 +899,8 @@ int ftl_trim_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa, u64 lba)
     int ret;
 
     if (!ctx || !taa) {
+        IO_ERR_TRACE("L=ftl_trim_page_mt site=bad-arg lba=%llu rc=%d",
+                     (unsigned long long)lba, HFSSS_ERR_INVAL);
         return HFSSS_ERR_INVAL;
     }
 
@@ -905,6 +920,10 @@ int ftl_trim_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa, u64 lba)
         ret = HFSSS_OK;
     }
 
+    if (ret != HFSSS_OK) {
+        IO_ERR_TRACE("L=ftl_trim_page_mt site=taa-remove lba=%llu rc=%d",
+                     (unsigned long long)lba, ret);
+    }
     return ret;
 }
 
