@@ -246,7 +246,8 @@ COVERAGE_BINS = $(COVERAGE_UT_BINS) $(COVERAGE_E2E_BINS)
 # Targets
 .PHONY: all clean directories test systest stress-long stress-burn-in bench-cq help \
 	coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage-frontend coverage-frontend-update coverage coverage-selftest \
-	qemu-blackbox qemu-blackbox-list qemu-blackbox-ci qemu-blackbox-soak pre-checkin
+	qemu-blackbox qemu-blackbox-list qemu-blackbox-ci qemu-blackbox-soak pre-checkin \
+	setup-guest
 
 all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_TIMING_JITTER) $(TEST_RETENTION) $(TEST_STRESS_BURN_IN) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_SHMEM_IF) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_TRACE) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT) $(TEST_MSGQ) $(TEST_NVME_ADMIN) $(TEST_NVME_IO) $(TEST_CMD_INTEG_BASIC) $(TEST_CMD_INTEG_MID) $(TEST_CMD_INTEG_HEAVY) $(TEST_PROFILE_MATRIX) $(TEST_MP_CONCURRENCY) $(TEST_CHANNEL_WORKER) $(BENCH_CQ) $(SYSTEST_NVME_CLI) $(SYSTEST_FIO_COMPAT) $(SYSTEST_PHASE7_INT) $(TEST_RESET_ABORT_RACE) $(TEST_FTL_PROFILE) $(TEST_SSSIM_PROFILE) $(FTL_MFC_REPRO)
 	@echo "========================================"
@@ -842,6 +843,8 @@ help:
 	@echo "  coverage-clean     - Clean build-cov/ + remove stale .gcda files"
 	@echo ""
 	@echo "QEMU black-box targets:"
+	@echo "  setup-guest        - Download + verify + extract latest guest-bundle release"
+	@echo "                       (qcow2 + ovmf vars + per-machine cidata.iso)"
 	@echo "  qemu-blackbox-list - List guest-visible QEMU/NVMe black-box cases"
 	@echo "  qemu-blackbox      - Run the QEMU/NVMe black-box suite"
 	@echo "  qemu-blackbox-ci   - Run the black-box suite with stable CI artifact paths"
@@ -919,6 +922,15 @@ qemu-blackbox-soak:
 # Expects guest assets under $(GUEST_DIR) or explicit BLACKBOX_ARGS override.
 # --------------------------------------------------------------------------
 GUEST_DIR ?= $(CURDIR)/guest
+
+# setup-guest: download the latest published guest-bundle release,
+# verify checksums, extract into $(GUEST_DIR), and rebuild cidata.iso
+# for the local SSH key. Pin to a specific release tag with
+# `make setup-guest SETUP_GUEST_TAG=guest-bundle-2026-04-26-v0.001`.
+SETUP_GUEST_TAG ?=
+setup-guest:
+	@./scripts/setup-guest.sh $(SETUP_GUEST_TAG)
+
 pre-checkin:
 	@echo "========================================"
 	@echo "  HFSSS pre-checkin gate"

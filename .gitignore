@@ -35,7 +35,14 @@ core
 # Backup files
 *.bak
 *.backup
-guest/
+# Ignore guest/* contents (large qcow2 / iso / fd binaries) but allow
+# the cidata template source files into git. scripts/build-cidata-iso.sh
+# uses the templates to rebuild guest/cidata.iso for each contributor.
+guest/*
+!guest/cidata/
+guest/cidata/*
+!guest/cidata/user-data.template
+!guest/cidata/meta-data
 
 # Coverage build output
 build-cov/

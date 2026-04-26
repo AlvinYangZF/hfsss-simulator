@@ -1,0 +1,17 @@
+#cloud-config
+ssh_pwauth: true
+disable_root: false
+chpasswd:
+  expire: false
+  users:
+    - name: root
+      password: hfsss
+      type: text
+ssh_authorized_keys:
+  - __HFSSS_RUNNER_PUBKEY__
+runcmd:
+  - mkdir -p /root/.ssh
+  - chmod 700 /root/.ssh
+  - cp /home/alpine/.ssh/authorized_keys /root/.ssh/authorized_keys
+  - chown root:root /root/.ssh/authorized_keys
+  - chmod 600 /root/.ssh/authorized_keys
