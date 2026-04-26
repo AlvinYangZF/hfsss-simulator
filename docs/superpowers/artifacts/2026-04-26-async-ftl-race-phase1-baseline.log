@@ -1,0 +1,2 @@
+ftl_mfc_repro: mode=legacy threads=128 rwmix=70% duration=10s lbas=256 planes=1
+ops=95740 mismatches=26 errors=7818 (write=0 read=7818) mmis_rate=2.72e-04 err_rate=7.55e-02
