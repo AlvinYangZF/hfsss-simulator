@@ -21,7 +21,11 @@ OUT_ISO="${1:-$GUEST/cidata.iso}"
 [ -f "$META" ]       || { echo "ERROR: meta-data missing: $META"; exit 1; }
 [ -f "$SSH_KEY.pub" ] || {
     echo "ERROR: SSH pubkey missing: $SSH_KEY.pub"
-    echo "       Generate via: ssh-keygen -t ed25519 -f \"$SSH_KEY\" -N \"\""
+    echo "       Generate via:"
+    echo "         ssh-keygen -t ed25519 -f \"$SSH_KEY\" -N \"\" \\"
+    echo "           && chmod 600 \"$SSH_KEY\""
+    echo "       (the chmod is required: under a permissive umask the"
+    echo "       key lands group/world-readable and ssh refuses to use it.)"
     exit 1
 }
 
