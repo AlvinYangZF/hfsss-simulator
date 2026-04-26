@@ -739,14 +739,16 @@ int perf_validation_run_all(struct perf_validation_report *report)
      *   - Two warmup iterations (was one) — the first warmup's
      *     pthread_create + first-use allocation are themselves noisy;
      *     the second lands in steady state.
-     *   - REQ122_TRIALS = 5 with median-of-5: tolerates 2 outliers in
-     *     either direction. At the observed pre-fix ~20 % single-trial
-     *     contamination rate, this drops the median-fail probability
-     *     from ~10 % (median-of-3) to ~6 % in theory; combined with
-     *     the lower per-trial stddev, 10-run local sampling shows
-     *     every trial clearing 70 %. Not a formal guarantee — the
-     *     bimodal tail could still bite on a differently-loaded CI
-     *     host, which is why we also re-check on each CI run.
+     *   - REQ122_TRIALS = 9 with median-of-9: tolerates 4 outliers in
+     *     either direction. Median-of-5 (the prior setting) still hit
+     *     a sub-70 % median on busy macOS hosts at roughly 1-in-5
+     *     `make test` invocations; raising to 9 takes the binomial
+     *     median-fail probability from ~6 % to under 1 % at the same
+     *     ~20 % per-trial contamination rate. Not a formal guarantee —
+     *     a differently-loaded CI host can still drift the per-trial
+     *     contamination upward — but the headroom is now wide enough
+     *     that flake-driven false negatives stop dominating the
+     *     `make test` signal.
      *
      * This matches the capability-verification intent of the
      * requirement without requiring every observation on a noisy box
@@ -781,7 +783,7 @@ int perf_validation_run_all(struct perf_validation_report *report)
         }
     }
 
-    enum { REQ122_TRIALS = 5 };
+    enum { REQ122_TRIALS = 9 };
     double trials[REQ122_TRIALS];
     for (int t = 0; t < REQ122_TRIALS; t++) {
         struct bench_result br_one, br_n;
@@ -791,8 +793,8 @@ int perf_validation_run_all(struct perf_validation_report *report)
         double iops_n   = br_n.read_iops   + br_n.write_iops;
         trials[t] = (iops_one > 0.0) ? (iops_n / (iops_one * (double)cfg_n.num_threads)) : 0.0;
     }
-    /* Median of five: simple sort then pick the middle element.
-     * REQ122_TRIALS is small so bubble-sort avoids pulling in qsort. */
+    /* Median: simple sort then pick the middle element. REQ122_TRIALS
+     * is small so bubble-sort avoids pulling in qsort. */
     for (int i = 0; i < REQ122_TRIALS - 1; i++) {
         for (int j = 0; j < REQ122_TRIALS - 1 - i; j++) {
             if (trials[j] > trials[j + 1]) {
@@ -801,7 +803,7 @@ int perf_validation_run_all(struct perf_validation_report *report)
         }
     }
     double measured_eff = trials[REQ122_TRIALS / 2];
-    add_result(report, "REQ-122", "Measured scalability >= 70% at 8 workers (median of 5 trials)",
+    add_result(report, "REQ-122", "Measured scalability >= 70% at 8 workers (median of 9 trials)",
                measured_eff * 100.0, 70.0, "%", true);
 
     /* REQ-123: CPU utilization <= 50% under peak load. "Peak load"
