@@ -167,6 +167,7 @@ TEST_CMD_INTEG_HEAVY = $(BIN_DIR)/test_cmd_integration_heavy
 TEST_PROFILE_MATRIX = $(BIN_DIR)/test_profile_matrix
 TEST_MP_CONCURRENCY = $(BIN_DIR)/test_media_multi_plane_concurrency
 TEST_CHANNEL_WORKER = $(BIN_DIR)/test_channel_worker
+BENCH_CQ = $(BIN_DIR)/bench_channel_worker_cq
 SYSTEST_NVME_CLI = $(BIN_DIR)/systest_nvme_cli_compat
 SYSTEST_FIO_COMPAT = $(BIN_DIR)/systest_fio_compat
 SYSTEST_PHASE7_INT = $(BIN_DIR)/systest_phase7_integration
@@ -243,11 +244,11 @@ COVERAGE_E2E_BINS = $(COVERAGE_BIN_DIR)/hfsss-nbd-server
 COVERAGE_BINS = $(COVERAGE_UT_BINS) $(COVERAGE_E2E_BINS)
 
 # Targets
-.PHONY: all clean directories test systest stress-long stress-burn-in help \
+.PHONY: all clean directories test systest stress-long stress-burn-in bench-cq help \
 	coverage-build coverage-clean coverage-ut coverage-e2e coverage-merge coverage-frontend coverage-frontend-update coverage coverage-selftest \
 	qemu-blackbox qemu-blackbox-list qemu-blackbox-ci qemu-blackbox-soak pre-checkin
 
-all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_TIMING_JITTER) $(TEST_RETENTION) $(TEST_STRESS_BURN_IN) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_SHMEM_IF) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_TRACE) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT) $(TEST_MSGQ) $(TEST_NVME_ADMIN) $(TEST_NVME_IO) $(TEST_CMD_INTEG_BASIC) $(TEST_CMD_INTEG_MID) $(TEST_CMD_INTEG_HEAVY) $(TEST_PROFILE_MATRIX) $(TEST_MP_CONCURRENCY) $(TEST_CHANNEL_WORKER) $(SYSTEST_NVME_CLI) $(SYSTEST_FIO_COMPAT) $(SYSTEST_PHASE7_INT) $(TEST_RESET_ABORT_RACE) $(TEST_FTL_PROFILE) $(TEST_SSSIM_PROFILE) $(FTL_MFC_REPRO)
+all: directories $(LIBHFSSS_COMMON) $(LIBHFSSS_MEDIA) $(LIBHFSSS_HAL) $(LIBHFSSS_FTL) $(LIBHFSSS_CTRL) $(LIBHFSSS_PCIE) $(LIBHFSSS_SSSIM) $(LIBHFSSS_PERF) $(TEST_COMMON) $(TEST_MEDIA) $(TEST_TIMING_JITTER) $(TEST_RETENTION) $(TEST_STRESS_BURN_IN) $(TEST_HAL) $(TEST_FTL) $(TEST_CTRL) $(TEST_SHMEM_IF) $(TEST_PCIE) $(TEST_SSSIM) $(TEST_NVME_USPACE) $(TEST_BOOT) $(TEST_NOR) $(TEST_FTL_REL) $(TEST_RT) $(TEST_OOB) $(TEST_CONFIG) $(TEST_FAULT) $(TEST_RELIABILITY) $(TEST_PERF) $(TEST_DSM) $(TEST_PRP) $(STRESS_RW) $(STRESS_MIXED) $(STRESS_MIXED_TRIM) $(HFSSS_CTRL) $(TEST_FTL_INT) $(STRESS_ADMIN_MIX) $(TEST_SB) $(TEST_POWER_CYCLE) $(TEST_FOUNDATION) $(TEST_T10PI) $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(SYSTEST_WG) $(SYSTEST_PR) $(TEST_UPLP) $(TEST_QOS) $(TEST_SECURITY) $(TEST_MULTI_NS) $(TEST_THERMAL_TEL) $(STRESS_ENTERPRISE) $(TEST_PROC) $(STRESS_STABILITY) $(HFSSS_IMG_EXPORT) $(HFSSS_NBD) $(TEST_LARGE_CAP) $(TEST_IO_QUEUE) $(TEST_TAA) $(TEST_TRACE) $(TEST_MT_FTL) $(TEST_GC_MT) $(TEST_INFLIGHT) $(TEST_MSGQ) $(TEST_NVME_ADMIN) $(TEST_NVME_IO) $(TEST_CMD_INTEG_BASIC) $(TEST_CMD_INTEG_MID) $(TEST_CMD_INTEG_HEAVY) $(TEST_PROFILE_MATRIX) $(TEST_MP_CONCURRENCY) $(TEST_CHANNEL_WORKER) $(BENCH_CQ) $(SYSTEST_NVME_CLI) $(SYSTEST_FIO_COMPAT) $(SYSTEST_PHASE7_INT) $(TEST_RESET_ABORT_RACE) $(TEST_FTL_PROFILE) $(TEST_SSSIM_PROFILE) $(FTL_MFC_REPRO)
 	@echo "========================================"
 	@echo "HFSSS build complete!"
 	@echo "========================================"
@@ -387,6 +388,10 @@ $(TEST_MP_CONCURRENCY): $(TEST_DIR)/test_media_multi_plane_concurrency.c $(LIBHF
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-media -lhfsss-common $(LDFLAGS)
 
 $(TEST_CHANNEL_WORKER): $(TEST_DIR)/test_channel_worker.c $(LIBHFSSS_CTRL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-controller -lhfsss-media -lhfsss-common $(LDFLAGS)
+
+$(BENCH_CQ): $(TEST_DIR)/bench_channel_worker_cq.c $(LIBHFSSS_CTRL) $(LIBHFSSS_MEDIA) $(LIBHFSSS_COMMON)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) $< -o $@ -L$(LIB_DIR) -lhfsss-controller -lhfsss-media -lhfsss-common $(LDFLAGS)
 
@@ -689,6 +694,16 @@ systest: directories $(SYSTEST_DI) $(SYSTEST_NC) $(SYSTEST_EB) $(SYSTEST_PS) $(S
 	@echo "All system-level tests complete!"
 	@echo "========================================"
 
+# REQ-045 tier-2 CQ latency bench harness — opt-in only, NOT part of `make test`.
+# Optional: pass STRESS_RESULTS_FILE=/path/to/file.txt to capture a CI-scrapable
+#           key=value summary. Pass BENCH_OPS / BENCH_RATE_OPS_PER_SEC to tune
+#           the workload size / pacing without rebuilding.
+bench-cq: $(BENCH_CQ)
+	@STRESS_RESULTS_FILE='$(STRESS_RESULTS_FILE)' \
+	 BENCH_OPS='$(BENCH_OPS)' \
+	 BENCH_RATE_OPS_PER_SEC='$(BENCH_RATE_OPS_PER_SEC)' \
+	 $(BENCH_CQ)
+
 # Test
 test: all
 	@echo "========================================"
@@ -811,6 +826,7 @@ help:
 	@echo "  systest            - Run system-level tests"
 	@echo "  stress-long        - Run extended stability stress test"
 	@echo "  stress-burn-in     - Run 1h burn-in (REQ-137) with system_monitor sampling"
+	@echo "  bench-cq           - Run REQ-045 tier-2 CQ latency bench harness (opt-in)"
 	@echo "  clean              - Clean build/ directory"
 	@echo "  help               - Show this help message"
 	@echo ""
