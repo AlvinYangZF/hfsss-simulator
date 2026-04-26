@@ -374,12 +374,19 @@ static void *producer_thread(void *arg)
         wait_until(deadline_for(start, bc->rate_ops_per_sec, i));
 
         /* Submit with retry on BUSY (CQ back-pressure flows through to
-         * the submit ring). yield-spin keeps the producer responsive
-         * to cleanup. */
+         * the submit ring). The fatal-check in the BUSY branch is
+         * load-bearing: once teardown signals stop, channel_worker_submit
+         * returns HFSSS_ERR_BUSY indefinitely, so a plain yield-spin
+         * would hang the producer and deadlock pthread_join in
+         * teardown_channels. */
         for (;;) {
             int rc = channel_worker_submit(&bc->worker, &cmd->ccmd);
             if (rc == HFSSS_OK) break;
             if (rc == HFSSS_ERR_BUSY) {
+                if (atomic_load(&bc->fatal)) {
+                    bench_cmd_free(cmd);
+                    goto out;
+                }
                 sched_yield();
                 continue;
             }
