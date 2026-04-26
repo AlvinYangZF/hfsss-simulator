@@ -22,7 +22,13 @@ hfsss_blackbox_init_defaults() {
     HFSSS_NBD_MODE="${HFSSS_NBD_MODE:-mt}"
     HFSSS_GUEST_NVME_DEV="${HFSSS_GUEST_NVME_DEV:-/dev/nvme0n1}"
     HFSSS_GUEST_NVME_CTRL="${HFSSS_GUEST_NVME_CTRL:-/dev/nvme0}"
-    HFSSS_SSH_KEY="${HFSSS_SSH_KEY:-/tmp/hfsss_qemu_key}"
+    # Persistent SSH key location. Older default lived under /tmp/, which
+    # macOS wipes on reboot, so the runner re-generated a fresh key on
+    # first run after every reboot — and the per-machine cidata.iso (which
+    # bakes the previous pubkey into the guest's authorized_keys) then no
+    # longer authorized it. ~/.ssh/ survives reboots and is the standard
+    # spot for user-private SSH material.
+    HFSSS_SSH_KEY="${HFSSS_SSH_KEY:-${HOME}/.ssh/hfsss_qemu_key}"
     HFSSS_ARTIFACT_ROOT="${HFSSS_ARTIFACT_ROOT:-$HFSSS_PROJECT_DIR/build/blackbox-tests/$(hfsss_timestamp)}"
     HFSSS_QEMU_CODE_FD="${HFSSS_QEMU_CODE_FD:-/opt/homebrew/share/qemu/edk2-aarch64-code.fd}"
     HFSSS_QEMU_BIN="${HFSSS_QEMU_BIN:-qemu-system-aarch64}"
@@ -139,7 +145,26 @@ hfsss_blackbox_reserve_ports() {
 }
 
 hfsss_blackbox_prepare_ssh_key() {
+    # One-shot migration from the legacy /tmp/ default. If the new
+    # persistent location is empty but a key still lives at the old
+    # /tmp/ path (e.g. it was generated on a previous run before the
+    # reboot wiped /tmp), move it across so the cidata.iso authorized
+    # for that pubkey continues to work without a rebuild. Skip when the
+    # caller has overridden HFSSS_SSH_KEY explicitly.
+    local legacy_key="/tmp/hfsss_qemu_key"
+    if [ "$HFSSS_SSH_KEY" = "${HOME}/.ssh/hfsss_qemu_key" ] \
+       && [ ! -f "$HFSSS_SSH_KEY" ] \
+       && [ -f "$legacy_key" ]; then
+        mkdir -p "$(dirname "$HFSSS_SSH_KEY")"
+        chmod 700 "$(dirname "$HFSSS_SSH_KEY")" 2>/dev/null || true
+        mv "$legacy_key"     "$HFSSS_SSH_KEY"     2>/dev/null || true
+        mv "${legacy_key}.pub" "${HFSSS_SSH_KEY}.pub" 2>/dev/null || true
+        chmod 600 "$HFSSS_SSH_KEY"      2>/dev/null || true
+        chmod 644 "${HFSSS_SSH_KEY}.pub" 2>/dev/null || true
+    fi
     if [ ! -f "$HFSSS_SSH_KEY" ]; then
+        mkdir -p "$(dirname "$HFSSS_SSH_KEY")"
+        chmod 700 "$(dirname "$HFSSS_SSH_KEY")" 2>/dev/null || true
         ssh-keygen -t ed25519 -f "$HFSSS_SSH_KEY" -N "" -q
     fi
 }
