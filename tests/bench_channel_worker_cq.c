@@ -20,16 +20,27 @@
  *   BENCH_RATE_OPS_PER_SEC  — pacing rate (0 = unpaced; default 0).
  *   STRESS_RESULTS_FILE     — when set, key=value summary is appended.
  *
- * PASS criterion: every submitted op was observed by the consumer AND
- * the aggregate p99 latency is below the documented budget. Latency
- * here is wall-clock submit→complete, so an unpaced producer that
- * saturates the SPSC ring naturally accrues queue-wait at the head of
- * each op; with ring depth of 256 and the modeled NAND op time the
- * harness observes p99 in the low tens of milliseconds. The budget is
- * deliberately set to 100 ms so the harness catches order-of-magnitude
- * regressions (e.g. an unbounded spin or a latent deadlock surfacing
- * as a multi-second tail) without flaking on natural queue-depth
- * backpressure. Exit 0 on PASS, non-zero otherwise.
+ * PASS criterion (all four must hold):
+ *   - every submitted op was observed by the consumer through the CQ;
+ *   - every observed op completed with status == HFSSS_OK (failed_ops == 0);
+ *   - no producer/consumer hit a fatal harness error;
+ *   - aggregate p99 latency over the OK-only sample set is below the
+ *     documented budget.
+ *
+ * Failure status from the worker is the gate that distinguishes a
+ * working CQ from a CQ that merely delivers commands. Failed ops are
+ * counted and reported but excluded from the latency percentile pool,
+ * because failures often complete quickly and would skew the
+ * distribution downward and hide real regressions.
+ *
+ * Latency here is wall-clock submit→complete, so an unpaced producer
+ * that saturates the SPSC ring naturally accrues queue-wait at the
+ * head of each op; with ring depth of 256 and the modeled NAND op
+ * time the harness observes p99 in the low tens of milliseconds. The
+ * budget is deliberately set to 100 ms so the harness catches
+ * order-of-magnitude regressions (e.g. an unbounded spin or a latent
+ * deadlock surfacing as a multi-second tail) without flaking on
+ * natural queue-depth backpressure. Exit 0 on PASS, non-zero otherwise.
  *
  * Standalone — not wired into `make test`. Build via `make bench-cq`.
  */
@@ -105,8 +116,11 @@ struct bench_channel {
     _Atomic int            prod_done;
     _Atomic u64            submitted;
     _Atomic u64            completed;
+    _Atomic u64            failed_ops;       /* drained cmds whose status != HFSSS_OK */
+    _Atomic int            first_fail_status;/* first observed non-OK status, or 0 */
     _Atomic int            fatal;            /* 1 if producer/consumer hit a fatal error */
-    /* Latency samples — owned by the consumer, sized to target_ops. */
+    /* Latency samples — owned by the consumer. Only successful (HFSSS_OK)
+     * completions are recorded; sized to target_ops as the worst-case bound. */
     u64                   *samples;
     u32                    sample_count;
 };
@@ -414,16 +428,28 @@ static void *consumer_thread(void *arg)
         for (int i = 0; i < n; i++) {
             struct channel_cmd *cc = batch[i];
             struct bench_cmd   *cmd = (struct bench_cmd *)cc;
-            u64 lat = cc->complete_ts_ns - cc->submit_ts_ns;
-            if (popped_total < bc->target_ops) {
-                bc->samples[popped_total] = lat;
+            if (cc->status == HFSSS_OK) {
+                u64 lat = cc->complete_ts_ns - cc->submit_ts_ns;
+                if (bc->sample_count < bc->target_ops) {
+                    bc->samples[bc->sample_count] = lat;
+                    bc->sample_count++;
+                }
+            } else {
+                /* Record the failure but keep draining; failed cmds still
+                 * own a CQ slot and a heap allocation that must be released.
+                 * Failed-op latency is excluded from the percentile pool
+                 * because failures often complete fast and would skew the
+                 * distribution downward, hiding real CQ regressions. */
+                atomic_fetch_add(&bc->failed_ops, 1);
+                int expected = 0;
+                atomic_compare_exchange_strong(&bc->first_fail_status,
+                                               &expected, cc->status);
             }
             popped_total++;
             atomic_fetch_add(&bc->completed, 1);
             bench_cmd_free(cmd);
         }
     }
-    bc->sample_count = popped_total;
     return NULL;
 }
 
@@ -484,26 +510,32 @@ static void print_report(const struct latency_stats *s,
                          u32 ops_per_channel,
                          u64 wall_ns,
                          double ops_per_sec,
+                         u64 observed_ops,
+                         u64 failed_ops,
+                         int first_fail_status,
                          int pass)
 {
     double wall_sec = (double)wall_ns / 1e9;
     printf("========================================\n");
     printf("REQ-045 tier-2 CQ latency bench\n");
     printf("========================================\n");
-    printf("channels         : %u\n", channels);
-    printf("ops_per_channel  : %u\n", ops_per_channel);
-    printf("total_ops        : %llu\n", (unsigned long long)s->count);
-    printf("wall_time_sec    : %.3f\n", wall_sec);
-    printf("ops_per_sec      : %.1f\n", ops_per_sec);
+    printf("channels             : %u\n", channels);
+    printf("ops_per_channel      : %u\n", ops_per_channel);
+    printf("observed_ops         : %llu\n", (unsigned long long)observed_ops);
+    printf("ok_ops               : %llu\n", (unsigned long long)s->count);
+    printf("failed_ops           : %llu\n", (unsigned long long)failed_ops);
+    printf("first_fail_status    : %d\n",   first_fail_status);
+    printf("wall_time_sec        : %.3f\n", wall_sec);
+    printf("ops_per_sec          : %.1f\n", ops_per_sec);
     printf("----------------------------------------\n");
-    printf("latency_min_ns   : %llu\n", (unsigned long long)s->min_ns);
-    printf("latency_p50_ns   : %llu\n", (unsigned long long)s->p50_ns);
-    printf("latency_p99_ns   : %llu\n", (unsigned long long)s->p99_ns);
-    printf("latency_p999_ns  : %llu\n", (unsigned long long)s->p999_ns);
-    printf("latency_max_ns   : %llu\n", (unsigned long long)s->max_ns);
-    printf("latency_mean_ns  : %.1f\n", s->mean_ns);
+    printf("latency_min_ns       : %llu\n", (unsigned long long)s->min_ns);
+    printf("latency_p50_ns       : %llu\n", (unsigned long long)s->p50_ns);
+    printf("latency_p99_ns       : %llu\n", (unsigned long long)s->p99_ns);
+    printf("latency_p999_ns      : %llu\n", (unsigned long long)s->p999_ns);
+    printf("latency_max_ns       : %llu\n", (unsigned long long)s->max_ns);
+    printf("latency_mean_ns      : %.1f\n", s->mean_ns);
     printf("----------------------------------------\n");
-    printf("result           : %s\n", pass ? "PASS" : "FAIL");
+    printf("result               : %s\n", pass ? "PASS" : "FAIL");
     printf("========================================\n");
 }
 
@@ -517,6 +549,9 @@ static void write_results_file(const char *path,
                                u32 channels,
                                u32 ops_per_channel,
                                u32 expected_total,
+                               u64 observed_ops,
+                               u64 failed_ops,
+                               int first_fail_status,
                                u64 wall_ns,
                                double ops_per_sec,
                                int pass)
@@ -528,13 +563,16 @@ static void write_results_file(const char *path,
         return;
     }
     double wall_sec = (double)wall_ns / 1e9;
-    fprintf(f, "result=%s\n",          pass ? "PASS" : "FAIL");
-    fprintf(f, "channels=%u\n",        channels);
-    fprintf(f, "ops_per_channel=%u\n", ops_per_channel);
-    fprintf(f, "expected_total=%u\n",  expected_total);
-    fprintf(f, "total_ops=%llu\n",     (unsigned long long)s->count);
-    fprintf(f, "wall_time_sec=%.3f\n", wall_sec);
-    fprintf(f, "ops_per_sec=%.1f\n",   ops_per_sec);
+    fprintf(f, "result=%s\n",            pass ? "PASS" : "FAIL");
+    fprintf(f, "channels=%u\n",          channels);
+    fprintf(f, "ops_per_channel=%u\n",   ops_per_channel);
+    fprintf(f, "expected_total=%u\n",    expected_total);
+    fprintf(f, "observed_ops=%llu\n",    (unsigned long long)observed_ops);
+    fprintf(f, "ok_ops=%llu\n",          (unsigned long long)s->count);
+    fprintf(f, "failed_ops=%llu\n",      (unsigned long long)failed_ops);
+    fprintf(f, "first_fail_status=%d\n", first_fail_status);
+    fprintf(f, "wall_time_sec=%.3f\n",   wall_sec);
+    fprintf(f, "ops_per_sec=%.1f\n",     ops_per_sec);
     fprintf(f, "latency_min_ns=%llu\n",  (unsigned long long)s->min_ns);
     fprintf(f, "latency_p50_ns=%llu\n",  (unsigned long long)s->p50_ns);
     fprintf(f, "latency_p99_ns=%llu\n",  (unsigned long long)s->p99_ns);
@@ -649,7 +687,10 @@ int main(void)
         atomic_store(&channels[ch].prod_done, 0);
         atomic_store(&channels[ch].submitted, 0);
         atomic_store(&channels[ch].completed, 0);
+        atomic_store(&channels[ch].failed_ops, 0);
+        atomic_store(&channels[ch].first_fail_status, 0);
         atomic_store(&channels[ch].fatal,     0);
+        channels[ch].sample_count = 0;
         channels[ch].samples = (u64 *)calloc(ops_per_ch, sizeof(u64));
         if (!channels[ch].samples) {
             fprintf(stderr, "[bench] OOM allocating samples ch=%u\n", ch);
@@ -703,15 +744,23 @@ int main(void)
     u64 wall_end = get_time_ns();
     u64 wall_ns  = wall_end - wall_start;
 
-    /* Aggregate samples. */
-    u64 total = 0;
+    /* Aggregate successful-op samples + failure counts across channels. */
+    u64 ok_total      = 0;
+    u64 failed_total  = 0;
+    u64 observed_total = 0;
+    int first_fail    = 0;
     for (u32 ch = 0; ch < BENCH_CHANNELS; ch++) {
-        total += channels[ch].sample_count;
+        ok_total       += channels[ch].sample_count;
+        failed_total   += atomic_load(&channels[ch].failed_ops);
+        observed_total += atomic_load(&channels[ch].completed);
+        if (first_fail == 0) {
+            first_fail = atomic_load(&channels[ch].first_fail_status);
+        }
     }
-    u64 *agg = (u64 *)calloc(total ? total : 1, sizeof(u64));
+    u64 *agg = (u64 *)calloc(ok_total ? ok_total : 1, sizeof(u64));
     if (!agg) {
         fprintf(stderr, "[bench] OOM aggregating samples (total=%llu)\n",
-                (unsigned long long)total);
+                (unsigned long long)ok_total);
         teardown_channels(channels, BENCH_CHANNELS);
         media_cleanup(&media);
         return 2;
@@ -724,22 +773,27 @@ int main(void)
     }
 
     struct latency_stats stats;
-    compute_stats(agg, total, &stats);
+    compute_stats(agg, ok_total, &stats);
     free(agg);
 
     u32 expected_total = ops_per_ch * BENCH_CHANNELS;
-    double ops_per_sec = wall_ns ? ((double)total * 1e9 / (double)wall_ns) : 0.0;
+    double ops_per_sec = wall_ns ? ((double)ok_total * 1e9 / (double)wall_ns) : 0.0;
     int pass = !any_fatal &&
-               (total == expected_total) &&
+               (failed_total == 0) &&
+               (observed_total == expected_total) &&
+               (ok_total == expected_total) &&
                (stats.p99_ns < BENCH_LATENCY_P99_BUDGET_NS);
 
     print_report(&stats, BENCH_CHANNELS, ops_per_ch,
-                 wall_ns, ops_per_sec, pass);
+                 wall_ns, ops_per_sec,
+                 observed_total, failed_total, first_fail, pass);
 
     if (results_path && *results_path) {
         write_results_file(results_path, &stats,
                            BENCH_CHANNELS, ops_per_ch,
-                           expected_total, wall_ns, ops_per_sec, pass);
+                           expected_total, observed_total,
+                           failed_total, first_fail,
+                           wall_ns, ops_per_sec, pass);
     }
 
     teardown_channels(channels, BENCH_CHANNELS);
