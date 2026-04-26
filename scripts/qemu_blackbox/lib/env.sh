@@ -22,7 +22,13 @@ hfsss_blackbox_init_defaults() {
     HFSSS_NBD_MODE="${HFSSS_NBD_MODE:-mt}"
     HFSSS_GUEST_NVME_DEV="${HFSSS_GUEST_NVME_DEV:-/dev/nvme0n1}"
     HFSSS_GUEST_NVME_CTRL="${HFSSS_GUEST_NVME_CTRL:-/dev/nvme0}"
-    HFSSS_SSH_KEY="${HFSSS_SSH_KEY:-/tmp/hfsss_qemu_key}"
+    # Persistent SSH key location. Older default lived under /tmp/, which
+    # macOS wipes on reboot, so the runner re-generated a fresh key on
+    # first run after every reboot — and the per-machine cidata.iso (which
+    # bakes the previous pubkey into the guest's authorized_keys) then no
+    # longer authorized it. ~/.ssh/ survives reboots and is the standard
+    # spot for user-private SSH material.
+    HFSSS_SSH_KEY="${HFSSS_SSH_KEY:-${HOME}/.ssh/hfsss_qemu_key}"
     HFSSS_ARTIFACT_ROOT="${HFSSS_ARTIFACT_ROOT:-$HFSSS_PROJECT_DIR/build/blackbox-tests/$(hfsss_timestamp)}"
     HFSSS_QEMU_CODE_FD="${HFSSS_QEMU_CODE_FD:-/opt/homebrew/share/qemu/edk2-aarch64-code.fd}"
     HFSSS_QEMU_BIN="${HFSSS_QEMU_BIN:-qemu-system-aarch64}"
@@ -139,8 +145,63 @@ hfsss_blackbox_reserve_ports() {
 }
 
 hfsss_blackbox_prepare_ssh_key() {
+    local ssh_dir home_norm legacy_key cidata_iso
+    ssh_dir="$(dirname "$HFSSS_SSH_KEY")"
+
+    # Atomic create-with-permissions, only when the directory is missing.
+    # We never modify perms on an existing ~/.ssh — it may carry
+    # intentional ACLs, group settings, or be NFS-mounted with shared
+    # workflows we should not perturb.
+    [ -d "$ssh_dir" ] || mkdir -m 700 -p "$ssh_dir"
+
+    # One-shot migration from the legacy /tmp/ default. macOS wipes
+    # /tmp on reboot; relocating the key into ~/.ssh/ on first run
+    # post-reboot preserves the keypair the existing cidata.iso was
+    # built against, so SSH bootstrap keeps working without a rebuild.
+    # Trailing slash on $HOME (rare but possible from /etc/passwd or
+    # exotic shells) compares as a different string but resolves the
+    # same, so normalize before the equality check. Migration only
+    # triggers when the caller did not override HFSSS_SSH_KEY.
+    home_norm="${HOME%/}"
+    legacy_key="/tmp/hfsss_qemu_key"
+    if [ "$HFSSS_SSH_KEY" = "${home_norm}/.ssh/hfsss_qemu_key" ] \
+       && [ ! -f "$HFSSS_SSH_KEY" ] \
+       && [ -f "$legacy_key" ] \
+       && [ -f "${legacy_key}.pub" ]; then
+        # Both halves of the keypair must move together — an orphan
+        # private key with no matching public would silently corrupt
+        # downstream auth flows.
+        mv "$legacy_key"     "$HFSSS_SSH_KEY"
+        mv "${legacy_key}.pub" "${HFSSS_SSH_KEY}.pub"
+        chmod 600 "$HFSSS_SSH_KEY"
+        chmod 644 "${HFSSS_SSH_KEY}.pub"
+        return
+    fi
+
     if [ ! -f "$HFSSS_SSH_KEY" ]; then
         ssh-keygen -t ed25519 -f "$HFSSS_SSH_KEY" -N "" -q
+        # If a guest cidata.iso already exists, it almost certainly
+        # authorizes the keypair we just lost (e.g. /tmp/ wiped without
+        # a legacy keypair to migrate). The runner cannot rebuild the
+        # iso from here — that's a separate tool — but it can flag the
+        # situation explicitly so the SSH-not-reachable failure has a
+        # visible upstream cause instead of looking like a guest hang.
+        cidata_iso=""
+        if [ -n "${HFSSS_GUEST_DIR:-}" ] && [ -f "$HFSSS_GUEST_DIR/cidata.iso" ]; then
+            cidata_iso="$HFSSS_GUEST_DIR/cidata.iso"
+        elif [ -f "${HFSSS_PROJECT_DIR:-$PWD}/guest/cidata.iso" ]; then
+            cidata_iso="${HFSSS_PROJECT_DIR:-$PWD}/guest/cidata.iso"
+        fi
+        if [ -n "$cidata_iso" ]; then
+            cat >&2 <<EOF
+[hfsss-blackbox] WARN: generated a fresh SSH keypair at $HFSSS_SSH_KEY
+[hfsss-blackbox]       but $cidata_iso already exists. The previously
+[hfsss-blackbox]       authorized pubkey is gone, so SSH auth into the
+[hfsss-blackbox]       guest will fail until cidata.iso is rebuilt
+[hfsss-blackbox]       against the new pubkey. See
+[hfsss-blackbox]       docs/PRE_CHECKIN_STANDARD.md for the rebuild recipe.
+EOF
+        fi
     fi
 }
 
