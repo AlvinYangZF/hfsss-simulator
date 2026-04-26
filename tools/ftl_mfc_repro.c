@@ -168,6 +168,11 @@ struct dispatcher_op {
     uint8_t               *buf;            /* heap wbuf for write, rbuf for read */
     uint32_t              new_crc;         /* write only: CRC committed on success */
     bool                  verify_skipped;  /* read only: pending writes ⇒ skip verify */
+    /* Read only: snapshot of g_crc_map[lba].valid taken under stripe lock at
+     * submit time. NOENT on a never-written LBA is a workload-warmup artifact
+     * (no L2P mapping yet), not a race; only errors with valid_at_submit==true
+     * are counted as real signal. */
+    bool                  valid_at_submit;
     struct dispatcher_op *next;
 };
 
@@ -269,19 +274,22 @@ static void reaper_handle_dispatcher_op(struct dispatcher_op *op,
                                         atomic_uint_fast64_t *error_count)
 {
     if (cpl_status != HFSSS_OK) {
-        atomic_fetch_add(error_count, 1u);
         if (op->op_type == IO_OP_WRITE) {
+            atomic_fetch_add(error_count, 1u);
             atomic_fetch_add(&g_write_errors, 1u);
             if (atomic_fetch_add(&g_logged_write_errors, 1u) < ERROR_LOG_CAP_WRITE) {
                 fprintf(stderr, "ERR op=WRITE lba=%" PRIu32 " status=%d\n",
                         op->lba, cpl_status);
             }
-        } else {
+        } else if (op->valid_at_submit) {
+            atomic_fetch_add(error_count, 1u);
             if (atomic_fetch_add(&g_logged_read_errors, 1u) < ERROR_LOG_CAP_READ) {
                 fprintf(stderr, "ERR op=READ lba=%" PRIu32 " status=%d\n",
                         op->lba, cpl_status);
             }
         }
+        /* else: read NOENT on a never-written LBA — workload-warmup artifact,
+         * not a race signal; suppress to keep the baseline meaningful. */
     }
     if (op->op_type == IO_OP_WRITE) {
         pthread_mutex_lock(&g_locks[op->stripe].mu);
@@ -450,6 +458,14 @@ static void *worker_fn(void *arg)
         }
 
         if (do_read) {
+            /* Snapshot valid under stripe lock at submit time. A NOENT on an
+             * LBA that was never written is a workload-warmup artifact (no
+             * L2P mapping yet exists), not a race; only count errors on LBAs
+             * that were already known-written so the baseline is meaningful. */
+            pthread_mutex_lock(&g_locks[stripe].mu);
+            bool valid_at_submit = g_crc_map[lba].valid;
+            pthread_mutex_unlock(&g_locks[stripe].mu);
+
             struct io_request req;
             memset(&req, 0, sizeof(req));
             req.opcode = IO_OP_READ;
@@ -473,7 +489,7 @@ static void *worker_fn(void *arg)
                     }
                 }
                 local_ops++;
-            } else {
+            } else if (valid_at_submit) {
                 atomic_fetch_add(wa->error_count, 1u);
                 if (atomic_fetch_add(&g_logged_read_errors, 1u) < ERROR_LOG_CAP_READ) {
                     fprintf(stderr, "ERR op=READ lba=%" PRIu32 " status=%d\n",
@@ -563,7 +579,8 @@ static void *dispatcher_producer_fn(void *arg)
                 continue;
             }
             pthread_mutex_lock(&g_locks[stripe].mu);
-            op->verify_skipped = (g_crc_map[lba].pending_writes > 0u);
+            op->verify_skipped  = (g_crc_map[lba].pending_writes > 0u);
+            op->valid_at_submit = g_crc_map[lba].valid;
             pthread_mutex_unlock(&g_locks[stripe].mu);
 
             struct io_request req;
