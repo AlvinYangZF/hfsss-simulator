@@ -106,19 +106,28 @@ contention concentration (longer LBA range, sequential-friendly).
 to *concentrated* die contention, which only the random-write
 verify cases at this fio config produce.
 
-## Proposed fix shape
+## Fix shape (as landed)
 
-Two focused edits in `src/ftl/ftl.c`, both inside
-`ftl_write_page_mt` (and the symmetric pattern in
-`ftl_read_page_mt`):
+Three edits in `src/ftl/ftl.c`, all inside `ftl_write_page_mt` and
+the symmetric `ftl_read_page_mt`:
 
-**Edit 1 — backoff on transient retries:**
+**Edit 1 — bump retry budget from 3 to 512 with proper sleep
+between attempts.** TLC tProg is 900-1300 µs; under N-thread
+contention with pthread mutex unfairness the per-attempt latency
+can reach tens of ms. `sched_yield()` is too short (microseconds);
+use `nanosleep(100 µs)` and budget 512 retries → ~51 ms cumulative
+wait. Well within NVMe command timeout.
+
 ```
-if (ret == HFSSS_OK) break;
-if (ret == HFSSS_ERR_BUSY || ret == HFSSS_ERR_AGAIN) {
-    sched_yield();  /* let the die's worker advance */
+static inline void ftl_busy_backoff_sleep(void) {
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 100 * 1000 };
+    nanosleep(&ts, NULL);
 }
-ctx->error.write_error_count++;
+const int max_retries = 512;  /* 64 was insufficient for fio-012 */
+...
+if (ret == HFSSS_ERR_BUSY || ret == HFSSS_ERR_AGAIN) {
+    ftl_busy_backoff_sleep();
+}
 ```
 
 **Edit 2 — don't burn blocks on transient BUSY:**
@@ -142,17 +151,29 @@ if (ret != HFSSS_OK) {
 }
 ```
 
-Optionally bump `max_write_retries` from 3 to a slightly larger
-number with the backoff in place (e.g. 8). The combination of yield
-+ keep-block makes retry cheap and durable.
+**Edit 3 — symmetric retry budget on read path.** Same rationale.
 
-Constraints:
+Constraints met:
+- Total LOC ≈ 50 (well under spec's 100-line ceiling).
+- No new data structures, no new locks, no CWB-lock changes.
+- No change to media / HAL / cmd_engine. The fix is FTL retry policy.
 
-- Total LOC stays under the spec's 100-line ceiling.
-- No new data structures, no new locks. The CWB lock already serializes
-  this path.
-- No change to media / HAL / cmd_engine. The fix is FTL policy, not
-  state-machine surgery.
+## Why this isn't the cleanest possible fix
+
+The retry-with-backoff approach is fundamentally polling. Under
+heavy contention, threads waste CPU spinning even when the die's
+worker is making no progress. A condvar-based wait-on-busy in
+cmd_engine would:
+- Remove polling overhead.
+- Give FIFO-ish ordering, eliminating the starvation window
+  pthread mutex creates.
+- Likely allow shorter retry budgets (or eliminate retries
+  altogether for transient errors).
+
+That change touches `nand_die` struct + `engine_submit` + the
+state-transition exit path, and would invalidate any test that
+asserts `engine_submit` returns BUSY synchronously. Out of scope
+for this PR; tracked as follow-up.
 
 ## Validation plan after fix
 
