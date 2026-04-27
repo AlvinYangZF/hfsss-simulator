@@ -707,11 +707,13 @@ int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     int ret;
     int retry_count;
     /* Generous transient-busy retry budget. See ftl_busy_backoff_sleep for
-     * timing rationale; 512 × 100 µs ≈ 51 ms cumulative wait covers
-     * worst-case die starvation under heavy MT contention with multiple
-     * planes contending for the same die_lock + scheduler unfairness in
-     * the cmd_engine fail-fast path. Well within NVMe command timeout. */
-    const int max_retries = 512;
+     * timing rationale; 2048 × 100 µs ≈ 205 ms cumulative wait covers
+     * worst-case die starvation under heavy MT contention. fio-012 (bs=128k
+     * iodepth=16) generates ~64 in-flight sub-writes per die under peak
+     * contention; with TLC tProg up to 1300 µs the worst-case wait per
+     * submit is ~80 ms, so 200 ms gives headroom. Well within NVMe command
+     * timeout (30 s). */
+    const int max_retries = 2048;
 
     if (!ctx || !taa || !data) {
         return HFSSS_ERR_INVAL;
@@ -774,13 +776,13 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     u32 ch, plane;
     int ret;
     int write_retry;
-    /* Generous transient-busy retry budget. See ftl_busy_backoff_sleep for
-     * timing rationale; 512 × 100 µs ≈ 51 ms cumulative wait covers
-     * worst-case die starvation under heavy MT contention. The prior
-     * 3-retry shape with no backoff collapsed into a die-contention storm
-     * under fio randwrite/seqwrite at iodepth=16, propagating EIO to the
-     * host as SCT=0x2 SC=0x80 Write Fault even when the block was fine. */
-    const int max_write_retries = 512;
+    /* See ftl_busy_backoff_sleep for timing rationale; 2048 × 100 µs ≈
+     * 205 ms cumulative wait covers worst-case die starvation under fio-012
+     * (bs=128k iodepth=16) where ~64 sub-writes contend for one die at
+     * peak. The prior 3-retry shape with no backoff collapsed into a die-
+     * contention storm, propagating EIO to the host as SCT=0x2 SC=0x80
+     * Write Fault even when the block was fine. */
+    const int max_write_retries = 2048;
 
     if (!ctx || !taa || !data) {
         IO_ERR_TRACE("L=ftl_write_page_mt site=bad-arg lba=%llu rc=%d",
