@@ -1,4 +1,5 @@
 #include "media/nand.h"
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -41,6 +42,12 @@ static int nand_init_hierarchy(struct nand_device *dev, u32 channel_count, u32 c
                     if (die_ret != HFSSS_OK) {
                         return die_ret;
                     }
+                    pthread_cond_t *cv = (pthread_cond_t *)malloc(sizeof(*cv));
+                    if (!cv) {
+                        return HFSSS_ERR_NOMEM;
+                    }
+                    pthread_cond_init(cv, NULL);
+                    nand_die->state_cv = cv;
                 }
 
                 for (plane = 0; plane < planes_per_die; plane++) {
@@ -148,6 +155,11 @@ static void nand_cleanup_hierarchy(struct nand_device *dev)
             for (die = 0; die < nand_chip->die_count; die++) {
                 struct nand_die *nand_die = &nand_chip->dies[die];
 
+                if (nand_die->state_cv) {
+                    pthread_cond_destroy((pthread_cond_t *)nand_die->state_cv);
+                    free(nand_die->state_cv);
+                    nand_die->state_cv = NULL;
+                }
                 mutex_cleanup(&nand_die->die_lock);
 
                 for (plane = 0; plane < nand_die->plane_count; plane++) {
