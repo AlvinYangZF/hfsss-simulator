@@ -687,12 +687,15 @@ int ftl_gc_trigger(struct ftl_ctx *ctx)
 
 /* Backoff sleep on transient HFSSS_ERR_BUSY/AGAIN inside the FTL retry
  * loops. The cmd_engine fails fast when the target die is in
- * DIE_*_ARRAY_BUSY (NAND op in progress), so a yield is too short — typical
- * tProg is hundreds of microseconds. 50 µs × 8 retries gives ~400 µs of
- * cumulative wait, comfortably covering tProg without burning CPU. */
+ * DIE_*_ARRAY_BUSY (NAND op in progress). TLC tPROG is 900-1300 µs and N
+ * threads on the same die wait N × tProg in worst case; combined with
+ * channel/die locks and pthread mutex unfairness in the cmd_engine fail-
+ * fast path, the per-attempt latency under fio-012-style contention
+ * (bs=128k seq writes iodepth=16) can reach tens of ms. 100 µs × 512
+ * retries ≈ 51 ms covers worst-case starvation without hammering CPU. */
 static inline void ftl_busy_backoff_sleep(void)
 {
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 };
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 100 * 1000 };
     nanosleep(&ts, NULL);
 }
 
@@ -703,13 +706,12 @@ int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     u32 ch, chip, die, plane, block, page;
     int ret;
     int retry_count;
-    /* Generous transient-busy retry budget under MT contention. The base ECC
-     * budget (READ_RETRY_MAX_ATTEMPTS) sized at three was tuned for serial
-     * reads; under MT it doubles as the BUSY/AGAIN retry budget, and the
-     * cmd_engine fails fast on a contended die rather than blocking. Sixty-
-     * four retries × 50 µs sleep gives ~3.2 ms cumulative wait, which covers
-     * tProg even under thundering-herd contention. */
-    const int max_retries = 64;
+    /* Generous transient-busy retry budget. See ftl_busy_backoff_sleep for
+     * timing rationale; 512 × 100 µs ≈ 51 ms cumulative wait covers
+     * worst-case die starvation under heavy MT contention with multiple
+     * planes contending for the same die_lock + scheduler unfairness in
+     * the cmd_engine fail-fast path. Well within NVMe command timeout. */
+    const int max_retries = 512;
 
     if (!ctx || !taa || !data) {
         return HFSSS_ERR_INVAL;
@@ -772,13 +774,13 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     u32 ch, plane;
     int ret;
     int write_retry;
-    /* Generous transient-busy retry budget. The cmd_engine fails fast when
-     * the target die is mid-op; 64 × 50 µs sleep covers tProg even under
-     * thundering-herd contention. The prior 3-retry shape with no backoff
-     * collapsed into a die-contention storm under fio randwrite iodepth=16,
-     * propagating EIO to the host as SCT=0x2 SC=0x80 Write Fault even when
-     * the block was fine. */
-    const int max_write_retries = 64;
+    /* Generous transient-busy retry budget. See ftl_busy_backoff_sleep for
+     * timing rationale; 512 × 100 µs ≈ 51 ms cumulative wait covers
+     * worst-case die starvation under heavy MT contention. The prior
+     * 3-retry shape with no backoff collapsed into a die-contention storm
+     * under fio randwrite/seqwrite at iodepth=16, propagating EIO to the
+     * host as SCT=0x2 SC=0x80 Write Fault even when the block was fine. */
+    const int max_write_retries = 512;
 
     if (!ctx || !taa || !data) {
         IO_ERR_TRACE("L=ftl_write_page_mt site=bad-arg lba=%llu rc=%d",
