@@ -123,6 +123,14 @@ struct crc_entry {
      * to avoid false-positive mismatches. Legacy mode never increments
      * this field. */
     uint16_t pending_writes;
+    /* Monotonic generation counter, incremented under the stripe lock by
+     * every write completion (legacy + dispatcher). Readers snapshot the
+     * gen at submit time and re-read it at verify time; any difference
+     * means a concurrent write completed during the read window, so the
+     * read's data + the current g_crc_map state aren't ordered with each
+     * other and verify must be skipped. Eliminates false-positive
+     * MISMATCH counts that are bookkeeping artifacts, not FTL bugs. */
+    uint32_t gen;
 };
 
 static struct crc_entry *g_crc_map;
@@ -173,6 +181,10 @@ struct dispatcher_op {
      * (no L2P mapping yet), not a race; only errors with valid_at_submit==true
      * are counted as real signal. */
     bool                  valid_at_submit;
+    /* Read only: snapshot of g_crc_map[lba].gen at submit time. Verify
+     * compares this against the current gen; a delta means another writer
+     * landed during our read window so skip verify to avoid false MISMATCH. */
+    uint32_t              gen_at_submit;
     struct dispatcher_op *next;
 };
 
@@ -296,6 +308,7 @@ static void reaper_handle_dispatcher_op(struct dispatcher_op *op,
         if (cpl_status == HFSSS_OK) {
             g_crc_map[op->lba].crc = op->new_crc;
             g_crc_map[op->lba].valid = true;
+            g_crc_map[op->lba].gen++;
         }
         if (g_crc_map[op->lba].pending_writes > 0u) {
             g_crc_map[op->lba].pending_writes--;
@@ -309,7 +322,7 @@ static void reaper_handle_dispatcher_op(struct dispatcher_op *op,
             pthread_mutex_lock(&g_locks[op->stripe].mu);
             struct crc_entry e = g_crc_map[op->lba];
             pthread_mutex_unlock(&g_locks[op->stripe].mu);
-            if (e.valid) {
+            if (e.valid && e.gen == op->gen_at_submit) {
                 uint32_t got = local_crc32c(op->buf, GEO_PGSZ);
                 if (got != e.crc) {
                     fprintf(stderr,
@@ -320,6 +333,8 @@ static void reaper_handle_dispatcher_op(struct dispatcher_op *op,
                     atomic_fetch_add(mismatch_count, 1u);
                 }
             }
+            /* else: gen advanced during read window — concurrent writer
+             * landed; data and current crc_map aren't ordered, skip verify. */
         }
         if (cpl_status == HFSSS_OK) {
             atomic_fetch_add(total_ops, 1u);
@@ -458,12 +473,18 @@ static void *worker_fn(void *arg)
         }
 
         if (do_read) {
-            /* Snapshot valid under stripe lock at submit time. A NOENT on an
-             * LBA that was never written is a workload-warmup artifact (no
-             * L2P mapping yet exists), not a race; only count errors on LBAs
-             * that were already known-written so the baseline is meaningful. */
+            /* Snapshot valid + gen + pending_writes under stripe lock at
+             * submit time. The combination filters all race windows:
+             *  - pending_at_submit > 0    → write in flight when we issued
+             *  - e.pending_writes > 0     → write started after our submit
+             *  - e.gen != gen_at_submit   → write completed during our read
+             *  - !e.valid                 → never written (warmup artifact)
+             * Any of these means the read+crc_map ordering is undefined, so
+             * verify is skipped to avoid bookkeeping false-positive MISMATCH. */
             pthread_mutex_lock(&g_locks[stripe].mu);
-            bool valid_at_submit = g_crc_map[lba].valid;
+            bool     valid_at_submit   = g_crc_map[lba].valid;
+            uint32_t gen_at_submit     = g_crc_map[lba].gen;
+            bool     pending_at_submit = (g_crc_map[lba].pending_writes > 0u);
             pthread_mutex_unlock(&g_locks[stripe].mu);
 
             struct io_request req;
@@ -477,7 +498,8 @@ static void *worker_fn(void *arg)
                 pthread_mutex_lock(&g_locks[stripe].mu);
                 struct crc_entry e = g_crc_map[lba];
                 pthread_mutex_unlock(&g_locks[stripe].mu);
-                if (e.valid) {
+                if (e.valid && e.gen == gen_at_submit &&
+                    !pending_at_submit && e.pending_writes == 0u) {
                     uint32_t got = local_crc32c(rbuf, GEO_PGSZ);
                     if (got != e.crc) {
                         fprintf(stderr,
@@ -505,6 +527,14 @@ static void *worker_fn(void *arg)
 
             uint32_t new_crc = local_crc32c(wbuf, GEO_PGSZ);
 
+            /* Mark this LBA as having an in-flight write so concurrent
+             * readers can skip verify (the read+crc_map ordering is
+             * undefined while a write is mid-execution). Decremented at
+             * completion under the same lock. */
+            pthread_mutex_lock(&g_locks[stripe].mu);
+            g_crc_map[lba].pending_writes++;
+            pthread_mutex_unlock(&g_locks[stripe].mu);
+
             struct io_request req;
             memset(&req, 0, sizeof(req));
             req.opcode = IO_OP_WRITE;
@@ -512,11 +542,17 @@ static void *worker_fn(void *arg)
             req.count  = 1;
             req.data   = wbuf;
             int status = submit_and_wait(mt, &req);
+            pthread_mutex_lock(&g_locks[stripe].mu);
             if (status == HFSSS_OK) {
-                pthread_mutex_lock(&g_locks[stripe].mu);
                 g_crc_map[lba].crc = new_crc;
                 g_crc_map[lba].valid = true;
-                pthread_mutex_unlock(&g_locks[stripe].mu);
+                g_crc_map[lba].gen++;
+            }
+            if (g_crc_map[lba].pending_writes > 0u) {
+                g_crc_map[lba].pending_writes--;
+            }
+            pthread_mutex_unlock(&g_locks[stripe].mu);
+            if (status == HFSSS_OK) {
                 local_ops++;
             } else {
                 atomic_fetch_add(wa->error_count, 1u);
@@ -581,6 +617,7 @@ static void *dispatcher_producer_fn(void *arg)
             pthread_mutex_lock(&g_locks[stripe].mu);
             op->verify_skipped  = (g_crc_map[lba].pending_writes > 0u);
             op->valid_at_submit = g_crc_map[lba].valid;
+            op->gen_at_submit   = g_crc_map[lba].gen;
             pthread_mutex_unlock(&g_locks[stripe].mu);
 
             struct io_request req;
