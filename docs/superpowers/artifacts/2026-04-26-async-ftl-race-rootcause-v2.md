@@ -111,12 +111,13 @@ verify cases at this fio config produce.
 Three edits in `src/ftl/ftl.c`, all inside `ftl_write_page_mt` and
 the symmetric `ftl_read_page_mt`:
 
-**Edit 1 — bump retry budget from 3 to 512 with proper sleep
+**Edit 1 — bump retry budget from 3 to 2048 with proper sleep
 between attempts.** TLC tProg is 900-1300 µs; under N-thread
 contention with pthread mutex unfairness the per-attempt latency
-can reach tens of ms. `sched_yield()` is too short (microseconds);
-use `nanosleep(100 µs)` and budget 512 retries → ~51 ms cumulative
-wait. Well within NVMe command timeout.
+can reach tens of ms (fio-012 bs=128k iodepth=16 generates ~64
+sub-writes per die at peak, worst-case wait ~80 ms). `sched_yield()`
+is too short; use `nanosleep(100 µs)` and budget 2048 retries →
+~205 ms cumulative wait, within NVMe 30 s command timeout.
 
 ```
 static inline void ftl_busy_backoff_sleep(void) {
@@ -163,17 +164,23 @@ Constraints met:
 The retry-with-backoff approach is fundamentally polling. Under
 heavy contention, threads waste CPU spinning even when the die's
 worker is making no progress. A condvar-based wait-on-busy in
-cmd_engine would:
-- Remove polling overhead.
-- Give FIFO-ish ordering, eliminating the starvation window
-  pthread mutex creates.
-- Likely allow shorter retry budgets (or eliminate retries
-  altogether for transient errors).
+cmd_engine would remove polling and give FIFO-ish ordering — but
+**that path was tried and reverted in this PR**:
 
-That change touches `nand_die` struct + `engine_submit` + the
-state-transition exit path, and would invalidate any test that
-asserts `engine_submit` returns BUSY synchronously. Out of scope
-for this PR; tracked as follow-up.
+- Commits `2209755` (cmd_engine wait-on-cv) and `76c1485` (doc) were
+  reverted in `32e4611`.
+- IS-04, IS-06 and SUSPEND tests in test_media / test_cmd_integration_*
+  treat cmd_engine's synchronous-BUSY-on-illegal-state as the
+  hardware-contract being modeled. Replacing it with cv-wait broke
+  those assertions and deadlocked tests that submit illegal ops in
+  SUSPENDED states without ever calling resume.
+- The cv approach is a future refactor, not a drop-in change. It
+  needs a separate API distinction (e.g., `engine_submit_blocking`
+  vs `engine_submit_nonblocking`) so legality assertions can keep
+  using the synchronous form.
+
+The retry-budget bump in this PR avoids that scope and stays compatible
+with all existing tests.
 
 ## Validation plan after fix
 
