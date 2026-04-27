@@ -1,5 +1,6 @@
 #include "hal/hal.h"
 #include "common/trace.h"
+#include "common/io_err_trace.h"
 #include "media/media.h"
 #ifdef HFSSS_DEBUG_TRACE
 #include "ftl/mapping.h"  /* union ppn layout; debug-only cross-layer pull */
@@ -164,6 +165,11 @@ int hal_nand_program_sync(struct hal_ctx *ctx, u32 ch, u32 chip, u32 die,
                    0, ppn_raw, crc, (uint32_t)ret);
     }
 #endif
+
+    if (ret != HFSSS_OK) {
+        IO_ERR_TRACE("L=hal_nand_program_sync ch=%u chip=%u die=%u plane=%u block=%u page=%u rc=%d",
+                     ch, chip, die, plane, block, page, ret);
+    }
 
     /* Update stats */
     mutex_lock(&ctx->lock, 0);

@@ -1,10 +1,12 @@
 #include "ftl/ftl.h"
 #include "ftl/io_queue.h"
 #include "common/trace.h"
+#include "common/io_err_trace.h"
 #include "media/nand_profile.h"
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* Internal helper functions */
 static struct cwb *ftl_get_cwb(struct ftl_ctx *ctx, u32 channel, u32 plane);
@@ -683,6 +685,20 @@ int ftl_gc_trigger(struct ftl_ctx *ctx)
 
 #include "ftl/taa.h"
 
+/* Backoff sleep on transient HFSSS_ERR_BUSY/AGAIN inside the FTL retry
+ * loops. The cmd_engine fails fast when the target die is in
+ * DIE_*_ARRAY_BUSY (NAND op in progress). TLC tPROG is 900-1300 µs and N
+ * threads on the same die wait N × tProg in worst case; combined with
+ * channel/die locks and pthread mutex unfairness in the cmd_engine fail-
+ * fast path, the per-attempt latency under fio-012-style contention
+ * (bs=128k seq writes iodepth=16) can reach tens of ms. 100 µs × 512
+ * retries ≈ 51 ms covers worst-case starvation without hammering CPU. */
+static inline void ftl_busy_backoff_sleep(void)
+{
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 100 * 1000 };
+    nanosleep(&ts, NULL);
+}
+
 int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
                      u64 lba, void *data)
 {
@@ -690,7 +706,14 @@ int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     u32 ch, chip, die, plane, block, page;
     int ret;
     int retry_count;
-    const int max_retries = READ_RETRY_MAX_ATTEMPTS;
+    /* Generous transient-busy retry budget. See ftl_busy_backoff_sleep for
+     * timing rationale; 2048 × 100 µs ≈ 205 ms cumulative wait covers
+     * worst-case die starvation under heavy MT contention. fio-012 (bs=128k
+     * iodepth=16) generates ~64 in-flight sub-writes per die under peak
+     * contention; with TLC tProg up to 1300 µs the worst-case wait per
+     * submit is ~80 ms, so 200 ms gives headroom. Well within NVMe command
+     * timeout (30 s). */
+    const int max_retries = 2048;
 
     if (!ctx || !taa || !data) {
         return HFSSS_ERR_INVAL;
@@ -729,9 +752,17 @@ int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         if (retry_count > 0) {
             error_read_retry_attempt(&ctx->error);
         }
+        IO_ERR_TRACE("L=ftl_read_page_mt site=hal-read-retry lba=%llu ppn=0x%016llx retry=%d/%d rc=%d",
+                     (unsigned long long)lba, (unsigned long long)ppn.raw,
+                     retry_count, max_retries, ret);
+        if (ret == HFSSS_ERR_BUSY || ret == HFSSS_ERR_AGAIN) {
+            ftl_busy_backoff_sleep();
+        }
     }
 
     /* All retry attempts failed */
+    IO_ERR_TRACE("L=ftl_read_page_mt site=hal-read-final lba=%llu ppn=0x%016llx rc=%d",
+                 (unsigned long long)lba, (unsigned long long)ppn.raw, ret);
     ctx->error.uncorrectable_count++;
     return ret;
 }
@@ -745,9 +776,17 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     u32 ch, plane;
     int ret;
     int write_retry;
-    const int max_write_retries = 3;
+    /* See ftl_busy_backoff_sleep for timing rationale; 2048 × 100 µs ≈
+     * 205 ms cumulative wait covers worst-case die starvation under fio-012
+     * (bs=128k iodepth=16) where ~64 sub-writes contend for one die at
+     * peak. The prior 3-retry shape with no backoff collapsed into a die-
+     * contention storm, propagating EIO to the host as SCT=0x2 SC=0x80
+     * Write Fault even when the block was fine. */
+    const int max_write_retries = 2048;
 
     if (!ctx || !taa || !data) {
+        IO_ERR_TRACE("L=ftl_write_page_mt site=bad-arg lba=%llu rc=%d",
+                     (unsigned long long)lba, HFSSS_ERR_INVAL);
         return HFSSS_ERR_INVAL;
     }
 
@@ -758,6 +797,8 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     /* Get CWB */
     cwb = ftl_get_cwb(ctx, ch, plane);
     if (!cwb) {
+        IO_ERR_TRACE("L=ftl_write_page_mt site=no-cwb lba=%llu ch=%u plane=%u rc=%d",
+                     (unsigned long long)lba, ch, plane, HFSSS_ERR_INVAL);
         return HFSSS_ERR_INVAL;
     }
 
@@ -776,6 +817,8 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         ret = ftl_allocate_cwb(ctx, ch, plane);
     }
     if (ret != HFSSS_OK) {
+        IO_ERR_TRACE("L=ftl_write_page_mt site=allocate-cwb lba=%llu ch=%u plane=%u rc=%d",
+                     (unsigned long long)lba, ch, plane, ret);
         pthread_mutex_unlock(&cwb->lock);
         return ret;
     }
@@ -815,18 +858,37 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         if (ret == HFSSS_OK) {
             break;
         }
+        IO_ERR_TRACE("L=ftl_write_page_mt site=hal-prog-retry lba=%llu ppn=0x%016llx retry=%d/%d rc=%d",
+                     (unsigned long long)lba, (unsigned long long)ppn.raw,
+                     write_retry, max_write_retries, ret);
         ctx->error.write_error_count++;
+        if (ret == HFSSS_ERR_BUSY || ret == HFSSS_ERR_AGAIN) {
+            ftl_busy_backoff_sleep();
+        }
     }
 
     if (ret != HFSSS_OK) {
+        const char *action = (ret == HFSSS_ERR_IO)    ? "mark-bad"
+                           : (ret == HFSSS_ERR_BUSY ||
+                              ret == HFSSS_ERR_AGAIN) ? "keep-block"
+                                                      : "mark-closed";
+        IO_ERR_TRACE("L=ftl_write_page_mt site=hal-prog-final lba=%llu ppn=0x%016llx rc=%d action=%s",
+                     (unsigned long long)lba, (unsigned long long)ppn.raw, ret, action);
         if (cwb->block) {
             if (ret == HFSSS_ERR_IO) {
                 block_mark_bad(&ctx->block_mgr, cwb->block);
+                cwb->block = NULL;
+                cwb->current_page = 0;
+            } else if (ret == HFSSS_ERR_BUSY || ret == HFSSS_ERR_AGAIN) {
+                /* Transient die contention. The block is fine and the page
+                 * was never programmed, so leave cwb->block / current_page
+                 * untouched — the next write to this CWB retries the same
+                 * (block, page) instead of burning a fresh block. */
             } else {
                 block_mark_closed(&ctx->block_mgr, cwb->block);
+                cwb->block = NULL;
+                cwb->current_page = 0;
             }
-            cwb->block = NULL;
-            cwb->current_page = 0;
         }
         pthread_mutex_unlock(&cwb->lock);
         return ret;
@@ -886,6 +948,8 @@ int ftl_trim_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa, u64 lba)
     int ret;
 
     if (!ctx || !taa) {
+        IO_ERR_TRACE("L=ftl_trim_page_mt site=bad-arg lba=%llu rc=%d",
+                     (unsigned long long)lba, HFSSS_ERR_INVAL);
         return HFSSS_ERR_INVAL;
     }
 
@@ -905,6 +969,10 @@ int ftl_trim_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa, u64 lba)
         ret = HFSSS_OK;
     }
 
+    if (ret != HFSSS_OK) {
+        IO_ERR_TRACE("L=ftl_trim_page_mt site=taa-remove lba=%llu rc=%d",
+                     (unsigned long long)lba, ret);
+    }
     return ret;
 }
 

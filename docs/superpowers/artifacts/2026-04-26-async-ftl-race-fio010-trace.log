@@ -1,0 +1,518 @@
+========================================
+HFSSS NBD Server
+========================================
+Port:     10820
+Size:     2048 MB (524288 LBAs x 4096 B)
+NAND:     4ch/4chip/2die/2plane/512blk/256pg/4096B (32 GB raw)
+Initializing simulator...
+[INFO ][UPLP] UPLP initialized: cap=5.0F, V=5.0V, Vcut=2.7V, E=44.275J
+Profile:  onfi-tlc (default)
+Monitor:  system_monitor running (1s interval)
+[NVMe] Exercising admin command path...
+[NVMe]   Identify Controller: rc=0 status=0x0000
+[NVMe]   Identify Namespace:  rc=0 status=0x0000
+[NVMe]   Active NS List:      rc=0 status=0x0000
+[NVMe]   Get Features NQ:     rc=0 status=0x0000 cdw0=0x003f003f
+[NVMe]   Get Features PM:     rc=0 status=0x0000
+[NVMe]   Set Features Temp:   rc=0 status=0x0000 (restored 0x015e)
+[NVMe]   Get Log SMART:       rc=0 status=0x0000
+[NVMe]   Create IO CQ 1:      rc=0 status=0x0000
+[NVMe]   Create IO SQ 1:      rc=0 status=0x0000
+[NVMe]   Delete IO SQ 1:      rc=0 status=0x0000
+[NVMe]   Delete IO CQ 1:      rc=0 status=0x0000
+[NVMe]   Keep Alive:           rc=0 status=0x0000
+[NVMe]   Abort (unsupported):  rc=0 status=0x0002
+[NVMe] Admin command exercise complete.
+Mode:     MULTI-THREADED (8 FTL workers + GC + WL)
+Listening on 0.0.0.0:10820 — export size 2048 MB
+Waiting for NBD client...
+[NBD] Connected: 127.0.0.1:59972
+[NBD] Handshake OK, entering transmission phase
+Mode:     ASYNC PIPELINE (SQ + CQ + 8 FTL workers)
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=511 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000ffa4c0 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=511 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000ffa4c0 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=511 page=0 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=511 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000ffa4c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=30420 ppn=0x0000000000ffa4c0 rc=-4 action=mark-closed
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=58891 ppn=0x0000000000ff84c3 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=511 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=58891 ppn=0x0000000000ff84c3 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=511 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=58891 ppn=0x0000000000ff84c3 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=58891 ppn=0x0000000000ff84c3 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000ff24c0 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=511 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000ff24c0 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000ff24c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=2676 ppn=0x0000000000ff24c0 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0700000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0800000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000ffa4c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=511 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000ffa4c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=511 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000ffa4c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=8133 ppn=0x0000000000ffa4c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000ff24c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000ff24c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000ff24c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=9981 ppn=0x0000000000ff24c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000fea4c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000fea4c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000fea4c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=10877 ppn=0x0000000000fea4c1 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0b00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0900000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0c00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0d00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fea4c0 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=508 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000fe24c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=508 page=0 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=58891 ppn=0x0000000000ff04c3 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000fe24c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=508 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000fe24c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=8133 ppn=0x0000000000fe24c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=507 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=507 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000fda4c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=507 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=507 page=0 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0b00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=58891 ppn=0x0000000000ff04c3 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=58891 ppn=0x0000000000ff04c3 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=58891 ppn=0x0000000000ff04c3 rc=-4 action=mark-closed
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fea4c0 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fea4c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=30420 ppn=0x0000000000fea4c0 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=508 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000fe24c0 retry=0/3 rc=-4
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0900000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0700000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000fda4c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=507 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=507 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000fda4c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=9981 ppn=0x0000000000fda4c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=508 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000fe24c0 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=508 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000fe24c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=2676 ppn=0x0000000000fe24c0 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0c00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0800000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=506 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=506 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000fd24c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=506 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=506 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000fd24c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=506 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=506 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000fd24c1 retry=2/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=507 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=507 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fda4c0 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=507 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=507 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fda4c0 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=507 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=507 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=10877 ppn=0x0000000000fd24c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=509 page=0 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=505 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fda4c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=30420 ppn=0x0000000000fda4c0 rc=-4 action=mark-closed
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=58891 ppn=0x0000000000fe84c3 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=58891 ppn=0x0000000000fe84c3 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0100000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=505 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000fca4c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=505 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=505 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000fca4c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=505 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=505 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000fca4c1 retry=2/3 rc=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=58891 ppn=0x0000000000fe84c3 retry=2/3 rc=-4
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0600000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=506 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=506 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=53540 ppn=0x0000000000fd24c0 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=506 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=506 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=53540 ppn=0x0000000000fd24c0 retry=1/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=8133 ppn=0x0000000000fca4c1 rc=-4 action=mark-closed
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=58891 ppn=0x0000000000fe84c3 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=506 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=506 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=53540 ppn=0x0000000000fd24c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=53540 ppn=0x0000000000fd24c0 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=504 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=504 page=0 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=508 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=50483 ppn=0x0000000000fe04c3 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=508 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=50483 ppn=0x0000000000fe04c3 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=0 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=0 block=508 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=50483 ppn=0x0000000000fe04c3 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=50483 ppn=0x0000000000fe04c3 rc=-4 action=mark-closed
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000fc24c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=504 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=504 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000fc24c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=504 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=504 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000fc24c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=9981 ppn=0x0000000000fc24c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=503 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=503 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=24285 ppn=0x0000000000fba4c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=503 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=503 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=24285 ppn=0x0000000000fba4c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=503 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=503 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=24285 ppn=0x0000000000fba4c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=24285 ppn=0x0000000000fba4c1 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0300000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0700000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0900000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0500000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0d00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0b00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=505 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=505 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000fca4c0 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=505 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=505 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000fca4c0 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=505 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=505 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000fca4c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=2676 ppn=0x0000000000fca4c0 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0800000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=502 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=502 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000fb24c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=502 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=502 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000fb24c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=502 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=502 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000fb24c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=10877 ppn=0x0000000000fb24c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=501 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=504 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=504 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fc24c0 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=504 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=504 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fc24c0 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=504 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=504 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fc24c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=30420 ppn=0x0000000000fc24c0 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0100000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=501 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000faa4c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=501 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=501 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000faa4c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=501 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=501 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000faa4c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=8133 ppn=0x0000000000faa4c1 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0300000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0500000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=500 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=500 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000fa24c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=500 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=500 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000fa24c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=500 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=500 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000fa24c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=9981 ppn=0x0000000000fa24c1 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0600000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=499 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=499 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=24285 ppn=0x0000000000f9a4c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=499 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=499 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=24285 ppn=0x0000000000f9a4c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=499 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=499 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=24285 ppn=0x0000000000f9a4c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=24285 ppn=0x0000000000f9a4c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=503 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=503 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=53540 ppn=0x0000000000fba4c0 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=503 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=503 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=53540 ppn=0x0000000000fba4c0 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=503 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=503 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=53540 ppn=0x0000000000fba4c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=53540 ppn=0x0000000000fba4c0 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0100000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0300000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=502 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=502 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=32956 ppn=0x0000000000fb24c0 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=502 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=502 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=32956 ppn=0x0000000000fb24c0 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=502 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=502 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=32956 ppn=0x0000000000fb24c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=32956 ppn=0x0000000000fb24c0 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=0 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=0 block=511 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=18186 ppn=0x0000000000ff84c2 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=0 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=0 block=511 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=18186 ppn=0x0000000000ff84c2 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=0 block=511 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=498 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=498 page=0 rc=-4
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0800000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=501 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=501 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000faa4c0 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=501 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=501 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000faa4c0 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=501 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=501 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=2676 ppn=0x0000000000faa4c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=2676 ppn=0x0000000000faa4c0 rc=-4 action=mark-closed
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000f924c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=498 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=498 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000f924c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=498 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=500 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=500 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fa24c0 retry=0/3 rc=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=498 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000f924c1 retry=2/3 rc=-4
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0b00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=0 block=511 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=18186 ppn=0x0000000000ff84c2 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=18186 ppn=0x0000000000ff84c2 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=500 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0a00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=500 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fa24c0 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=0 chip=3 die=1 plane=1 block=500 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=0 chip=3 die=1 plane=1 block=500 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=30420 ppn=0x0000000000fa24c0 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=30420 ppn=0x0000000000fa24c0 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0e00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=10877 ppn=0x0000000000f924c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=497 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=497 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000f8a4c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=497 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=497 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000f8a4c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=497 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=497 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000f8a4c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=8133 ppn=0x0000000000f8a4c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=496 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=496 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000f824c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=496 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=496 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000f824c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=496 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=496 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000f824c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=9981 ppn=0x0000000000f824c1 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0d00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0f00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0600000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=495 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=495 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=24285 ppn=0x0000000000f7a4c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=495 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=495 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=24285 ppn=0x0000000000f7a4c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=495 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=495 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=24285 ppn=0x0000000000f7a4c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=24285 ppn=0x0000000000f7a4c1 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0100000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=494 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=494 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000f724c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=494 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=494 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000f724c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=494 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=494 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=10877 ppn=0x0000000000f724c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=10877 ppn=0x0000000000f724c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=493 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=493 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000f6a4c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=493 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=493 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000f6a4c1 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=493 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=493 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=8133 ppn=0x0000000000f6a4c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=8133 ppn=0x0000000000f6a4c1 rc=-4 action=mark-closed
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=492 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0a00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=1 block=511 page=2 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=1 block=511 page=2 rc=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=492 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=12847 ppn=0x0000000010ffa4c3 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=1 block=511 page=2 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=1 block=511 page=2 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=12847 ppn=0x0000000010ffa4c3 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=1 block=511 page=2 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000f624c1 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=492 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=492 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000f624c1 retry=1/3 rc=-4
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0b00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=511 page=3 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=511 page=3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=5246 ppn=0x0000000018ffa4c2 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=511 page=3 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=511 page=3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=5246 ppn=0x0000000018ffa4c2 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=511 page=3 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=511 page=3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=5246 ppn=0x0000000018ffa4c2 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=5246 ppn=0x0000000018ffa4c2 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0e00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=1 chip=3 die=1 plane=1 block=492 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=1 chip=3 die=1 plane=1 block=492 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=9981 ppn=0x0000000000f624c1 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=9981 ppn=0x0000000000f624c1 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0c00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=1 block=511 page=2 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=12847 ppn=0x0000000010ffa4c3 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=12847 ppn=0x0000000010ffa4c3 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0f00000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=5246 ppn=0x0000000000ff24c2 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=5246 ppn=0x0000000000ff24c2 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=5246 ppn=0x0000000000ff24c2 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=5246 ppn=0x0000000000ff24c2 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0200000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=12847 ppn=0x0000000000ff24c3 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=12847 ppn=0x0000000000ff24c3 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=1 block=510 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=1 block=510 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=12847 ppn=0x0000000000ff24c3 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=12847 ppn=0x0000000000ff24c3 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0300000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=41638 ppn=0x0000000000fea4c2 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=41638 ppn=0x0000000000fea4c2 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=41638 ppn=0x0000000000fea4c2 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=41638 ppn=0x0000000000fea4c2 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0900000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=508 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=5246 ppn=0x0000000000fe24c2 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=508 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=5246 ppn=0x0000000000fe24c2 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=2 chip=3 die=1 plane=1 block=508 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=2 chip=3 die=1 plane=1 block=508 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=5246 ppn=0x0000000000fe24c2 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=5246 ppn=0x0000000000fe24c2 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0200000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=12847 ppn=0x0000000000fea4c3 retry=0/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=12847 ppn=0x0000000000fea4c3 retry=1/3 rc=-4
+[IO_ERR] L=media_nand_program ch=3 chip=3 die=1 plane=1 block=509 page=0 submit_rc=-4 cb_rc=0 eff=-4
+[IO_ERR] L=hal_nand_program_sync ch=3 chip=3 die=1 plane=1 block=509 page=0 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-retry lba=12847 ppn=0x0000000000fea4c3 retry=2/3 rc=-4
+[IO_ERR] L=ftl_write_page_mt site=hal-prog-final lba=12847 ppn=0x0000000000fea4c3 rc=-4 action=mark-closed
+[IO_ERR] L=nbd_async_cq cmd=1 handle=0x0100000000000000 length=4096 byte_off=0 rc=-4 -> EIO
+[NBD-SQ] Client disconnected
+[NBD] Client disconnected, waiting for next...
+[NBD] Server exited cleanly

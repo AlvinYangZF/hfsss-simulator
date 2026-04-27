@@ -3,6 +3,7 @@
 #include "media/cmd_state.h"
 #include "sssim.h"
 #include "common/fault_inject.h"
+#include "common/io_err_trace.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -463,7 +464,10 @@ int media_nand_program(struct media_ctx *ctx, u32 ch, u32 chip, u32 die, u32 pla
     u64 start_time = get_time_ns();
     int rc = nand_cmd_engine_submit_program(ctx->nand, &target, &ops, &cbc);
     if (rc != HFSSS_OK) {
-        return cbc.out_status != HFSSS_OK ? cbc.out_status : rc;
+        int eff = cbc.out_status != HFSSS_OK ? cbc.out_status : rc;
+        IO_ERR_TRACE("L=media_nand_program ch=%u chip=%u die=%u plane=%u block=%u page=%u submit_rc=%d cb_rc=%d eff=%d",
+                     ch, chip, die, plane, block, page, rc, cbc.out_status, eff);
+        return eff;
     }
 
     mutex_lock(&ctx->lock, 0);
