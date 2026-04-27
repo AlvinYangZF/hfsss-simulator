@@ -90,7 +90,7 @@ int pci_dev_cfg_read(struct pci_dev_ctx *dev, u32 offset, u32 *value, u32 size)
     u8 *cfg_ptr;
     u32 val = 0;
 
-    if (!dev || !value || size != 1 && size != 2 && size != 4) {
+    if (!dev || !value || (size != 1 && size != 2 && size != 4)) {
         return HFSSS_ERR_INVAL;
     }
 
@@ -132,7 +132,7 @@ int pci_dev_cfg_write(struct pci_dev_ctx *dev, u32 offset, u32 value, u32 size)
 {
     u8 *cfg_ptr;
 
-    if (!dev || size != 1 && size != 2 && size != 4) {
+    if (!dev || (size != 1 && size != 2 && size != 4)) {
         return HFSSS_ERR_INVAL;
     }
 

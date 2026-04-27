@@ -43,6 +43,7 @@ void dma_cleanup(struct dma_ctx *ctx)
 
 int dma_copy_from_prp(struct dma_ctx *ctx, u8 *dst, u64 prp1, u64 prp2, u32 len, u32 page_size)
 {
+    (void)prp1; (void)prp2; (void)page_size;
     if (!ctx || !dst) {
         return HFSSS_ERR_INVAL;
     }
@@ -65,6 +66,7 @@ int dma_copy_from_prp(struct dma_ctx *ctx, u8 *dst, u64 prp1, u64 prp2, u32 len,
 
 int dma_copy_to_prp(struct dma_ctx *ctx, u64 prp1, u64 prp2, const u8 *src, u32 len, u32 page_size)
 {
+    (void)prp1; (void)prp2; (void)page_size;
     if (!ctx || !src) {
         return HFSSS_ERR_INVAL;
     }
