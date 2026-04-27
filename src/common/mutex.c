@@ -113,17 +113,3 @@ void mutex_stats(struct mutex *mtx, u64 *lock_count, u64 *unlock_count)
     if (unlock_count) *unlock_count = mtx->unlock_count;
     pthread_mutex_unlock(&lock->mutex);
 }
-
-int mutex_cond_wait(struct mutex *mtx, void *cv)
-{
-    if (!mtx || !mtx->lock || !cv) {
-        return HFSSS_ERR_INVAL;
-    }
-    struct mutex_lock *lock = (struct mutex_lock *)mtx->lock;
-    /* unlock_count and lock_count bookkeeping mirrors mutex_unlock /
-     * mutex_lock so mutex_stats stays accurate across the wait. */
-    mtx->unlock_count++;
-    int rc = pthread_cond_wait((pthread_cond_t *)cv, &lock->mutex);
-    mtx->lock_count++;
-    return rc == 0 ? HFSSS_OK : HFSSS_ERR_IO;
-}

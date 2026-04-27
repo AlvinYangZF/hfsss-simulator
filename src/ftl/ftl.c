@@ -706,11 +706,12 @@ int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     u32 ch, chip, die, plane, block, page;
     int ret;
     int retry_count;
-    /* Small retry budget. cmd_engine waits internally for die-level BUSY
-     * (DIE_*_ARRAY_BUSY) so the common contention path doesn't surface
-     * here. The 8 retries are a safety net for other transient sources
-     * (QoS rate-limit, read-during-suspend conflict, …). */
-    const int max_retries = 8;
+    /* Generous transient-busy retry budget. See ftl_busy_backoff_sleep for
+     * timing rationale; 512 × 100 µs ≈ 51 ms cumulative wait covers
+     * worst-case die starvation under heavy MT contention with multiple
+     * planes contending for the same die_lock + scheduler unfairness in
+     * the cmd_engine fail-fast path. Well within NVMe command timeout. */
+    const int max_retries = 512;
 
     if (!ctx || !taa || !data) {
         return HFSSS_ERR_INVAL;
@@ -773,13 +774,13 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     u32 ch, plane;
     int ret;
     int write_retry;
-    /* Small retry budget. cmd_engine waits internally for die-level BUSY,
-     * so the common contention path doesn't surface here. The 8 retries
-     * are a safety net for other transient sources (QoS rate-limit, IO
-     * faults injected for testing, etc). The prior 3-retry shape with no
-     * backoff collapsed into a die-contention storm; the new shape adds
-     * proper backoff and keeps the block intact on transient failure. */
-    const int max_write_retries = 8;
+    /* Generous transient-busy retry budget. See ftl_busy_backoff_sleep for
+     * timing rationale; 512 × 100 µs ≈ 51 ms cumulative wait covers
+     * worst-case die starvation under heavy MT contention. The prior
+     * 3-retry shape with no backoff collapsed into a die-contention storm
+     * under fio randwrite/seqwrite at iodepth=16, propagating EIO to the
+     * host as SCT=0x2 SC=0x80 Write Fault even when the block was fine. */
+    const int max_write_retries = 512;
 
     if (!ctx || !taa || !data) {
         IO_ERR_TRACE("L=ftl_write_page_mt site=bad-arg lba=%llu rc=%d",

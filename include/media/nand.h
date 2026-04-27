@@ -78,11 +78,6 @@ struct nand_die {
     u64 next_available_ts;
     struct nand_die_cmd_state cmd_state;
     struct mutex die_lock;
-    /* Heap-allocated pthread_cond_t. Opaque here (void *) so pthread.h
-     * doesn't leak through this header — the POSIX SCHED_FIFO macro
-     * collides with controller/scheduler.h's enum. cmd_engine.c casts
-     * back to pthread_cond_t * before use. */
-    void *state_cv;
 };
 
 /* Chip */

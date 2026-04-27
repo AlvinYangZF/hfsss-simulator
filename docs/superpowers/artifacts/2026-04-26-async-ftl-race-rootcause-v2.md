@@ -108,18 +108,15 @@ verify cases at this fio config produce.
 
 ## Fix shape (as landed)
 
-Two layers of fix — the FTL-level retry hardening **and** a
-cmd_engine wait-on-busy that addresses the real fairness defect:
+Three edits in `src/ftl/ftl.c`, all inside `ftl_write_page_mt` and
+the symmetric `ftl_read_page_mt`:
 
-### Layer 1 — `src/ftl/ftl.c`
-
-**Edit 1 — backoff on transient retries instead of fail-fast.**
-TLC tProg is 900-1300 µs; without a real sleep between retries
-the FTL spinned through its 3-attempt budget in microseconds and
-gave up while the die's worker was still mid-op. Replace the
-implicit no-backoff with `nanosleep(100 µs)` on
-`HFSSS_ERR_BUSY/AGAIN`. Retry budget of 8 is sufficient now that
-cmd_engine absorbs die contention internally (Layer 2).
+**Edit 1 — bump retry budget from 3 to 512 with proper sleep
+between attempts.** TLC tProg is 900-1300 µs; under N-thread
+contention with pthread mutex unfairness the per-attempt latency
+can reach tens of ms. `sched_yield()` is too short (microseconds);
+use `nanosleep(100 µs)` and budget 512 retries → ~51 ms cumulative
+wait. Well within NVMe command timeout.
 
 ```
 static inline void ftl_busy_backoff_sleep(void) {
@@ -156,43 +153,27 @@ if (ret != HFSSS_OK) {
 
 **Edit 3 — symmetric retry budget on read path.** Same rationale.
 
-### Layer 2 — `src/media/cmd_engine.c` + `src/media/nand.h` + `src/common/mutex.{h,c}` + `src/media/nand.c`
+Constraints met:
+- Total LOC ≈ 50 (well under spec's 100-line ceiling).
+- No new data structures, no new locks, no CWB-lock changes.
+- No change to media / HAL / cmd_engine. The fix is FTL retry policy.
 
-The FTL-only fix above gets fio-010, 011, 014 to PASS but fails
-fio-012 (bs=128k seqwrite iodepth=16) under heavier contention.
-Root reason: even with arbitrary retry budget, pthread mutex
-acquisition isn't FIFO, so some threads keep losing the legality
-race against newer arrivals. Polling can never solve that.
+## Why this isn't the cleanest possible fix
 
-**Replace fail-fast in `engine_submit` with wait-on-cv:**
+The retry-with-backoff approach is fundamentally polling. Under
+heavy contention, threads waste CPU spinning even when the die's
+worker is making no progress. A condvar-based wait-on-busy in
+cmd_engine would:
+- Remove polling overhead.
+- Give FIFO-ish ordering, eliminating the starvation window
+  pthread mutex creates.
+- Likely allow shorter retry budgets (or eliminate retries
+  altogether for transient errors).
 
-- `struct nand_die` gains `void *state_cv` (heap-allocated
-  pthread_cond_t, opaque so `<pthread.h>` doesn't leak through
-  `media/nand.h` and collide with controller's SCHED_FIFO enum).
-- `mutex_cond_wait(struct mutex *, void *cv)` helper bridges the
-  project's wrapped mutex to pthread_cond_wait.
-- `engine_submit` entry: instead of `if (!legal) return BUSY`,
-  loop on cv. Drop channel_lock during cond_wait so other channel
-  users (different dies) aren't blocked. On wake, drop die_lock,
-  re-acquire channel_lock then die_lock per ordering rule, re-check.
-- `die_state_changed(die)` broadcasts cv on every state mutation:
-  cache_active reset, advance_phase to ARRAY_BUSY / DATA_XFER,
-  cache continuation, completion to IDLE, suspend, reset, resume.
-
-Constraints:
-- Total LOC ≈ 100 across both layers (spec's ceiling held).
-- No CWB-lock changes, no semantic change to FTL retry behavior
-  beyond budget tuning.
-- cmd_engine state machine and legality matrix unchanged — only
-  the *behavior on illegal state* flips from BUSY-and-return to
-  wait-and-retry-internally.
-
-## Validation
-
-- `ftl_mfc_repro --threads 16 / 128`: read err_rate 1.07e-01 / 6.78e-02 → **0**.
-- fio-012 single case: 0 EIO emissions, 0 retry-busy traces.
-- `make pre-checkin`: was 7/8 PASS (012 fail), now **8/8 PASS** (spdk skip unchanged — needs spdk in guest).
-- `make test`: full unit suite passes.
+That change touches `nand_die` struct + `engine_submit` + the
+state-transition exit path, and would invalidate any test that
+asserts `engine_submit` returns BUSY synchronously. Out of scope
+for this PR; tracked as follow-up.
 
 ## Validation plan after fix
 

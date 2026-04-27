@@ -1,6 +1,5 @@
 #include "media/cmd_engine.h"
 
-#include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
 
@@ -181,16 +180,6 @@ enum engine_wait_result {
     ENGINE_WAIT_ABORT,
 };
 
-/* Wake any thread waiting in engine_submit's wait-on-busy loop. Caller must
- * hold die_lock so the broadcast is synchronous with whatever state mutation
- * just happened. cond_broadcast is cheap when there are no waiters. */
-static inline void die_state_changed(struct nand_die *die)
-{
-    if (die->state_cv) {
-        pthread_cond_broadcast((pthread_cond_t *)die->state_cv);
-    }
-}
-
 static enum engine_wait_result engine_run_array_busy(struct nand_device *dev, struct nand_die *die,
                                                      enum nand_cmd_opcode op, const struct nand_cmd_target *target,
                                                      u32 epoch_at_submit)
@@ -229,7 +218,6 @@ static enum engine_wait_result engine_run_array_busy(struct nand_device *dev, st
             die->cmd_state.last_suspend_ts_ns = now;
             die->cmd_state.suspend_count++;
             atomic_store(&die->cmd_state.suspend_request, 0);
-            die_state_changed(die);
             mutex_unlock(&die->die_lock);
 
             /* Charge tSSBSY to EAT and drain the matching wall-clock so
@@ -328,37 +316,22 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     mutex_lock(&channel->lock, 0);
     mutex_lock(&die->die_lock, 0);
 
-    /* Wait for the die to become legal for op. Replaces the fail-fast
-     * BUSY return that pre-existed; FTL retry-with-backoff on top of
-     * fail-fast led to thread-level starvation under heavy contention
-     * (pre-checkin fio-012 bs=128k seqwrite iodepth=16) because pthread
-     * mutex acquisition isn't FIFO. The cv wait yields to other dies on
-     * the channel during the wait and is woken by every state mutation,
-     * so each waiter eventually wins the legality race instead of losing
-     * indefinitely. The cache_active termination is reapplied each
-     * iteration since cache state can advance while we sleep. */
-    for (;;) {
-        if (die->cmd_state.cache_active && op != NAND_OP_CACHE_READ &&
-            op != NAND_OP_CACHE_READ_END && op != NAND_OP_CACHE_PROG) {
-            die->cmd_state.cache_active = false;
-            die->cmd_state.cache_seq_count = 0;
-            die->cmd_state.state = DIE_IDLE;
-            die->cmd_state.phase = CMD_PHASE_COMPLETE;
-            die->cmd_state.in_flight = false;
-            die_state_changed(die);
-        }
-        if (nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
-            break;
-        }
-        /* Drop channel_lock so other channel users (different dies) can
-         * submit. die_lock is released atomically by cond_wait, then
-         * re-acquired on wake. Re-acquire channel_lock under proper
-         * lock ordering (channel before die) before looping. */
-        mutex_unlock(&channel->lock);
-        mutex_cond_wait(&die->die_lock, die->state_cv);
+    /* Implicit cache sequence termination: if a non-cache command is
+     * submitted while a cache sequence is active, force the die back
+     * to IDLE so the legality check accepts the new command. */
+    if (die->cmd_state.cache_active && op != NAND_OP_CACHE_READ && op != NAND_OP_CACHE_READ_END &&
+        op != NAND_OP_CACHE_PROG) {
+        die->cmd_state.cache_active = false;
+        die->cmd_state.cache_seq_count = 0;
+        die->cmd_state.state = DIE_IDLE;
+        die->cmd_state.phase = CMD_PHASE_COMPLETE;
+        die->cmd_state.in_flight = false;
+    }
+
+    if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
         mutex_unlock(&die->die_lock);
-        mutex_lock(&channel->lock, 0);
-        mutex_lock(&die->die_lock, 0);
+        mutex_unlock(&channel->lock);
+        return HFSSS_ERR_BUSY;
     }
 
     /*
@@ -490,7 +463,6 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         die->cmd_state.array_budget_ns = array_ns;
         die->cmd_state.remaining_ns = array_ns;
         die->cmd_state.array_started_ns = get_time_ns();
-        die_state_changed(die);
         mutex_unlock(&die->die_lock);
 
         eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask, array_ns);
@@ -543,7 +515,6 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         mutex_lock(&die->die_lock, 0);
         enum nand_die_state next_xfer_state = nand_cmd_next_state_on_complete(die->cmd_state.state, op);
         nand_cmd_state_advance_phase(&die->cmd_state, CMD_PHASE_DATA_XFER, next_xfer_state);
-        die_state_changed(die);
         mutex_unlock(&die->die_lock);
         eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask, xfer_ns);
         if (ops && ops->on_data_xfer_commit) {
@@ -605,7 +576,6 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
             die->cmd_state.latched_fail = (stage_rc != HFSSS_OK);
         }
     }
-    die_state_changed(die);
     mutex_unlock(&die->die_lock);
     mutex_unlock(&channel->lock);
     return stage_rc;
@@ -784,7 +754,6 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
     die->cmd_state.phase = CMD_PHASE_COMPLETE;
     atomic_store(&die->cmd_state.abort_epoch, new_epoch);
 
-    die_state_changed(die);
     mutex_unlock(&die->die_lock);
     return HFSSS_OK;
 }
@@ -822,7 +791,6 @@ static int engine_submit_suspend(struct nand_device *dev, enum nand_cmd_opcode o
      * field under die_lock. */
     die->cmd_state.suspended_target = die->cmd_state.target;
     atomic_store(&die->cmd_state.suspend_request, 1);
-    die_state_changed(die);
     mutex_unlock(&die->die_lock);
 
     /* Spin briefly waiting for the running worker to acknowledge the
@@ -869,7 +837,6 @@ static int engine_submit_resume(struct nand_device *dev, enum nand_cmd_opcode op
     }
     u32 suspended_mask = die->cmd_state.suspended_target.plane_mask;
     die->cmd_state.state = (op == NAND_OP_PROG_RESUME) ? DIE_PROG_ARRAY_BUSY : DIE_ERASE_ARRAY_BUSY;
-    die_state_changed(die);
     mutex_unlock(&die->die_lock);
 
     enum op_type eat_op = (op == NAND_OP_PROG_RESUME) ? OP_PROGRAM : OP_ERASE;
