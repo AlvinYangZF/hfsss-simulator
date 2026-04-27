@@ -73,3 +73,15 @@ GitHub Actions is set up to automatically build and test on every push and pull 
 
 ## Test Status
 All 1,750+ test assertions pass as of the latest build (1,150+ unit tests + 616 system tests).
+
+## Diagnostics
+
+### HFSSS_TRACE_IO_ERR
+Env-gated single-line trace at every error-return site on the I/O path
+(`include/common/io_err_trace.h`). Enable with `HFSSS_TRACE_IO_ERR=1`;
+default off, getenv result cached so the on/off path costs one relaxed
+load. Sites cover FTL (`ftl_{read,write,trim}_page_mt`), HAL
+(`hal_nand_program_sync`), media (`media_nand_program`), and NBD
+(`nbd_async_cq` EIO emit). Useful for localizing concurrency races at
+FTL/HAL/media/NBD boundaries. Output goes to stderr; QEMU blackbox runs
+capture it in the NBD server log.
