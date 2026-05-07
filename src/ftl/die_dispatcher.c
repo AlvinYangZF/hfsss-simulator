@@ -335,16 +335,46 @@ struct die_dispatcher *die_dispatcher_create(struct nand_device *dev)
     return d;
 }
 
+/*
+ * Drain any pending waiters under shutdown semantics. Marks every queued
+ * waiter with shutdown=true and wakes it; the caller of die_dispatcher_wait
+ * observes the flag and returns HFSSS_ERR_SHUTDOWN. Each waiter's storage is
+ * stack-allocated by the caller, so the caller must complete its wait (and
+ * be joined by its parent) before the dispatcher's queue memory is freed —
+ * this is documented as a precondition of die_dispatcher_destroy.
+ */
+static void die_waitqueue_drain_for_shutdown(struct die_waitqueue *q)
+{
+    pthread_mutex_lock(&q->lock);
+    for (int t = 0; t < DIE_DISPATCH_TIER_COUNT; t++) {
+        while (!dispatch_list_empty(&q->tier[t])) {
+            struct die_waiter *w = (struct die_waiter *)q->tier[t].next;
+            dispatch_list_del(&w->list);
+            pthread_mutex_lock(&w->cv_lock);
+            w->shutdown = true;
+            w->signaled = true;
+            pthread_cond_signal(&w->cv);
+            pthread_mutex_unlock(&w->cv_lock);
+        }
+    }
+    pthread_mutex_unlock(&q->lock);
+}
+
 void die_dispatcher_destroy(struct die_dispatcher *d)
 {
     if (!d) {
         return;
     }
+    /* Uninstall the notifier hook first so no fresh wake events arrive
+     * after we begin tearing down queue state. */
     if (d->dev) {
         d->dev->die_ready_notifier = NULL;
         d->dev->die_ready_ctx = NULL;
     }
     if (d->queues) {
+        for (u32 i = 0; i < d->queue_count; i++) {
+            die_waitqueue_drain_for_shutdown(&d->queues[i]);
+        }
         for (u32 i = 0; i < d->queue_count; i++) {
             die_waitqueue_cleanup(&d->queues[i]);
         }
@@ -354,28 +384,149 @@ void die_dispatcher_destroy(struct die_dispatcher *d)
 }
 
 /* ------------------------------------------------------------------ */
-/* Wait / notifier stubs (bodies land with the multi-thread task)     */
+/* Wait / notifier                                                    */
 /* ------------------------------------------------------------------ */
+
+/*
+ * Resolve a flat queue pointer for (ch, chip, die). Returns NULL when the
+ * dispatcher has no queue array (e.g., an empty-geometry device) or when
+ * the indices are out of range.
+ */
+static struct die_waitqueue *pick_queue(struct die_dispatcher *d,
+                                        u32 ch, u32 chip, u32 die)
+{
+    if (!d || !d->queues) {
+        return NULL;
+    }
+    if (d->chips_per_channel == 0 || d->dies_per_chip == 0) {
+        return NULL;
+    }
+    u64 idx = (u64)ch * d->chips_per_channel * d->dies_per_chip
+            + (u64)chip * d->dies_per_chip
+            + die;
+    if (idx >= d->queue_count) {
+        return NULL;
+    }
+    return &d->queues[idx];
+}
+
+/*
+ * Compute an absolute deadline `max_wait_ms` from now using CLOCK_REALTIME,
+ * which is what pthread_cond_timedwait expects by default. Wraps the seconds
+ * field so we don't overflow the nanoseconds slot.
+ */
+static void abs_deadline_ms(u32 max_wait_ms, struct timespec *out)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    u64 add_ns = (u64)max_wait_ms * 1000000ULL;
+    u64 total_ns = (u64)now.tv_nsec + add_ns;
+    out->tv_sec = now.tv_sec + (time_t)(total_ns / 1000000000ULL);
+    out->tv_nsec = (long)(total_ns % 1000000000ULL);
+}
 
 int die_dispatcher_wait(struct die_dispatcher *d,
                         u32 ch, u32 chip, u32 die,
                         die_priority_t prio,
                         u32 max_wait_ms)
 {
-    (void)d;
-    (void)ch;
-    (void)chip;
-    (void)die;
-    (void)prio;
-    (void)max_wait_ms;
-    return HFSSS_ERR_NOTSUPP;
+    if (!d) {
+        return HFSSS_ERR_INVAL;
+    }
+    if (die_priority_tier(prio) < 0) {
+        return HFSSS_ERR_INVAL;
+    }
+    struct die_waitqueue *q = pick_queue(d, ch, chip, die);
+    if (!q) {
+        return HFSSS_ERR_INVAL;
+    }
+
+    struct die_waiter w;
+    die_waiter_init(&w, prio);
+
+    /* Enqueue under q->lock — visible to any subsequent on_die_ready. */
+    pthread_mutex_lock(&q->lock);
+    die_waitqueue_enqueue(q, &w);
+    pthread_mutex_unlock(&q->lock);
+
+    /* Block on the per-waiter cv. The signaled / shutdown flags are set
+     * under cv_lock by the wakers so spurious wakes are handled. */
+    int wait_rc = 0;
+    bool timed_out = false;
+    pthread_mutex_lock(&w.cv_lock);
+    while (!w.signaled && !w.shutdown) {
+        if (max_wait_ms == 0) {
+            pthread_cond_wait(&w.cv, &w.cv_lock);
+        } else {
+            struct timespec ts;
+            abs_deadline_ms(max_wait_ms, &ts);
+            wait_rc = pthread_cond_timedwait(&w.cv, &w.cv_lock, &ts);
+            if (wait_rc == ETIMEDOUT) {
+                timed_out = true;
+                break;
+            }
+        }
+    }
+    bool was_shutdown = w.shutdown;
+    pthread_mutex_unlock(&w.cv_lock);
+
+    /*
+     * On timeout, the waiter may still be linked into the queue (no notifier
+     * dequeued it). Self-remove under q->lock; dispatch_list_del() left a
+     * popped node self-looping, so an empty list head is the "already
+     * dequeued" indicator.
+     *
+     * On shutdown, destroy already removed the waiter from the queue while
+     * holding q->lock, so we must NOT touch q here — its memory may be on
+     * its way out. Returning straight to the caller is safe because the
+     * caller's stack frame still owns the cv/cv_lock.
+     */
+    int rc = 0;
+    if (was_shutdown) {
+        rc = HFSSS_ERR_SHUTDOWN;
+    } else if (timed_out) {
+        pthread_mutex_lock(&q->lock);
+        if (!dispatch_list_empty(&w.list)) {
+            dispatch_list_del(&w.list);
+        }
+        pthread_mutex_unlock(&q->lock);
+        rc = ETIMEDOUT;
+    }
+
+    die_waiter_cleanup(&w);
+    return rc;
 }
 
 void die_dispatcher_on_die_ready(struct nand_device *dev,
                                  u32 ch, u32 chip, u32 die)
 {
-    (void)dev;
-    (void)ch;
-    (void)chip;
-    (void)die;
+    if (!dev) {
+        return;
+    }
+    struct die_dispatcher *d = dev->die_ready_ctx;
+    if (!d) {
+        return;
+    }
+    struct die_waitqueue *q = pick_queue(d, ch, chip, die);
+    if (!q) {
+        return;
+    }
+
+    struct die_waiter *to_wake;
+    pthread_mutex_lock(&q->lock);
+    to_wake = die_waitqueue_pop_next(q);
+    if (to_wake &&
+        (to_wake->prio == DIE_PRIO_HOST_READ ||
+         to_wake->prio == DIE_PRIO_HOST_WRITE)) {
+        die_waitqueue_record_host_io(q, get_time_ns());
+    }
+    pthread_mutex_unlock(&q->lock);
+
+    if (!to_wake) {
+        return;
+    }
+    pthread_mutex_lock(&to_wake->cv_lock);
+    to_wake->signaled = true;
+    pthread_cond_signal(&to_wake->cv);
+    pthread_mutex_unlock(&to_wake->cv_lock);
 }
