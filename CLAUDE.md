@@ -85,3 +85,22 @@ load. Sites cover FTL (`ftl_{read,write,trim}_page_mt`), HAL
 (`nbd_async_cq` EIO emit). Useful for localizing concurrency races at
 FTL/HAL/media/NBD boundaries. Output goes to stderr; QEMU blackbox runs
 capture it in the NBD server log.
+
+### HFSSS_DIE_DISP_FORCE_BUSY / HFSSS_DIE_DISP_NOTIFIER_DELAY_NS
+Two env-gated stress knobs for the FTL die-busy wait-queue dispatcher
+(`src/ftl/die_dispatcher.c`). Both default off; getenv result cached
+behind a relaxed atomic so unset builds pay one relaxed load.
+
+`HFSSS_DIE_DISP_FORCE_BUSY=N` (0..100) injects N% spurious BUSY on the
+dispatcher wake path: `die_dispatcher_wait` returns ETIMEDOUT instead of
+0 on the chosen fraction of wakes, forcing the FTL retry loop to
+re-queue. Verifies the re-queue path under contention without needing
+real die contention to reproduce.
+
+`HFSSS_DIE_DISP_NOTIFIER_DELAY_NS=K` sleeps K nanoseconds inside
+`die_dispatcher_on_die_ready` between dequeue and `cv_signal`. Widens
+the wake-to-resubmit window; correctness must hold for arbitrary K
+(no missed-wakeup window exists by design — this knob proves it).
+
+Used together in CI runs to stress the dispatcher's correctness invariants
+without changing release semantics.
