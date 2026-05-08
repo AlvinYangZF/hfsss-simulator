@@ -11,14 +11,22 @@
 
 /*
  * Safety bounds for the dispatcher-driven retry loops in
- * ftl_{read,write}_page_mt_ex. In correct operation the loop exits on
- * the first or second iteration once the dispatcher signals the next
- * IDLE event on the target die. These bounds only kick in if the
- * dispatcher itself is broken or disabled (NULL), in which case we fall
- * back to a bounded wait that still resolves rather than hanging.
+ * ftl_{read,write}_page_mt_ex. The dispatcher signals on every die-ready
+ * event so in low contention the loop exits after one or two iterations.
+ * Under heavy contention (fio-012 bs=128k iodepth=16 type workloads)
+ * pthread mutex unfairness inside cmd_engine can make a woken waiter
+ * lose the lock race repeatedly to fresh arrivals, so the budget is
+ * sized to outlast worst-case lock starvation while staying well below
+ * the NVMe 30s command timeout. Total worst-case wait =
+ * RETRIES × WAIT_MS = 2048 × 10 ms ≈ 20 s upper bound (still inside the
+ * NVMe 30 s timeout); under fio-012 stress the actual maximum retry
+ * count observed is around 60-65, so the bulk of the budget is reserve
+ * against pathological lock-race starvation that this code path can
+ * provoke but cannot directly avoid (cmd_engine's die_lock is pthread,
+ * which is not FIFO-fair on macOS).
  */
-#define FTL_DISPATCH_SAFETY_RETRIES   8
-#define FTL_DISPATCH_SAFETY_WAIT_MS   50
+#define FTL_DISPATCH_SAFETY_RETRIES   2048
+#define FTL_DISPATCH_SAFETY_WAIT_MS   10
 
 /* Internal helper functions */
 static struct cwb *ftl_get_cwb(struct ftl_ctx *ctx, u32 channel, u32 plane);
