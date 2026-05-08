@@ -39,6 +39,16 @@ static _Atomic int      g_force_busy_pct       = -1;
 static _Atomic uint64_t g_notifier_delay_ns    = (uint64_t)-1;
 
 /*
+ * Per-call counter for the force-BUSY injection decision. Atomic
+ * fetch-add keeps this thread-safe across concurrent FTL workers and
+ * has no global libc state — replaces an earlier rand() call which
+ * was MT-unsafe. The modulo decision is statistically equivalent for
+ * uniform injection rates because every worker contributes one
+ * increment per wake.
+ */
+static _Atomic uint32_t g_force_busy_counter   = 0;
+
+/*
  * Returns the configured force-BUSY injection rate (0-100). When > 0,
  * a successful wake from die_dispatcher_wait may instead return
  * ETIMEDOUT with this percentage probability; the FTL retry loop
@@ -47,7 +57,14 @@ static _Atomic uint64_t g_notifier_delay_ns    = (uint64_t)-1;
  */
 static int die_disp_force_busy_pct(void)
 {
-    int v = atomic_load_explicit(&g_force_busy_pct, memory_order_relaxed);
+    /* Acquire load pairs with the release store in
+     * die_dispatcher_reset_env_cache_for_testing so a test thread can
+     * setenv() + reset_env_cache() and have subsequent loads on other
+     * threads observe the reset. memory_order_relaxed would be enough
+     * for the production fast-path (no concurrent reset), but acquire
+     * keeps the test reset visible without surprises on weakly-ordered
+     * platforms (aarch64). */
+    int v = atomic_load_explicit(&g_force_busy_pct, memory_order_acquire);
     if (v == -1) {
         const char *e = getenv("HFSSS_DIE_DISP_FORCE_BUSY");
         if (!e || !*e) {
@@ -57,7 +74,7 @@ static int die_disp_force_busy_pct(void)
             if (v < 0)   v = 0;
             if (v > 100) v = 100;
         }
-        atomic_store_explicit(&g_force_busy_pct, v, memory_order_relaxed);
+        atomic_store_explicit(&g_force_busy_pct, v, memory_order_release);
     }
     return v;
 }
@@ -72,11 +89,21 @@ static int die_disp_force_busy_pct(void)
 static uint64_t die_disp_notifier_delay_ns(void)
 {
     uint64_t v =
-        atomic_load_explicit(&g_notifier_delay_ns, memory_order_relaxed);
+        atomic_load_explicit(&g_notifier_delay_ns, memory_order_acquire);
     if (v == (uint64_t)-1) {
         const char *e = getenv("HFSSS_DIE_DISP_NOTIFIER_DELAY_NS");
-        v = (e && *e) ? (uint64_t)strtoull(e, NULL, 10) : 0;
-        atomic_store_explicit(&g_notifier_delay_ns, v, memory_order_relaxed);
+        if (e && *e) {
+            char *end = NULL;
+            errno = 0;
+            unsigned long long parsed = strtoull(e, &end, 10);
+            /* Bad input (non-numeric, overflow) caches as 0 — same as
+             * unset. Logging a warning would be nice but the project
+             * has no central logger reachable from this layer. */
+            v = (errno == 0 && end != e) ? (uint64_t)parsed : 0;
+        } else {
+            v = 0;
+        }
+        atomic_store_explicit(&g_notifier_delay_ns, v, memory_order_release);
     }
     return v;
 }
@@ -88,9 +115,14 @@ static uint64_t die_disp_notifier_delay_ns(void)
  */
 void die_dispatcher_reset_env_cache_for_testing(void)
 {
-    atomic_store_explicit(&g_force_busy_pct, -1, memory_order_relaxed);
+    /* Release stores pair with the acquire loads in
+     * die_disp_force_busy_pct / die_disp_notifier_delay_ns. Tests must
+     * still call this BEFORE spawning the dispatcher threads they
+     * intend to test; the release/acquire pair ensures any thread that
+     * loads after this store observes -1 and re-reads the env. */
+    atomic_store_explicit(&g_force_busy_pct, -1, memory_order_release);
     atomic_store_explicit(&g_notifier_delay_ns, (uint64_t)-1,
-                          memory_order_relaxed);
+                          memory_order_release);
 }
 
 /* ------------------------------------------------------------------ */
@@ -577,8 +609,12 @@ int die_dispatcher_wait(struct die_dispatcher *d,
          * notifier, so no queue cleanup is required. Default off.
          */
         int pct = die_disp_force_busy_pct();
-        if (pct > 0 && (rand() % 100) < pct) {
-            rc = ETIMEDOUT;
+        if (pct > 0) {
+            uint32_t c = atomic_fetch_add_explicit(&g_force_busy_counter, 1,
+                                                   memory_order_relaxed);
+            if ((c % 100u) < (uint32_t)pct) {
+                rc = ETIMEDOUT;
+            }
         }
     }
 

@@ -13,12 +13,21 @@ static u64 gc_dbg_write_fail_removes = 0;
 
 /*
  * Safety bounds for the dispatcher-driven retry loop in gc_run_mt.
- * Mirrors the host-IO loop in ftl.c: in correct operation the loop
- * exits on the first or second iteration once the dispatcher signals
- * the next IDLE event on the target die. The bounds only kick in if
- * the dispatcher itself is broken or disabled, in which case the
- * caller falls back to a bounded wait that resolves rather than
- * hanging.
+ *
+ * Intentionally tighter than the host-IO budget in ftl.c (2048 × 10 ms
+ * = ~20 s). GC is invoked inline from the host-IO write path when CWB
+ * allocation fails (NOSPC); a stuck GC pass blocks every host write
+ * waiting for free space. The 8 × 50 ms = 400 ms ceiling keeps GC
+ * from absorbing the entire NVMe command timeout on a single GC
+ * page-move. If GC genuinely cannot make progress within 400 ms the
+ * underlying error propagates to the host write, which then surfaces
+ * BUSY/AGAIN and lets fio retry — a recoverable failure mode rather
+ * than a multi-second stall.
+ *
+ * Background-thread GC (gc_thread.c) calls into the same gc_run_mt
+ * helpers; the same 400 ms bound applies and is appropriate there too
+ * because a stalled background GC re-enters its own scheduling loop
+ * rather than holding any external resource.
  */
 #define GC_DISPATCH_SAFETY_RETRIES   8
 #define GC_DISPATCH_SAFETY_WAIT_MS   50
