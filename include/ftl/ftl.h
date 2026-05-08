@@ -11,6 +11,7 @@
 #include "ftl/error.h"
 #include "hal/hal.h"
 #include "ftl/superblock.h"
+#include "ftl/die_dispatcher.h"
 #include "media/cmd_state.h"
 
 struct nand_profile;
@@ -70,6 +71,15 @@ struct ftl_ctx {
     struct ftl_stats stats;
     struct mutex lock;
     bool initialized;
+
+    /*
+     * Per-die wait queue + completion-event-driven dispatch. Replaces the
+     * old nanosleep retry-spin path. Created in ftl_init from the
+     * underlying nand_device, destroyed in ftl_cleanup AFTER all FTL
+     * worker threads have been joined (the dispatcher's destroy contract
+     * presumes no live waiters remain on its queues).
+     */
+    struct die_dispatcher *die_disp;
 };
 
 /* Function Prototypes */
@@ -110,4 +120,17 @@ int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
 int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
                       u64 lba, const void *data);
 int ftl_trim_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa, u64 lba);
+
+/*
+ * Priority-aware variants. Host-IO callers should use the bare names
+ * above (which default to DIE_PRIO_HOST_READ / DIE_PRIO_HOST_WRITE);
+ * GC and wear-leveling callers pass the appropriate die_priority_t so
+ * the die_dispatcher can schedule them against host IO.
+ */
+int ftl_read_page_mt_ex(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                        u64 lba, void *data, die_priority_t prio);
+int ftl_write_page_mt_ex(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                         u64 lba, const void *data, die_priority_t prio);
+int ftl_trim_page_mt_ex(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                        u64 lba, die_priority_t prio);
 #endif /* __HFSSS_FTL_H */

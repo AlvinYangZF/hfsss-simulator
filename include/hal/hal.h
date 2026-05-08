@@ -81,4 +81,13 @@ void hal_reset_stats(struct hal_ctx *ctx);
 struct nand_profile;
 const struct nand_profile *hal_get_profile(struct hal_ctx *ctx);
 
+/*
+ * Bridge to the underlying nand_device owned by the media layer. Used by
+ * upper layers that need to install per-device callbacks (e.g., the FTL
+ * die_dispatcher's die-ready notifier hook). Returns NULL if HAL has no
+ * NAND device or no media context attached.
+ */
+struct nand_device;
+struct nand_device *hal_get_nand_device(struct hal_ctx *ctx);
+
 #endif /* __HFSSS_HAL_H */
