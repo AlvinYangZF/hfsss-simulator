@@ -13,8 +13,85 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* ------------------------------------------------------------------ */
+/* Env-gated fault-injection knobs                                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Knobs are off by default. When the env var is unset, both helpers
+ * return 0 and every fault-injection branch is a single relaxed-load
+ * away from a no-op — release builds with neither env set are
+ * byte-equivalent to the previous behavior.
+ *
+ * Pattern matches HFSSS_TRACE_IO_ERR (include/common/io_err_trace.h):
+ * getenv on first probe, cache result in a relaxed-atomic, all
+ * subsequent probes pay only one relaxed load.
+ *
+ * Sentinel for the unread state is -1 (signed cache) and (uint64_t)-1
+ * (unsigned cache) so a legitimate zero env value caches as zero.
+ */
+
+static _Atomic int      g_force_busy_pct       = -1;
+static _Atomic uint64_t g_notifier_delay_ns    = (uint64_t)-1;
+
+/*
+ * Returns the configured force-BUSY injection rate (0-100). When > 0,
+ * a successful wake from die_dispatcher_wait may instead return
+ * ETIMEDOUT with this percentage probability; the FTL retry loop
+ * already treats ETIMEDOUT as "fall through to next iteration", so
+ * this exercises the re-queue path without changing any caller.
+ */
+static int die_disp_force_busy_pct(void)
+{
+    int v = atomic_load_explicit(&g_force_busy_pct, memory_order_relaxed);
+    if (v == -1) {
+        const char *e = getenv("HFSSS_DIE_DISP_FORCE_BUSY");
+        if (!e || !*e) {
+            v = 0;
+        } else {
+            v = atoi(e);
+            if (v < 0)   v = 0;
+            if (v > 100) v = 100;
+        }
+        atomic_store_explicit(&g_force_busy_pct, v, memory_order_relaxed);
+    }
+    return v;
+}
+
+/*
+ * Returns the configured notifier-internal delay in nanoseconds. When
+ * > 0, die_dispatcher_on_die_ready sleeps for this duration between
+ * dequeueing a waiter (under q->lock) and signaling its cv. This
+ * widens the wake -> resubmit window so spurious-wake guards in the
+ * waiter and re-queue race conditions can be exercised.
+ */
+static uint64_t die_disp_notifier_delay_ns(void)
+{
+    uint64_t v =
+        atomic_load_explicit(&g_notifier_delay_ns, memory_order_relaxed);
+    if (v == (uint64_t)-1) {
+        const char *e = getenv("HFSSS_DIE_DISP_NOTIFIER_DELAY_NS");
+        v = (e && *e) ? (uint64_t)strtoull(e, NULL, 10) : 0;
+        atomic_store_explicit(&g_notifier_delay_ns, v, memory_order_relaxed);
+    }
+    return v;
+}
+
+/*
+ * Test-only helper. Resets both env caches so a test can install a
+ * different env value with setenv() and have the next probe re-read it.
+ * No-op in production; declared in die_dispatcher_internal.h for tests.
+ */
+void die_dispatcher_reset_env_cache_for_testing(void)
+{
+    atomic_store_explicit(&g_force_busy_pct, -1, memory_order_relaxed);
+    atomic_store_explicit(&g_notifier_delay_ns, (uint64_t)-1,
+                          memory_order_relaxed);
+}
 
 /* ------------------------------------------------------------------ */
 /* Tier and slot mapping                                              */
@@ -491,6 +568,18 @@ int die_dispatcher_wait(struct die_dispatcher *d,
         }
         pthread_mutex_unlock(&q->lock);
         rc = ETIMEDOUT;
+    } else {
+        /*
+         * Force-BUSY fault injection. On a real signaled wake, with
+         * probability pct%, override rc to ETIMEDOUT so the caller's
+         * retry loop re-submits and re-waits as if cmd_engine had
+         * returned BUSY again. The waiter is already dequeued by the
+         * notifier, so no queue cleanup is required. Default off.
+         */
+        int pct = die_disp_force_busy_pct();
+        if (pct > 0 && (rand() % 100) < pct) {
+            rc = ETIMEDOUT;
+        }
     }
 
     die_waiter_cleanup(&w);
@@ -524,6 +613,19 @@ void die_dispatcher_on_die_ready(struct nand_device *dev,
 
     if (!to_wake) {
         return;
+    }
+    /*
+     * Optional notifier delay (env-gated). Sleeping here widens the
+     * wake -> resubmit window: the waiter has already been dequeued
+     * under q->lock but has not yet been signaled, so any concurrent
+     * submit by another thread observes an empty queue while the
+     * dispatched waiter is still parked. The dispatcher's spurious-
+     * wake guard in the wait loop must keep behavior unchanged across
+     * any delay value. Default 0 ns (no delay).
+     */
+    uint64_t delay_ns = die_disp_notifier_delay_ns();
+    if (delay_ns > 0) {
+        sleep_ns(delay_ns);
     }
     pthread_mutex_lock(&to_wake->cv_lock);
     to_wake->signaled = true;

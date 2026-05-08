@@ -137,6 +137,14 @@ struct die_waiter  *die_waitqueue_pop_next(struct die_waitqueue *q);
 void die_waitqueue_record_host_io(struct die_waitqueue *q, u64 now_ns);
 bool die_waitqueue_host_bursting(struct die_waitqueue *q, u64 now_ns);
 
+/*
+ * Test-only: reset the cached env values for the fault-injection knobs
+ * (HFSSS_DIE_DISP_FORCE_BUSY, HFSSS_DIE_DISP_NOTIFIER_DELAY_NS). Tests
+ * call this after setenv()/unsetenv() so the next probe re-reads the
+ * environment. Production code never calls this.
+ */
+void die_dispatcher_reset_env_cache_for_testing(void);
+
 #ifdef __cplusplus
 }
 #endif
