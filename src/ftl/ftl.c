@@ -314,22 +314,9 @@ int ftl_init(struct ftl_ctx *ctx, struct ftl_config *config, struct hal_ctx *hal
      */
     ctx->profile = hal_get_profile(hal);
 
-    /*
-     * Install the per-die wait-queue dispatcher onto the underlying NAND
-     * device. The dispatcher registers itself as cmd_engine's die-ready
-     * notifier, so any non-FTL caller of cmd_engine that goes through
-     * this same nand_device while the FTL stack is up will also benefit
-     * from event-driven wakeups. Tolerated NULL: tests that init FTL
-     * without a fully-wired media stack run with the dispatcher disabled
-     * and fall back to the safety retry budget alone.
-     */
-    ctx->die_disp = die_dispatcher_create(hal_get_nand_device(hal));
-
     /* Initialize lock */
     ret = mutex_init(&ctx->lock);
     if (ret != HFSSS_OK) {
-        die_dispatcher_destroy(ctx->die_disp);
-        ctx->die_disp = NULL;
         return ret;
     }
 
@@ -462,6 +449,16 @@ int ftl_init(struct ftl_ctx *ctx, struct ftl_config *config, struct hal_ctx *hal
         mutex_cleanup(&ctx->lock);
         return ret;
     }
+
+    /*
+     * Install the per-die wait-queue dispatcher only after every fallible
+     * FTL subcomponent has initialized successfully. That keeps failed
+     * ftl_init attempts from leaving a notifier hook on the shared
+     * nand_device. Tolerated NULL: tests that init FTL without a
+     * fully-wired media stack run with the dispatcher disabled and fall
+     * back to the safety retry budget alone.
+     */
+    ctx->die_disp = die_dispatcher_create(hal_get_nand_device(hal));
 
     ctx->initialized = true;
     return HFSSS_OK;

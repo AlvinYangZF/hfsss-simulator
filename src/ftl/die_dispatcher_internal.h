@@ -84,6 +84,8 @@ struct die_waiter {
     pthread_mutex_t      cv_lock;
     bool                 signaled;
     bool                 shutdown;
+    bool                 dispatched;
+    bool                 cancelled;
     die_priority_t       prio;
 };
 

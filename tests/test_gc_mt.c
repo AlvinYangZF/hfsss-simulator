@@ -276,6 +276,109 @@ static void test_gc_mt_respects_admit_callback_reject(void)
     teardown(&env);
 }
 
+static bool find_lba_in_block(struct taa_ctx *taa, struct block_desc *block,
+                              u64 *out_lba, union ppn *out_ppn)
+{
+    for (u64 lba = 0; lba < taa->total_lbas; lba++) {
+        union ppn ppn;
+        if (taa_lookup(taa, lba, &ppn) != HFSSS_OK) {
+            continue;
+        }
+        if (ppn.bits.channel == block->channel &&
+            ppn.bits.chip    == block->chip &&
+            ppn.bits.die     == block->die &&
+            ppn.bits.plane   == block->plane &&
+            ppn.bits.block   == block->block_id) {
+            *out_lba = lba;
+            *out_ppn = ppn;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void force_die_busy(struct media_ctx *media, u32 ch, u32 chip, u32 die_id)
+{
+    struct nand_die *die =
+        &media->nand->channels[ch].chips[chip].dies[die_id];
+    mutex_lock(&die->die_lock, 0);
+    die->cmd_state.state = DIE_PROG_ARRAY_BUSY;
+    die->cmd_state.phase = CMD_PHASE_ARRAY_BUSY;
+    die->cmd_state.in_flight = true;
+    mutex_unlock(&die->die_lock);
+}
+
+static void force_die_idle(struct media_ctx *media, u32 ch, u32 chip, u32 die_id)
+{
+    struct nand_die *die =
+        &media->nand->channels[ch].chips[chip].dies[die_id];
+    mutex_lock(&die->die_lock, 0);
+    nand_cmd_state_init(&die->cmd_state);
+    mutex_unlock(&die->die_lock);
+}
+
+static void test_gc_mt_transient_busy_preserves_mapping(void)
+{
+    printf("\n=== GC MT: transient BUSY preserves source mapping ===\n");
+
+    struct test_env env;
+    memset(&env, 0, sizeof(env));
+    int ret = setup(&env);
+    TEST_ASSERT(ret == HFSSS_OK, "setup succeeds");
+    if (ret != HFSSS_OK) return;
+
+    struct ftl_ctx *ftl = &env.mt.ftl;
+    struct taa_ctx *taa = &env.mt.taa;
+    uint8_t wbuf[PGSZ];
+    int errors = 0;
+    for (u32 i = 0; i < TOTAL_LBAS; i++) {
+        memset(wbuf, (uint8_t)(i & 0xFF), PGSZ);
+        ret = ftl_write_page_mt(ftl, taa, i, wbuf);
+        if (ret != HFSSS_OK) errors++;
+    }
+    TEST_ASSERT(errors == 0, "initial fill succeeds");
+
+    struct block_desc *victim =
+        block_find_victim(&ftl->block_mgr, ftl->gc.policy);
+    TEST_ASSERT(victim != NULL, "victim block exists");
+    if (!victim) {
+        teardown(&env);
+        return;
+    }
+
+    u64 lba = 0;
+    union ppn ppn_before;
+    bool found = find_lba_in_block(taa, victim, &lba, &ppn_before);
+    TEST_ASSERT(found, "victim block contains at least one mapped LBA");
+    if (!found) {
+        teardown(&env);
+        return;
+    }
+
+    force_die_busy(&env.media, victim->channel, victim->chip, victim->die);
+    int gc_ret = gc_run_mt(&ftl->gc, &ftl->block_mgr, taa, ftl->hal);
+    force_die_idle(&env.media, victim->channel, victim->chip, victim->die);
+
+    printf("  gc_run_mt while victim die busy returned: %d\n", gc_ret);
+    TEST_ASSERT(gc_ret == HFSSS_ERR_BUSY || gc_ret == HFSSS_ERR_AGAIN,
+                "GC surfaces transient BUSY/AGAIN instead of reclaiming");
+
+    union ppn ppn_after;
+    ret = taa_lookup(taa, lba, &ppn_after);
+    TEST_ASSERT(ret == HFSSS_OK && ppn_after.raw == ppn_before.raw,
+                "source LBA mapping is preserved after transient BUSY");
+
+    uint8_t rbuf[PGSZ];
+    memset(rbuf, 0, sizeof(rbuf));
+    ret = ftl_read_page_mt(ftl, taa, lba, rbuf);
+    uint8_t expected[PGSZ];
+    memset(expected, (uint8_t)(lba & 0xFF), PGSZ);
+    TEST_ASSERT(ret == HFSSS_OK && memcmp(expected, rbuf, PGSZ) == 0,
+                "source data remains readable after transient BUSY");
+
+    teardown(&env);
+}
+
 /* =====================================================================
  * L4 priority + WFQ integration tests.
  *
@@ -660,6 +763,7 @@ int main(void)
 
     test_gc_mt_reclaims_blocks();
     test_gc_mt_respects_admit_callback_reject();
+    test_gc_mt_transient_busy_preserves_mapping();
     test_critical_gc_preempts_host();
     test_host_write_vs_normal_gc_wfq();
     test_idle_gc_drains_when_host_quiet();

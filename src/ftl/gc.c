@@ -32,6 +32,13 @@ static u64 gc_dbg_write_fail_removes = 0;
 #define GC_DISPATCH_SAFETY_RETRIES   8
 #define GC_DISPATCH_SAFETY_WAIT_MS   50
 
+static bool gc_transient_submit_error(int ret)
+{
+    return ret == HFSSS_ERR_BUSY ||
+           ret == HFSSS_ERR_AGAIN ||
+           ret == HFSSS_ERR_SHUTDOWN;
+}
+
 /*
  * Recover the die_dispatcher pointer that the FTL layer registered on
  * the underlying NAND device. NULL when the FTL stack ran ftl_init
@@ -538,6 +545,7 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
     u64 reclaimed = 0;
     u8 *page_buf = NULL;
     int ret;
+    int abort_rc = HFSSS_ERR_NOSPC;
 
     if (!ctx || !block_mgr || !taa) {
         return HFSSS_ERR_INVAL;
@@ -631,6 +639,7 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
                 mutex_lock(&ctx->lock, 0);
                 ctx->det_window_rejects++;
                 mutex_unlock(&ctx->lock);
+                abort_rc = HFSSS_ERR_NOSPC;
                 reloc_aborted = true;
                 break;
             }
@@ -655,6 +664,11 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
                                     victim->block_id, src_ppn.bits.page,
                                     page_buf, spare_buf);
         if (ret != HFSSS_OK) {
+            if (gc_transient_submit_error(ret)) {
+                abort_rc = ret;
+                reloc_aborted = true;
+                break;
+            }
             taa_remove(taa, lba);
             continue;
         }
@@ -668,6 +682,7 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
                                                            victim->channel,
                                                            victim->plane);
             if (!ctx->dst_block) {
+                abort_rc = HFSSS_ERR_NOSPC;
                 reloc_aborted = true;
                 break;
             }
@@ -680,8 +695,14 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
                                          ctx->dst_block->plane,
                                          ctx->dst_block->block_id);
             if (ret != HFSSS_OK) {
+                if (gc_transient_submit_error(ret)) {
+                    abort_rc = ret;
+                    reloc_aborted = true;
+                    break;
+                }
                 block_mark_bad(block_mgr, ctx->dst_block);
                 ctx->dst_block = NULL;
+                abort_rc = ret;
                 reloc_aborted = true;
                 break;
             }
@@ -696,6 +717,11 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
                                        ctx->dst_page,
                                        page_buf, spare_buf);
         if (ret != HFSSS_OK) {
+            if (gc_transient_submit_error(ret)) {
+                abort_rc = ret;
+                reloc_aborted = true;
+                break;
+            }
             taa_remove(taa, lba);
             ctx->dst_page++;
             continue;
@@ -743,7 +769,7 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
         ctx->moved_pages += moved;
         ctx->running = false;
         mutex_unlock(&ctx->lock);
-        return HFSSS_ERR_NOSPC;
+        return abort_rc;
     }
 
 erase_and_free_mt:
@@ -753,6 +779,16 @@ erase_and_free_mt:
                                      victim->die, victim->plane,
                                      victim->block_id);
         if (ret != HFSSS_OK) {
+            if (gc_transient_submit_error(ret)) {
+                block_unmark_gc(block_mgr, victim);
+                ctx->gc_write_pages += moved;
+                mutex_lock(&ctx->lock, 0);
+                ctx->gc_count++;
+                ctx->moved_pages += moved;
+                ctx->running = false;
+                mutex_unlock(&ctx->lock);
+                return ret;
+            }
             block_mark_bad(block_mgr, victim);
             ctx->gc_write_pages += moved;
             mutex_lock(&ctx->lock, 0);

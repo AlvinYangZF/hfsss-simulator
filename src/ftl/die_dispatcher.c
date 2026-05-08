@@ -176,6 +176,8 @@ void die_waiter_init(struct die_waiter *w, die_priority_t prio)
     pthread_mutex_init(&w->cv_lock, NULL);
     w->signaled = false;
     w->shutdown = false;
+    w->dispatched = false;
+    w->cancelled = false;
     w->prio = prio;
 }
 
@@ -558,12 +560,17 @@ int die_dispatcher_wait(struct die_dispatcher *d,
     die_waitqueue_enqueue(q, &w);
     pthread_mutex_unlock(&q->lock);
 
-    /* Block on the per-waiter cv. The signaled / shutdown flags are set
-     * under cv_lock by the wakers so spurious wakes are handled. */
+    /* Block on the per-waiter cv. The signaled / shutdown / dispatched /
+     * cancelled flags are set under cv_lock by waiters and wakers so
+     * spurious wakes and timeout-vs-notifier races are handled. */
     int wait_rc = 0;
     bool timed_out = false;
     pthread_mutex_lock(&w.cv_lock);
     while (!w.signaled && !w.shutdown) {
+        if (w.dispatched) {
+            pthread_cond_wait(&w.cv, &w.cv_lock);
+            continue;
+        }
         if (max_wait_ms == 0) {
             pthread_cond_wait(&w.cv, &w.cv_lock);
         } else {
@@ -571,6 +578,10 @@ int die_dispatcher_wait(struct die_dispatcher *d,
             abs_deadline_ms(max_wait_ms, &ts);
             wait_rc = pthread_cond_timedwait(&w.cv, &w.cv_lock, &ts);
             if (wait_rc == ETIMEDOUT) {
+                if (w.signaled || w.shutdown || w.dispatched) {
+                    continue;
+                }
+                w.cancelled = true;
                 timed_out = true;
                 break;
             }
@@ -639,7 +650,19 @@ void die_dispatcher_on_die_ready(struct nand_device *dev,
 
     struct die_waiter *to_wake;
     pthread_mutex_lock(&q->lock);
-    to_wake = die_waitqueue_pop_next(q);
+    while ((to_wake = die_waitqueue_pop_next(q)) != NULL) {
+        struct die_waiter *picked = to_wake;
+        pthread_mutex_lock(&to_wake->cv_lock);
+        if (to_wake->cancelled) {
+            to_wake = NULL;
+        } else {
+            to_wake->dispatched = true;
+        }
+        pthread_mutex_unlock(&picked->cv_lock);
+        if (to_wake) {
+            break;
+        }
+    }
     if (to_wake &&
         (to_wake->prio == DIE_PRIO_HOST_READ ||
          to_wake->prio == DIE_PRIO_HOST_WRITE)) {
@@ -664,7 +687,9 @@ void die_dispatcher_on_die_ready(struct nand_device *dev,
         sleep_ns(delay_ns);
     }
     pthread_mutex_lock(&to_wake->cv_lock);
-    to_wake->signaled = true;
-    pthread_cond_signal(&to_wake->cv);
+    if (!to_wake->cancelled) {
+        to_wake->signaled = true;
+        pthread_cond_signal(&to_wake->cv);
+    }
     pthread_mutex_unlock(&to_wake->cv_lock);
 }

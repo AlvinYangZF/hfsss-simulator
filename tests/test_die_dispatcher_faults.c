@@ -171,6 +171,30 @@ static int run_one_cycle(struct fixture *f, u32 page)
     return arg.rc;
 }
 
+static int run_one_cycle_with_timeout(struct fixture *f, u32 page,
+                                      u32 max_wait_ms)
+{
+    pthread_t tid;
+    atomic_int enqueued = 0;
+    struct wait_arg arg = {
+        .disp = f->disp, .ch = 0, .chip = 0, .die = 0,
+        .prio = DIE_PRIO_HOST_READ,
+        .max_wait_ms = max_wait_ms,
+        .enqueued = &enqueued,
+        .rc = -999,
+    };
+    pthread_create(&tid, NULL, wait_worker, &arg);
+    wait_for_enqueue(&enqueued, 1);
+
+    u8 buf[4096];
+    memset(buf, 0xA5, sizeof(buf));
+    int prog_rc = media_nand_program(&f->media, 0, 0, 0, 0, 0, page, buf, NULL);
+    (void)prog_rc;
+
+    pthread_join(tid, NULL);
+    return arg.rc;
+}
+
 /* ------------------------------------------------------------------ */
 /* Case 1 — env unset: baseline cycle completes normally              */
 /* ------------------------------------------------------------------ */
@@ -221,10 +245,6 @@ static int test_force_busy_high_rate_eventually_completes(void)
     setenv("HFSSS_DIE_DISP_FORCE_BUSY", "50", 1);
     unsetenv("HFSSS_DIE_DISP_NOTIFIER_DELAY_NS");
     die_dispatcher_reset_env_cache_for_testing();
-    /* Seed rand() so the test is reproducible across runs but still
-     * exercises the injection path on roughly half the wakes. */
-    srand(1);
-
     struct fixture f;
     if (fixture_setup(&f) != 0) {
         TEST_ASSERT(0, "fixture setup");
@@ -336,6 +356,38 @@ static int test_notifier_delay_does_not_cause_missed_wakeup(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Case 4 — dequeued waiter must outlive timeout window                */
+/* ------------------------------------------------------------------ */
+
+static int test_dequeued_waiter_does_not_timeout_before_signal(void)
+{
+    printf("\n=== notifier delay longer than waiter timeout still returns wake ===\n");
+
+    unsetenv("HFSSS_DIE_DISP_FORCE_BUSY");
+    setenv("HFSSS_DIE_DISP_NOTIFIER_DELAY_NS", "50000000", 1);
+    die_dispatcher_reset_env_cache_for_testing();
+
+    struct fixture f;
+    if (fixture_setup(&f) != 0) {
+        TEST_ASSERT(0, "fixture setup");
+        unsetenv("HFSSS_DIE_DISP_NOTIFIER_DELAY_NS");
+        die_dispatcher_reset_env_cache_for_testing();
+        return TEST_FAIL;
+    }
+
+    int rc = run_one_cycle_with_timeout(&f, 7, /*max_wait_ms=*/5);
+    TEST_ASSERT(rc == 0,
+                "dequeued waiter remains owned by notifier until signal");
+
+    fixture_teardown(&f);
+
+    unsetenv("HFSSS_DIE_DISP_NOTIFIER_DELAY_NS");
+    die_dispatcher_reset_env_cache_for_testing();
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -346,6 +398,7 @@ int main(void)
     test_force_busy_zero_does_nothing();
     test_force_busy_high_rate_eventually_completes();
     test_notifier_delay_does_not_cause_missed_wakeup();
+    test_dequeued_waiter_does_not_timeout_before_signal();
 
     printf("\n========================================\n");
     printf("die_dispatcher Faults Test Summary\n");
