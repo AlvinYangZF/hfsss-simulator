@@ -96,7 +96,15 @@ void ftl_reset_stats(struct ftl_ctx *ctx);
 /* Internal functions for testing */
 int ftl_map_l2p(struct ftl_ctx *ctx, u64 lba, union ppn *ppn);
 int ftl_unmap_lba(struct ftl_ctx *ctx, u64 lba);
-int ftl_gc_trigger(struct ftl_ctx *ctx);
+
+/*
+ * Run a single inline GC pass. Tags the gc context with the supplied
+ * trigger before invoking gc_run so the body submits at the matching
+ * die priority. Host-write back-pressure callers pass
+ * GC_TRIGGER_HOST_WRITE; namespace-level / urgency-driven callers pass
+ * the appropriate reason.
+ */
+int ftl_gc_trigger(struct ftl_ctx *ctx, gc_trigger_t trigger);
 
 /*
  * Profile query API. These all return safe defaults when ctx->profile is

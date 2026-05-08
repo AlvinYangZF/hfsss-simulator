@@ -1,6 +1,8 @@
 #include "ftl/gc.h"
+#include "ftl/die_dispatcher.h"
 #include "ftl/taa.h"
 #include "hal/hal.h"
+#include "media/nand.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -8,6 +10,132 @@
 
 static u64 gc_dbg_read_fail_removes = 0;
 static u64 gc_dbg_write_fail_removes = 0;
+
+/*
+ * Safety bounds for the dispatcher-driven retry loop in gc_run_mt.
+ * Mirrors the host-IO loop in ftl.c: in correct operation the loop
+ * exits on the first or second iteration once the dispatcher signals
+ * the next IDLE event on the target die. The bounds only kick in if
+ * the dispatcher itself is broken or disabled, in which case the
+ * caller falls back to a bounded wait that resolves rather than
+ * hanging.
+ */
+#define GC_DISPATCH_SAFETY_RETRIES   8
+#define GC_DISPATCH_SAFETY_WAIT_MS   50
+
+/*
+ * Recover the die_dispatcher pointer that the FTL layer registered on
+ * the underlying NAND device. NULL when the FTL stack ran ftl_init
+ * without a wired-up media stack (e.g. early unit tests); callers
+ * tolerate NULL by skipping the wait step.
+ */
+static struct die_dispatcher *gc_get_die_dispatcher(struct hal_ctx *hal)
+{
+    struct nand_device *dev = hal_get_nand_device(hal);
+    if (!dev) {
+        return NULL;
+    }
+    return (struct die_dispatcher *)dev->die_ready_ctx;
+}
+
+/*
+ * Wrap hal_nand_read_sync with dispatcher-driven busy-wait. Retries on
+ * BUSY/AGAIN by blocking on the per-die wait queue at the GC priority
+ * implied by the kick reason. Behavior on non-busy returns is identical
+ * to a direct hal_nand_read_sync call.
+ */
+static int gc_hal_read_with_wait(struct hal_ctx *hal,
+                                 struct die_dispatcher *disp,
+                                 die_priority_t prio,
+                                 u32 ch, u32 chip, u32 die, u32 plane,
+                                 u32 block, u32 page,
+                                 void *data, void *spare)
+{
+    int ret;
+    for (int attempt = 0; attempt < GC_DISPATCH_SAFETY_RETRIES; attempt++) {
+        ret = hal_nand_read_sync(hal, ch, chip, die, plane,
+                                 block, page, data, spare);
+        if (ret == HFSSS_OK) {
+            return HFSSS_OK;
+        }
+        if (ret != HFSSS_ERR_BUSY && ret != HFSSS_ERR_AGAIN) {
+            return ret;
+        }
+        if (!disp) {
+            return ret;
+        }
+        int rc_wait = die_dispatcher_wait(disp, ch, chip, die,
+                                          prio, GC_DISPATCH_SAFETY_WAIT_MS);
+        if (rc_wait == HFSSS_ERR_SHUTDOWN) {
+            return HFSSS_ERR_SHUTDOWN;
+        }
+    }
+    return ret;
+}
+
+/*
+ * Wrap hal_nand_program_sync with dispatcher-driven busy-wait. See
+ * gc_hal_read_with_wait for the contract.
+ */
+static int gc_hal_program_with_wait(struct hal_ctx *hal,
+                                    struct die_dispatcher *disp,
+                                    die_priority_t prio,
+                                    u32 ch, u32 chip, u32 die, u32 plane,
+                                    u32 block, u32 page,
+                                    const void *data, const void *spare)
+{
+    int ret;
+    for (int attempt = 0; attempt < GC_DISPATCH_SAFETY_RETRIES; attempt++) {
+        ret = hal_nand_program_sync(hal, ch, chip, die, plane,
+                                    block, page, data, spare);
+        if (ret == HFSSS_OK) {
+            return HFSSS_OK;
+        }
+        if (ret != HFSSS_ERR_BUSY && ret != HFSSS_ERR_AGAIN) {
+            return ret;
+        }
+        if (!disp) {
+            return ret;
+        }
+        int rc_wait = die_dispatcher_wait(disp, ch, chip, die,
+                                          prio, GC_DISPATCH_SAFETY_WAIT_MS);
+        if (rc_wait == HFSSS_ERR_SHUTDOWN) {
+            return HFSSS_ERR_SHUTDOWN;
+        }
+    }
+    return ret;
+}
+
+/*
+ * Wrap hal_nand_erase_sync with dispatcher-driven busy-wait. See
+ * gc_hal_read_with_wait for the contract.
+ */
+static int gc_hal_erase_with_wait(struct hal_ctx *hal,
+                                  struct die_dispatcher *disp,
+                                  die_priority_t prio,
+                                  u32 ch, u32 chip, u32 die, u32 plane,
+                                  u32 block)
+{
+    int ret;
+    for (int attempt = 0; attempt < GC_DISPATCH_SAFETY_RETRIES; attempt++) {
+        ret = hal_nand_erase_sync(hal, ch, chip, die, plane, block);
+        if (ret == HFSSS_OK) {
+            return HFSSS_OK;
+        }
+        if (ret != HFSSS_ERR_BUSY && ret != HFSSS_ERR_AGAIN) {
+            return ret;
+        }
+        if (!disp) {
+            return ret;
+        }
+        int rc_wait = die_dispatcher_wait(disp, ch, chip, die,
+                                          prio, GC_DISPATCH_SAFETY_WAIT_MS);
+        if (rc_wait == HFSSS_ERR_SHUTDOWN) {
+            return HFSSS_ERR_SHUTDOWN;
+        }
+    }
+    return ret;
+}
 
 int gc_init(struct gc_ctx *ctx, enum gc_policy policy, u32 threshold, u32 hiwater, u32 lowater)
 {
@@ -37,8 +165,24 @@ int gc_init(struct gc_ctx *ctx, enum gc_policy policy, u32 threshold, u32 hiwate
     ctx->gc_write_pages = 0;
     ctx->dst_block = NULL;
     ctx->dst_page = 0;
+    /*
+     * Default trigger preserves pre-T6 behavior: GC submits at the
+     * same priority class as host writes, so the dispatcher does not
+     * differentiate until a kick site explicitly tags otherwise.
+     */
+    ctx->current_trigger = GC_TRIGGER_HOST_WRITE;
 
     return HFSSS_OK;
+}
+
+void gc_set_trigger(struct gc_ctx *ctx, gc_trigger_t trigger)
+{
+    if (!ctx) {
+        return;
+    }
+    mutex_lock(&ctx->lock, 0);
+    ctx->current_trigger = trigger;
+    mutex_unlock(&ctx->lock);
 }
 
 void gc_cleanup(struct gc_ctx *ctx)
@@ -401,6 +545,7 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
      */
     gc_admit_gc_fn admit_fn;
     void          *admit_ctx;
+    gc_trigger_t   trigger;
     mutex_lock(&ctx->lock, 0);
     if (ctx->running) {
         mutex_unlock(&ctx->lock);
@@ -409,7 +554,18 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
     ctx->running = true;
     admit_fn  = ctx->admit_gc_fn;
     admit_ctx = ctx->admit_gc_ctx;
+    trigger   = ctx->current_trigger;
     mutex_unlock(&ctx->lock);
+
+    /*
+     * Snapshot the trigger -> priority mapping under ctx->lock above
+     * so the entire run uses one consistent priority class even if a
+     * concurrent gc_set_trigger arrives mid-pass. The dispatcher hop
+     * is consulted only when hal_nand_*_sync returns BUSY/AGAIN, so
+     * NULL dispatcher leaves behavior identical to a plain HAL call.
+     */
+    die_priority_t prio = die_dispatcher_prio_for_gc(trigger);
+    struct die_dispatcher *disp = gc_get_die_dispatcher(hal);
 
     victim = block_find_victim(block_mgr, ctx->policy);
     if (!victim) {
@@ -484,11 +640,11 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
 
         u8 spare_buf[64];
         memset(spare_buf, 0xFF, sizeof(spare_buf));
-        ret = hal_nand_read_sync(hal,
-                                 victim->channel, victim->chip,
-                                 victim->die, victim->plane,
-                                 victim->block_id, src_ppn.bits.page,
-                                 page_buf, spare_buf);
+        ret = gc_hal_read_with_wait(hal, disp, prio,
+                                    victim->channel, victim->chip,
+                                    victim->die, victim->plane,
+                                    victim->block_id, src_ppn.bits.page,
+                                    page_buf, spare_buf);
         if (ret != HFSSS_OK) {
             taa_remove(taa, lba);
             continue;
@@ -508,12 +664,12 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
             }
             ctx->dst_page = 0;
 
-            ret = hal_nand_erase_sync(hal,
-                                      ctx->dst_block->channel,
-                                      ctx->dst_block->chip,
-                                      ctx->dst_block->die,
-                                      ctx->dst_block->plane,
-                                      ctx->dst_block->block_id);
+            ret = gc_hal_erase_with_wait(hal, disp, prio,
+                                         ctx->dst_block->channel,
+                                         ctx->dst_block->chip,
+                                         ctx->dst_block->die,
+                                         ctx->dst_block->plane,
+                                         ctx->dst_block->block_id);
             if (ret != HFSSS_OK) {
                 block_mark_bad(block_mgr, ctx->dst_block);
                 ctx->dst_block = NULL;
@@ -522,14 +678,14 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
             }
         }
 
-        ret = hal_nand_program_sync(hal,
-                                    ctx->dst_block->channel,
-                                    ctx->dst_block->chip,
-                                    ctx->dst_block->die,
-                                    ctx->dst_block->plane,
-                                    ctx->dst_block->block_id,
-                                    ctx->dst_page,
-                                    page_buf, spare_buf);
+        ret = gc_hal_program_with_wait(hal, disp, prio,
+                                       ctx->dst_block->channel,
+                                       ctx->dst_block->chip,
+                                       ctx->dst_block->die,
+                                       ctx->dst_block->plane,
+                                       ctx->dst_block->block_id,
+                                       ctx->dst_page,
+                                       page_buf, spare_buf);
         if (ret != HFSSS_OK) {
             taa_remove(taa, lba);
             ctx->dst_page++;
@@ -583,10 +739,10 @@ int gc_run_mt(struct gc_ctx *ctx, struct block_mgr *block_mgr,
 
 erase_and_free_mt:
     if (hal) {
-        ret = hal_nand_erase_sync(hal,
-                                  victim->channel, victim->chip,
-                                  victim->die, victim->plane,
-                                  victim->block_id);
+        ret = gc_hal_erase_with_wait(hal, disp, prio,
+                                     victim->channel, victim->chip,
+                                     victim->die, victim->plane,
+                                     victim->block_id);
         if (ret != HFSSS_OK) {
             block_mark_bad(block_mgr, victim);
             ctx->gc_write_pages += moved;

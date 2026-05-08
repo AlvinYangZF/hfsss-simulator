@@ -121,7 +121,7 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
     /* Ensure CWB has a block; if out of space, run GC once and retry. */
     ret = ftl_allocate_cwb(ctx, ch, plane);
     if (ret == HFSSS_ERR_NOSPC) {
-        ftl_gc_trigger(ctx);
+        ftl_gc_trigger(ctx, GC_TRIGGER_HOST_WRITE);
         ret = ftl_allocate_cwb(ctx, ch, plane);
     }
     if (ret != HFSSS_OK) {
@@ -225,7 +225,12 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
     /* Check if GC should be triggered */
     u64 free_blocks = block_get_free_count(&ctx->block_mgr);
     if (gc_should_trigger(&ctx->gc, free_blocks)) {
-        ftl_gc_trigger(ctx);
+        /*
+         * Free-block watermark crossed during a host write. Tag the
+         * pass as FREE_SB_LOW so the dispatcher can pre-empt host IO
+         * if free blocks are critically scarce.
+         */
+        ftl_gc_trigger(ctx, GC_TRIGGER_FREE_SB_LOW);
     }
 
     return HFSSS_OK;
@@ -702,12 +707,13 @@ int ftl_checkpoint(struct ftl_ctx *ctx)
     return sb_checkpoint_write(&ctx->sb, &ctx->mapping);
 }
 
-int ftl_gc_trigger(struct ftl_ctx *ctx)
+int ftl_gc_trigger(struct ftl_ctx *ctx, gc_trigger_t trigger)
 {
     if (!ctx || !ctx->initialized) {
         return HFSSS_ERR_INVAL;
     }
 
+    gc_set_trigger(&ctx->gc, trigger);
     return gc_run(&ctx->gc, &ctx->block_mgr, &ctx->mapping, ctx->hal);
 }
 
@@ -841,7 +847,7 @@ int ftl_write_page_mt_ex(struct ftl_ctx *ctx, struct taa_ctx *taa,
     /* Ensure CWB has a block; if out of space, run GC once and retry. */
     ret = ftl_allocate_cwb(ctx, ch, plane);
     if (ret == HFSSS_ERR_NOSPC) {
-        ftl_gc_trigger(ctx);
+        ftl_gc_trigger(ctx, GC_TRIGGER_HOST_WRITE);
         ret = ftl_allocate_cwb(ctx, ch, plane);
     }
     if (ret != HFSSS_OK) {
@@ -969,6 +975,12 @@ int ftl_write_page_mt_ex(struct ftl_ctx *ctx, struct taa_ctx *taa,
      * dedicated GC thread handle it via gc_run_mt with TAA) */
     u64 free_blocks = block_get_free_count(&ctx->block_mgr);
     if (gc_should_trigger(&ctx->gc, free_blocks)) {
+        /*
+         * Tag the next gc_run_mt pass with FREE_SB_LOW before the
+         * worker observes the signal, so the dispatcher can pre-empt
+         * host IO if free blocks are critically scarce.
+         */
+        gc_set_trigger(&ctx->gc, GC_TRIGGER_FREE_SB_LOW);
         extern pthread_mutex_t *ftl_mt_gc_mutex_ptr;
         extern pthread_cond_t  *ftl_mt_gc_cond_ptr;
         if (ftl_mt_gc_mutex_ptr && ftl_mt_gc_cond_ptr) {

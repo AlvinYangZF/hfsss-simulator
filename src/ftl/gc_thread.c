@@ -23,6 +23,17 @@ void *gc_thread_main(void *arg)
 
         if (!mt->gc_running) break;
 
+        /*
+         * Reaching this point means gc_should_trigger() was true: the
+         * free-block count crossed the GC threshold. The kick site in
+         * ftl_write_page_mt_ex pre-tags the trigger before signaling
+         * the worker; honour that tag if it is already set to a more
+         * urgent class. Default any unset path (e.g. periodic timeout
+         * that found free-low on its own) to FREE_SB_LOW since that is
+         * the predicate that just succeeded.
+         */
+        gc_set_trigger(&ftl->gc, GC_TRIGGER_FREE_SB_LOW);
+
         /* Run GC cycle */
         int rc = gc_run_mt(&ftl->gc, &ftl->block_mgr, &mt->taa,
                             ftl->hal);
