@@ -379,20 +379,26 @@ Per-FTL-context shutdown drains its own waiters in the same way before destroyin
 
 ### 8.2 KPI table
 
-Every PR-gating run must land within these bounds:
+Every PR-gating run must land within these bounds. Numbers shown are
+post-implementation actuals on `perf/ftl-die-busy-waitqueue` (archived
+under `docs/perf-baselines/2026-04-30-perf-ftl-die-busy-waitqueue/`).
 
-| Case | Metric | Baseline (master@0eb0d83) | Target |
-|---|---|---|---|
-| 012 seqwrite | write mean lat | 142.0 ms | ≤ 10 ms |
-| 012 seqwrite | write p99 lat | 152.0 ms | ≤ 20 ms |
-| 012 seqwrite | write IOPS | 112 | ≥ 1500 |
-| 012 seqwrite | read mean lat | 9.1 ms | ≤ 12 ms (no regression) |
-| 010 randwrite | all | (see 2.1) | ±10 % |
-| 011 randrw | all | (see 2.1) | ±10 % |
-| 013 trim | all | (see 2.1) | ±10 % |
-| 014 stress | all | (see 2.1) | ±10 % |
+| Case | Metric | Baseline (master@0eb0d83) | Original target | Actual (post-impl) | Status |
+|---|---|---|---|---|---|
+| 012 seqwrite | write mean lat | 142.0 ms | ≤ 10 ms | 141.8 ms | **MISSED** — see Section 9.2 |
+| 012 seqwrite | write p99 lat | 152.0 ms | ≤ 20 ms | 143.6 ms | partial: ~6 % p99 trim |
+| 012 seqwrite | write IOPS | 112 | ≥ 1500 | 112 | **MISSED** |
+| 012 seqwrite | read mean lat | 9.1 ms | ≤ 12 ms | 9.4 ms | met |
+| 010 randwrite | all | (see 2.1) | ±10 % | within ±2 % | met |
+| 011 randrw | all | (see 2.1) | ±10 % | within ±2 % | met |
+| 013 trim | all | (see 2.1) | ±10 % | within ±2 % | met |
+| 014 stress | all | (see 2.1) | ±10 % | within ±2 % | met |
+| 012 seqwrite | gating | FAIL on master fix path under stress | PASS | PASS | met (correctness) |
 
-The 012 seqwrite write IOPS upper bound is intentionally not pinned — better is welcome; what matters is the latency floor and that no other case regresses.
+The dispatcher infrastructure delivers correctness (8/8 pre-checkin
+PASS) but not the original latency target. The reason — and the next
+work item that must precede a real latency fix — is documented in
+Section 9.2.
 
 ### 8.3 Fault-injection knobs (env-gated only)
 
@@ -418,18 +424,71 @@ The host-observed write latency is governed by the write buffer / VWC layer that
 
 This assumption is captured in code as a comment on the T3 policy and a regression test (`tests/test_die_dispatcher_engine.c::vwc_disabled_t3_path_does_not_regress_existing_baseline`) that confirms VWC-off behavior matches today's master.
 
-### 9.2 Latency budget breakdown (target)
+### 9.2 Latency budget — target vs observed
 
-Worst-case `012_seqwrite_verify` write latency under target:
+Original target breakdown for `012_seqwrite_verify` write latency:
 
-| Component | Time |
+| Component | Target time |
 |---|---|
 | One waiter ahead in same tier (worst case) | ~1.3 ms (one tProg) |
 | Channel arbitration + cmd_engine setup | ~50 µs |
 | Fault-injection slack (none in normal mode) | 0 |
 | **Total target** | **< 2 ms typical, < 10 ms worst case** |
 
-Compared to baseline 142 ms (≈ 2048 × 100 µs × 0.7 hit rate), a 14× reduction is the floor we expect to clear comfortably.
+**Observed (post-impl)**: ~142 ms mean — essentially identical to the
+master baseline. The dispatcher does not deliver the projected latency
+reduction.
+
+#### Why the dispatcher does not reduce the latency floor
+
+The dispatcher provides FIFO ordering on the **wake side**: when a die
+transitions to IDLE, the dispatcher pops one waiter from its per-die
+queue and signals that waiter's condvar. The signaled waiter then
+re-attempts `cmd_engine_submit`.
+
+`cmd_engine_submit` acquires `channel_lock` and `die_lock` (both
+`pthread_mutex_t`). On macOS — and on Linux with `PTHREAD_MUTEX_DEFAULT`
+— `pthread_mutex_t` is **not FIFO-fair**: a thread that has just
+released a mutex can re-acquire it ahead of waiters who have been
+blocked longer. Concretely, a fresh FTL worker arriving at
+`cmd_engine_submit` can win the lock against the dispatcher-signaled
+waiter, transition the die back into a busy state, and force the
+signaled waiter to fail with `HFSSS_ERR_BUSY` and re-queue.
+
+Under fio-012 (bs=128k, iodepth=16, eight FTL workers feeding it from
+the SQ), this lock-race lose rate compounds across the full duration
+of the test. Per-iteration backoff in the FTL retry loop is bounded
+(SAFETY_RETRIES × SAFETY_WAIT_MS), but the *typical* latency for a
+write to actually win the die converges to roughly the same value as
+the previous `nanosleep × N` retry-spin: ~140 ms in this configuration.
+
+#### Required follow-up to actually close the latency gap
+
+Pick one or compose two:
+
+1. **Replace `pthread_mutex_t` for `die_lock` / `channel_lock` with
+   FIFO-fair primitives.** A small ticket-lock (~50 LOC) gives strict
+   wakeup ordering. The dispatcher's FIFO becomes effective because the
+   signaled waiter is also first in line at the underlying lock.
+2. **Die-reservation protocol between dispatcher and cmd_engine.** When
+   the dispatcher pops a waiter, it stamps `die->next_owner = waiter`.
+   `cmd_engine_submit` checks this field; any submission that does not
+   match returns BUSY immediately. The reservation is cleared once the
+   signaled waiter completes its submit. Removes the lock race from
+   the contention path entirely.
+3. **REQ-045 tier 3** — retarget host I/O through `channel_worker`'s
+   CQ path. The channel_worker model already imposes serialization at
+   submit time; the dispatcher then becomes the wake mechanism for the
+   blocking caller, not a fairness mechanism over racing locks.
+
+Item 1 is the smallest scoped follow-up that would directly produce
+the projected ≥10× reduction. Item 2 is more invasive but cleaner.
+Item 3 is the broadest architectural alignment.
+
+This PR does NOT attempt any of the three. Its scope is now bounded
+to: correctness (no fio-012 fail), priority-class infrastructure
+(GC vs host scheduling), and the architectural foundation that the
+follow-ups will build on.
 
 ## 10. Out of scope
 
