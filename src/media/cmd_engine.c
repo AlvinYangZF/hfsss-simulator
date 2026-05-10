@@ -313,7 +313,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
      * still prevents a second PROG/ERASE from sneaking in because the
      * legality matrix rejects non-suspend ops in DIE_*_ARRAY_BUSY.
      */
-    mutex_lock(&channel->lock, 0);
+    ticket_lock_lock(&channel->lock);
     ticket_lock_lock(&die->die_lock);
 
     /* Implicit cache sequence termination: if a non-cache command is
@@ -330,7 +330,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
 
     if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
         ticket_lock_unlock(&die->die_lock);
-        mutex_unlock(&channel->lock);
+        ticket_lock_unlock(&channel->lock);
         return HFSSS_ERR_BUSY;
     }
 
@@ -357,7 +357,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         }
         if (conflict) {
             ticket_lock_unlock(&die->die_lock);
-            mutex_unlock(&channel->lock);
+            ticket_lock_unlock(&channel->lock);
             return HFSSS_ERR_BUSY;
         }
     }
@@ -416,7 +416,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
             }
         }
 
-        mutex_unlock(&channel->lock);
+        ticket_lock_unlock(&channel->lock);
         return stage_rc;
     }
 
@@ -471,9 +471,9 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
             /* Drop the channel lock so a concurrent suspend/reset submit
              * can reach the die. The die state machine guards against any
              * other submit type sneaking in during the window. */
-            mutex_unlock(&channel->lock);
+            ticket_lock_unlock(&channel->lock);
             wait_rc = engine_run_array_busy(dev, die, op, target, epoch_at_submit);
-            mutex_lock(&channel->lock, 0);
+            ticket_lock_lock(&channel->lock);
         }
 
         /*
@@ -527,7 +527,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
      * reset. Skip the final cleanup entirely — just release the channel
      * lock (re-acquired above) and return the abort error code. */
     if (wait_rc == ENGINE_WAIT_ABORT) {
-        mutex_unlock(&channel->lock);
+        ticket_lock_unlock(&channel->lock);
         return HFSSS_ERR_BUSY;
     }
 
@@ -584,7 +584,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         }
     }
     ticket_lock_unlock(&die->die_lock);
-    mutex_unlock(&channel->lock);
+    ticket_lock_unlock(&channel->lock);
     return stage_rc;
 }
 
@@ -1009,12 +1009,12 @@ static int engine_submit_identity(struct nand_device *dev, enum nand_cmd_opcode 
         return HFSSS_ERR_INVAL;
     }
 
-    mutex_lock(&channel->lock, 0);
+    ticket_lock_lock(&channel->lock);
     ticket_lock_lock(&die->die_lock);
 
     if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
         ticket_lock_unlock(&die->die_lock);
-        mutex_unlock(&channel->lock);
+        ticket_lock_unlock(&channel->lock);
         return HFSSS_ERR_BUSY;
     }
 
@@ -1027,7 +1027,7 @@ static int engine_submit_identity(struct nand_device *dev, enum nand_cmd_opcode 
     }
 
     ticket_lock_unlock(&die->die_lock);
-    mutex_unlock(&channel->lock);
+    ticket_lock_unlock(&channel->lock);
     return HFSSS_OK;
 }
 

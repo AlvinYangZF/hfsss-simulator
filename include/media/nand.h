@@ -95,7 +95,7 @@ struct nand_channel {
     struct nand_chip chips[MAX_CHIPS_PER_CHANNEL];
     u32 chip_count;
     u64 current_time;
-    struct mutex lock;
+    struct ticket_lock lock;
 };
 
 struct nand_profile;

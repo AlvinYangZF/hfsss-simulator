@@ -17,10 +17,7 @@ static int nand_init_hierarchy(struct nand_device *dev, u32 channel_count, u32 c
         channel->chip_count = chips_per_channel;
         channel->current_time = 0;
 
-        int ret = mutex_init(&channel->lock);
-        if (ret != HFSSS_OK) {
-            return ret;
-        }
+        ticket_lock_init(&channel->lock);
 
         for (chip = 0; chip < chips_per_channel; chip++) {
             struct nand_chip *nand_chip = &channel->chips[chip];
@@ -135,7 +132,7 @@ static void nand_cleanup_hierarchy(struct nand_device *dev)
     for (ch = 0; ch < dev->channel_count; ch++) {
         struct nand_channel *channel = &dev->channels[ch];
 
-        mutex_cleanup(&channel->lock);
+        /* ticket_lock has no resources to clean up. */
 
         for (chip = 0; chip < channel->chip_count; chip++) {
             struct nand_chip *nand_chip = &channel->chips[chip];
