@@ -4,6 +4,7 @@
 #include "common/common.h"
 #include "common/mutex.h"
 #include "ftl/block.h"
+#include "ftl/die_dispatcher.h"
 
 /*
  * Optional duty-cycle admission callback. The FTL does not link the
@@ -64,12 +65,31 @@ struct gc_ctx {
      * report how often GC was gated.
      */
     u64 det_window_rejects;
+
+    /*
+     * Reason that drove the current GC pass. Set when the kick path
+     * decides to run GC; read by the GC body when it submits page
+     * reads/writes through the die dispatcher so the dispatcher can
+     * schedule GC against host IO with the correct priority. Default
+     * GC_TRIGGER_HOST_WRITE preserves the no-priority-differentiation
+     * behavior when nothing explicitly tags otherwise.
+     */
+    gc_trigger_t current_trigger;
 };
 
 /* Function Prototypes */
 int gc_init(struct gc_ctx *ctx, enum gc_policy policy, u32 threshold, u32 hiwater, u32 lowater);
 void gc_cleanup(struct gc_ctx *ctx);
 bool gc_should_trigger(struct gc_ctx *ctx, u64 free_blocks);
+
+/*
+ * Tag the next GC pass with its trigger reason. Callers in the kick
+ * path (host-write back-pressure, free-SB-low watcher, idle sweep,
+ * read-disturb, wear-leveling) call this before signaling the GC
+ * worker so the body can map reason -> die priority via
+ * die_dispatcher_prio_for_gc.
+ */
+void gc_set_trigger(struct gc_ctx *ctx, gc_trigger_t trigger);
 int gc_run(struct gc_ctx *ctx, struct block_mgr *block_mgr, struct mapping_ctx *mapping_ctx,
            void *hal_ctx);
 void gc_get_stats(struct gc_ctx *ctx, u64 *gc_count, u64 *moved_pages, u64 *reclaimed_blocks, u64 *gc_write_pages);

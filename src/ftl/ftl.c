@@ -3,10 +3,30 @@
 #include "common/trace.h"
 #include "common/io_err_trace.h"
 #include "media/nand_profile.h"
+#include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/*
+ * Safety bounds for the dispatcher-driven retry loops in
+ * ftl_{read,write}_page_mt_ex. The dispatcher signals on every die-ready
+ * event so in low contention the loop exits after one or two iterations.
+ * Under heavy contention (fio-012 bs=128k iodepth=16 type workloads)
+ * pthread mutex unfairness inside cmd_engine can make a woken waiter
+ * lose the lock race repeatedly to fresh arrivals, so the budget is
+ * sized to outlast worst-case lock starvation while staying well below
+ * the NVMe 30s command timeout. Total worst-case wait =
+ * RETRIES × WAIT_MS = 2048 × 10 ms ≈ 20 s upper bound (still inside the
+ * NVMe 30 s timeout); under fio-012 stress the actual maximum retry
+ * count observed is around 60-65, so the bulk of the budget is reserve
+ * against pathological lock-race starvation that this code path can
+ * provoke but cannot directly avoid (cmd_engine's die_lock is pthread,
+ * which is not FIFO-fair on macOS).
+ */
+#define FTL_DISPATCH_SAFETY_RETRIES   2048
+#define FTL_DISPATCH_SAFETY_WAIT_MS   10
 
 /* Internal helper functions */
 static struct cwb *ftl_get_cwb(struct ftl_ctx *ctx, u32 channel, u32 plane);
@@ -109,7 +129,7 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
     /* Ensure CWB has a block; if out of space, run GC once and retry. */
     ret = ftl_allocate_cwb(ctx, ch, plane);
     if (ret == HFSSS_ERR_NOSPC) {
-        ftl_gc_trigger(ctx);
+        ftl_gc_trigger(ctx, GC_TRIGGER_HOST_WRITE);
         ret = ftl_allocate_cwb(ctx, ch, plane);
     }
     if (ret != HFSSS_OK) {
@@ -213,7 +233,12 @@ static int ftl_write_page(struct ftl_ctx *ctx, u64 lba, const void *data)
     /* Check if GC should be triggered */
     u64 free_blocks = block_get_free_count(&ctx->block_mgr);
     if (gc_should_trigger(&ctx->gc, free_blocks)) {
-        ftl_gc_trigger(ctx);
+        /*
+         * Free-block watermark crossed during a host write. Tag the
+         * pass as FREE_SB_LOW so the dispatcher can pre-empt host IO
+         * if free blocks are critically scarce.
+         */
+        ftl_gc_trigger(ctx, GC_TRIGGER_FREE_SB_LOW);
     }
 
     return HFSSS_OK;
@@ -425,6 +450,16 @@ int ftl_init(struct ftl_ctx *ctx, struct ftl_config *config, struct hal_ctx *hal
         return ret;
     }
 
+    /*
+     * Install the per-die wait-queue dispatcher only after every fallible
+     * FTL subcomponent has initialized successfully. That keeps failed
+     * ftl_init attempts from leaving a notifier hook on the shared
+     * nand_device. Tolerated NULL: tests that init FTL without a
+     * fully-wired media stack run with the dispatcher disabled and fall
+     * back to the safety retry budget alone.
+     */
+    ctx->die_disp = die_dispatcher_create(hal_get_nand_device(hal));
+
     ctx->initialized = true;
     return HFSSS_OK;
 }
@@ -454,6 +489,15 @@ void ftl_cleanup(struct ftl_ctx *ctx)
 
     mutex_unlock(&ctx->lock);
     mutex_cleanup(&ctx->lock);
+
+    /*
+     * Tear down the dispatcher AFTER the FTL lock is released so any
+     * residual notifier in flight from cmd_engine has nothing left to
+     * mutate; the dispatcher's destroy walks every queue and signals
+     * shutdown to any straggler waiters before freeing.
+     */
+    die_dispatcher_destroy(ctx->die_disp);
+    ctx->die_disp = NULL;
 
     memset(ctx, 0, sizeof(*ctx));
 }
@@ -668,12 +712,13 @@ int ftl_checkpoint(struct ftl_ctx *ctx)
     return sb_checkpoint_write(&ctx->sb, &ctx->mapping);
 }
 
-int ftl_gc_trigger(struct ftl_ctx *ctx)
+int ftl_gc_trigger(struct ftl_ctx *ctx, gc_trigger_t trigger)
 {
     if (!ctx || !ctx->initialized) {
         return HFSSS_ERR_INVAL;
     }
 
+    gc_set_trigger(&ctx->gc, trigger);
     return gc_run(&ctx->gc, &ctx->block_mgr, &ctx->mapping, ctx->hal);
 }
 
@@ -685,35 +730,13 @@ int ftl_gc_trigger(struct ftl_ctx *ctx)
 
 #include "ftl/taa.h"
 
-/* Backoff sleep on transient HFSSS_ERR_BUSY/AGAIN inside the FTL retry
- * loops. The cmd_engine fails fast when the target die is in
- * DIE_*_ARRAY_BUSY (NAND op in progress). TLC tPROG is 900-1300 µs and N
- * threads on the same die wait N × tProg in worst case; combined with
- * channel/die locks and pthread mutex unfairness in the cmd_engine fail-
- * fast path, the per-attempt latency under fio-012-style contention
- * (bs=128k seq writes iodepth=16) can reach tens of ms. 100 µs × 512
- * retries ≈ 51 ms covers worst-case starvation without hammering CPU. */
-static inline void ftl_busy_backoff_sleep(void)
-{
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 100 * 1000 };
-    nanosleep(&ts, NULL);
-}
-
-int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
-                     u64 lba, void *data)
+int ftl_read_page_mt_ex(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                        u64 lba, void *data, die_priority_t prio)
 {
     union ppn ppn;
     u32 ch, chip, die, plane, block, page;
     int ret;
     int retry_count;
-    /* Generous transient-busy retry budget. See ftl_busy_backoff_sleep for
-     * timing rationale; 2048 × 100 µs ≈ 205 ms cumulative wait covers
-     * worst-case die starvation under heavy MT contention. fio-012 (bs=128k
-     * iodepth=16) generates ~64 in-flight sub-writes per die under peak
-     * contention; with TLC tProg up to 1300 µs the worst-case wait per
-     * submit is ~80 ms, so 200 ms gives headroom. Well within NVMe command
-     * timeout (30 s). */
-    const int max_retries = 2048;
 
     if (!ctx || !taa || !data) {
         return HFSSS_ERR_INVAL;
@@ -733,8 +756,16 @@ int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     /* Decode PPN */
     ftl_decode_ppn(ppn, &ch, &chip, &die, &plane, &block, &page);
 
-    /* Try reading with retry logic */
-    for (retry_count = 0; retry_count < max_retries; retry_count++) {
+    /*
+     * Submit + dispatcher-driven wait on transient die-busy. The loop
+     * normally exits in one or two iterations: cmd_engine returns
+     * HFSSS_OK on the first try when the target die is idle, or it
+     * returns HFSSS_ERR_BUSY and we block on die_dispatcher_wait until
+     * the next die-ready event. The safety budget bounds total worst-
+     * case wait if the dispatcher is unavailable (NULL hal/dev path
+     * during early test setup) or misbehaving.
+     */
+    for (retry_count = 0; retry_count < FTL_DISPATCH_SAFETY_RETRIES; retry_count++) {
 #ifdef HFSSS_DEBUG_TRACE
         TRACE_EMIT(TRACE_POINT_T4_PRE_HAL, (uint32_t)IO_OP_READ, lba,
                    (uint64_t)ppn.raw, 0, 0);
@@ -754,9 +785,18 @@ int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         }
         IO_ERR_TRACE("L=ftl_read_page_mt site=hal-read-retry lba=%llu ppn=0x%016llx retry=%d/%d rc=%d",
                      (unsigned long long)lba, (unsigned long long)ppn.raw,
-                     retry_count, max_retries, ret);
-        if (ret == HFSSS_ERR_BUSY || ret == HFSSS_ERR_AGAIN) {
-            ftl_busy_backoff_sleep();
+                     retry_count, FTL_DISPATCH_SAFETY_RETRIES, ret);
+        if (ret != HFSSS_ERR_BUSY && ret != HFSSS_ERR_AGAIN) {
+            continue;
+        }
+        if (ctx->die_disp) {
+            int rc_wait = die_dispatcher_wait(ctx->die_disp, ch, chip, die,
+                                              prio, FTL_DISPATCH_SAFETY_WAIT_MS);
+            if (rc_wait == HFSSS_ERR_SHUTDOWN) {
+                return HFSSS_ERR_SHUTDOWN;
+            }
+            /* On ETIMEDOUT or 0 (signaled), fall through to the next
+             * iteration; the loop's safety budget bounds total wait. */
         }
     }
 
@@ -767,8 +807,14 @@ int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     return ret;
 }
 
-int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
-                      u64 lba, const void *data)
+int ftl_read_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                     u64 lba, void *data)
+{
+    return ftl_read_page_mt_ex(ctx, taa, lba, data, DIE_PRIO_HOST_READ);
+}
+
+int ftl_write_page_mt_ex(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                         u64 lba, const void *data, die_priority_t prio)
 {
     struct cwb *cwb;
     union ppn ppn;
@@ -776,13 +822,6 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     u32 ch, plane;
     int ret;
     int write_retry;
-    /* See ftl_busy_backoff_sleep for timing rationale; 2048 × 100 µs ≈
-     * 205 ms cumulative wait covers worst-case die starvation under fio-012
-     * (bs=128k iodepth=16) where ~64 sub-writes contend for one die at
-     * peak. The prior 3-retry shape with no backoff collapsed into a die-
-     * contention storm, propagating EIO to the host as SCT=0x2 SC=0x80
-     * Write Fault even when the block was fine. */
-    const int max_write_retries = 2048;
 
     if (!ctx || !taa || !data) {
         IO_ERR_TRACE("L=ftl_write_page_mt site=bad-arg lba=%llu rc=%d",
@@ -813,7 +852,7 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     /* Ensure CWB has a block; if out of space, run GC once and retry. */
     ret = ftl_allocate_cwb(ctx, ch, plane);
     if (ret == HFSSS_ERR_NOSPC) {
-        ftl_gc_trigger(ctx);
+        ftl_gc_trigger(ctx, GC_TRIGGER_HOST_WRITE);
         ret = ftl_allocate_cwb(ctx, ch, plane);
     }
     if (ret != HFSSS_OK) {
@@ -838,8 +877,11 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
                (uint64_t)ppn.raw, 0, 0);
 #endif
 
-    /* Write to NAND — no verify in MT mode (DRAM-backed, always succeeds) */
-    for (write_retry = 0; write_retry < max_write_retries; write_retry++) {
+    /* Write to NAND — no verify in MT mode (DRAM-backed, always succeeds).
+     * Submit + dispatcher-driven wait on transient die-busy. The loop
+     * normally exits in one or two iterations; the safety budget bounds
+     * total wait if the dispatcher is unavailable. */
+    for (write_retry = 0; write_retry < FTL_DISPATCH_SAFETY_RETRIES; write_retry++) {
 #ifdef HFSSS_DEBUG_TRACE
         {
             size_t ps = (size_t)ctx->config.page_size;
@@ -860,10 +902,19 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
         }
         IO_ERR_TRACE("L=ftl_write_page_mt site=hal-prog-retry lba=%llu ppn=0x%016llx retry=%d/%d rc=%d",
                      (unsigned long long)lba, (unsigned long long)ppn.raw,
-                     write_retry, max_write_retries, ret);
+                     write_retry, FTL_DISPATCH_SAFETY_RETRIES, ret);
         ctx->error.write_error_count++;
-        if (ret == HFSSS_ERR_BUSY || ret == HFSSS_ERR_AGAIN) {
-            ftl_busy_backoff_sleep();
+        if (ret != HFSSS_ERR_BUSY && ret != HFSSS_ERR_AGAIN) {
+            continue;
+        }
+        if (ctx->die_disp) {
+            int rc_wait = die_dispatcher_wait(ctx->die_disp,
+                                              phys_ch, phys_chip, phys_die,
+                                              prio, FTL_DISPATCH_SAFETY_WAIT_MS);
+            if (rc_wait == HFSSS_ERR_SHUTDOWN) {
+                pthread_mutex_unlock(&cwb->lock);
+                return HFSSS_ERR_SHUTDOWN;
+            }
         }
     }
 
@@ -929,6 +980,12 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
      * dedicated GC thread handle it via gc_run_mt with TAA) */
     u64 free_blocks = block_get_free_count(&ctx->block_mgr);
     if (gc_should_trigger(&ctx->gc, free_blocks)) {
+        /*
+         * Tag the next gc_run_mt pass with FREE_SB_LOW before the
+         * worker observes the signal, so the dispatcher can pre-empt
+         * host IO if free blocks are critically scarce.
+         */
+        gc_set_trigger(&ctx->gc, GC_TRIGGER_FREE_SB_LOW);
         extern pthread_mutex_t *ftl_mt_gc_mutex_ptr;
         extern pthread_cond_t  *ftl_mt_gc_cond_ptr;
         if (ftl_mt_gc_mutex_ptr && ftl_mt_gc_cond_ptr) {
@@ -942,10 +999,19 @@ int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
     return HFSSS_OK;
 }
 
-int ftl_trim_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa, u64 lba)
+int ftl_write_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                      u64 lba, const void *data)
+{
+    return ftl_write_page_mt_ex(ctx, taa, lba, data, DIE_PRIO_HOST_WRITE);
+}
+
+int ftl_trim_page_mt_ex(struct ftl_ctx *ctx, struct taa_ctx *taa,
+                        u64 lba, die_priority_t prio)
 {
     union ppn ppn;
     int ret;
+    (void)prio;  /* trim path does not contend on die-busy today;
+                  * priority is reserved for future async-trim variants. */
 
     if (!ctx || !taa) {
         IO_ERR_TRACE("L=ftl_trim_page_mt site=bad-arg lba=%llu rc=%d",
@@ -974,6 +1040,11 @@ int ftl_trim_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa, u64 lba)
                      (unsigned long long)lba, ret);
     }
     return ret;
+}
+
+int ftl_trim_page_mt(struct ftl_ctx *ctx, struct taa_ctx *taa, u64 lba)
+{
+    return ftl_trim_page_mt_ex(ctx, taa, lba, DIE_PRIO_HOST_WRITE);
 }
 
 /* -------------------------------------------------------------------------

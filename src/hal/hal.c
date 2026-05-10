@@ -403,3 +403,15 @@ const struct nand_profile *hal_get_profile(struct hal_ctx *ctx)
     }
     return m->profile;
 }
+
+struct nand_device *hal_get_nand_device(struct hal_ctx *ctx)
+{
+    if (!ctx || !ctx->nand) {
+        return NULL;
+    }
+    struct media_ctx *m = (struct media_ctx *)ctx->nand->media_ctx;
+    if (!m || !m->initialized) {
+        return NULL;
+    }
+    return m->nand;
+}

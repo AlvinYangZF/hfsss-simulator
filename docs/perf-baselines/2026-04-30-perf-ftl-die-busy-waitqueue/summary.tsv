@@ -1,0 +1,10 @@
+case	status
+nvme/001_nvme_cli_smoke.sh	PASS
+nvme/002_nvme_namespace_info.sh	PASS
+nvme/003_nvme_flush_smoke.sh	PASS
+fio/010_fio_randwrite_verify.sh	PASS
+fio/011_fio_randrw_verify.sh	PASS
+fio/012_fio_seqwrite_verify.sh	PASS
+fio/013_fio_trim_verify.sh	PASS
+fio/014_fio_pre_checkin_stress.sh	PASS
+spdk/900_spdk_nvme_identify.sh	SKIP

@@ -116,6 +116,15 @@ struct nand_device {
      */
     u32 page_size;
     u32 spare_size;
+
+    /*
+     * Optional callback invoked when a die transitions to DIE_IDLE.
+     * NULL means no observer (default — every existing caller leaves
+     * this zeroed via calloc/memset and observes byte-identical
+     * behavior). Wired by die_dispatcher in the FTL layer.
+     */
+    void (*die_ready_notifier)(struct nand_device *dev, u32 ch, u32 chip, u32 die);
+    void *die_ready_ctx;
 };
 
 /*

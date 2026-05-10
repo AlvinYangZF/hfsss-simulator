@@ -1,0 +1,15 @@
+nbd_port=10820
+ssh_port=10022
+nbd_mode=async
+nbd_size_mb=2048
+case_timeout_s=1800
+guest_nvme_dev=/dev/nvme0n1
+guest_nvme_ctrl=/dev/nvme0
+qemu_bin=qemu-system-aarch64
+qemu_machine=virt,gic-version=3
+qemu_accel=hvf
+qemu_cpu=host
+git_sha=ffc7f1a6f3af99dc2d0c616827840c060ffaccf5
+artifacts_dir=/Users/zifengyang/Desktop/hfsss-simulator/build/blackbox-tests/latest
+nbd_pid=30640
+qemu_pid=30670

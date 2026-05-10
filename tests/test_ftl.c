@@ -537,6 +537,16 @@ static int test_ftl(void)
 
     /* Cleanup */
     ftl_cleanup(&ftl_ctx);
+
+    struct ftl_config bad_ftl_config = ftl_config;
+    bad_ftl_config.blocks_per_plane = 0;
+    ret = ftl_init(&ftl_ctx, &bad_ftl_config, &hal_ctx);
+    TEST_ASSERT(ret != HFSSS_OK, "ftl_init with invalid block geometry should fail");
+    TEST_ASSERT(media_ctx.nand->die_ready_notifier == NULL,
+                "failed ftl_init should not leave die_ready_notifier installed");
+    TEST_ASSERT(media_ctx.nand->die_ready_ctx == NULL,
+                "failed ftl_init should not leave die_ready_ctx installed");
+
     hal_cleanup(&hal_ctx);
     hal_nand_dev_cleanup(&nand_dev);
     media_cleanup(&media_ctx);

@@ -575,6 +575,13 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         if (op == NAND_OP_PROG || op == NAND_OP_ERASE || op == NAND_OP_CACHE_PROG) {
             die->cmd_state.latched_fail = (stage_rc != HFSSS_OK);
         }
+        /* Anchor A: optional die-ready notifier. Fires under die_lock,
+         * after the IDLE-state cleanup is complete and before the lock
+         * release. NULL hook is the default — zero overhead for callers
+         * that do not install a dispatcher. */
+        if (dev->die_ready_notifier) {
+            dev->die_ready_notifier(dev, target->ch, target->chip, target->die);
+        }
     }
     mutex_unlock(&die->die_lock);
     mutex_unlock(&channel->lock);
@@ -753,6 +760,15 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
     nand_cmd_state_init(&die->cmd_state);
     die->cmd_state.phase = CMD_PHASE_COMPLETE;
     atomic_store(&die->cmd_state.abort_epoch, new_epoch);
+
+    /* Anchor B: optional die-ready notifier on the reset force-clear path.
+     * Fires under die_lock after the canonical post-reset state is
+     * installed. Any waiter whose op is still illegal in the new state
+     * (e.g., DIE_RESETTING lingers under some profile policies) re-fails
+     * with BUSY and re-queues, which is self-correcting. */
+    if (dev->die_ready_notifier) {
+        dev->die_ready_notifier(dev, target->ch, target->chip, target->die);
+    }
 
     mutex_unlock(&die->die_lock);
     return HFSSS_OK;
