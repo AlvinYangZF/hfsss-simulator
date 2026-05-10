@@ -81,31 +81,43 @@ static void test_try_lock_contended(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* L1.4 — FIFO acquisition order                                      */
+/* FIFO acquisition order                                             */
+/*                                                                     */
+/* Main holds the lock while workers are created one-by-one. Each      */
+/* worker signals before calling ticket_lock_lock, so the main thread  */
+/* serializes creation — guaranteeing ticket-issue order matches       */
+/* creation order 0, 1, …, N-1. After the main thread releases,        */
+/* workers record their id in acquisition order, which must be         */
+/* exactly 0, 1, …, N-1 for a FIFO-fair lock.                         */
 /* ------------------------------------------------------------------ */
 #define FIFO_N 8
 
 struct fifo_ctx {
     struct ticket_lock *lock;
-    _Atomic int         go;
+    _Atomic int         started[FIFO_N];
     int                 order[FIFO_N];
     _Atomic int         next_slot;
 };
 
+struct fifo_worker_arg {
+    struct fifo_ctx *ctx;
+    int              id;
+};
+
 static void *fifo_worker(void *arg)
 {
-    struct fifo_ctx *ctx = (struct fifo_ctx *)arg;
+    struct fifo_worker_arg *w = (struct fifo_worker_arg *)arg;
+    struct fifo_ctx *ctx = w->ctx;
+    int id = w->id;
 
-    /* Spin until the main thread releases all workers at once. */
-    while (atomic_load(&ctx->go) == 0) {
-        sched_yield();
-    }
-
+    /* Signal that we are about to issue a ticket. */
+    atomic_store(&ctx->started[id], 1);
     ticket_lock_lock(ctx->lock);
-    int slot = atomic_fetch_add(&ctx->next_slot, 1);
-    ctx->order[slot] = slot;  /* Each thread records its entry slot */
-    ticket_lock_unlock(ctx->lock);
 
+    int slot = atomic_fetch_add(&ctx->next_slot, 1);
+    ctx->order[slot] = id;
+
+    ticket_lock_unlock(ctx->lock);
     return NULL;
 }
 
@@ -114,28 +126,44 @@ static void test_fifo_order(void)
     struct ticket_lock l;
     ticket_lock_init(&l);
 
+    /* Main holds the lock so workers queue behind it. */
+    ticket_lock_lock(&l);
+
     struct fifo_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.lock = &l;
 
     pthread_t tids[FIFO_N];
+    struct fifo_worker_arg args[FIFO_N];
+
     for (int i = 0; i < FIFO_N; i++) {
-        pthread_create(&tids[i], NULL, fifo_worker, &ctx);
+        args[i].ctx = &ctx;
+        args[i].id = i;
+        pthread_create(&tids[i], NULL, fifo_worker, &args[i]);
+
+        /* Wait until worker i has set started[i], ensuring its
+         * ticket_lock_lock call (and thus ticket issue) has begun. */
+        while (atomic_load(&ctx.started[i]) == 0) {
+            sched_yield();
+        }
     }
 
-    /* Release all workers simultaneously. */
-    atomic_store(&ctx.go, 1);
+    /* Give the last worker a moment to reach the spin inside
+     * ticket_lock_lock, then release. Workers now acquire in the
+     * order they issued tickets: 0, 1, …, FIFO_N-1. */
+    ticket_lock_unlock(&l);
 
     for (int i = 0; i < FIFO_N; i++) {
         pthread_join(tids[i], NULL);
     }
 
-    /* Every thread recorded; order[i] should equal i for FIFO. */
     for (int i = 0; i < FIFO_N; i++) {
         TEST_ASSERT(ctx.order[i] == i, "FIFO: order[i] == i");
     }
-    TEST_ASSERT(atomic_load(&l.ticket) == FIFO_N, "ticket == N");
-    TEST_ASSERT(atomic_load(&l.serving) == FIFO_N, "serving == N");
+    TEST_ASSERT(atomic_load(&l.ticket) == FIFO_N + 1,
+                "ticket == N + 1 (N workers + main)");
+    TEST_ASSERT(atomic_load(&l.serving) == FIFO_N + 1,
+                "serving == N + 1");
 }
 
 /* ------------------------------------------------------------------ */

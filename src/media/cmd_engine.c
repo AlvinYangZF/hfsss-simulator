@@ -535,6 +535,8 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
      * mid-pipeline state so the next cache command can be accepted
      * by the legality matrix. The die goes to IDLE only when the
      * sequence terminates (CACHE_READ_END, or a non-cache op). */
+    bool die_went_idle = false;
+
     ticket_lock_lock(&die->die_lock);
     die->cmd_state.result_status = stage_rc;
 
@@ -575,15 +577,22 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         if (op == NAND_OP_PROG || op == NAND_OP_ERASE || op == NAND_OP_CACHE_PROG) {
             die->cmd_state.latched_fail = (stage_rc != HFSSS_OK);
         }
-        /* Anchor A: optional die-ready notifier. Fires under die_lock,
-         * after the IDLE-state cleanup is complete and before the lock
-         * release. NULL hook is the default — zero overhead for callers
-         * that do not install a dispatcher. */
-        if (dev->die_ready_notifier) {
-            dev->die_ready_notifier(dev, target->ch, target->chip, target->die);
-        }
+        die_went_idle = true;
     }
     ticket_lock_unlock(&die->die_lock);
+
+    /* Anchor A: optional die-ready notifier. Fires after the die lock
+     * is released so that ticket-lock waiters do not spin through the
+     * notifier body. The IDLE-state cleanup is complete at this point;
+     * re-submitters that race in before the notifier fires will observe
+     * the die IDLE and proceed without queueing — safe because the
+     * notifier only dequeues waiters that were already queued. NULL
+     * hook is the default — zero overhead for callers that do not
+     * install a dispatcher. */
+    if (die_went_idle && dev->die_ready_notifier) {
+        dev->die_ready_notifier(dev, target->ch, target->chip, target->die);
+    }
+
     ticket_lock_unlock(&channel->lock);
     return stage_rc;
 }
@@ -762,15 +771,15 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
     atomic_store(&die->cmd_state.abort_epoch, new_epoch);
 
     /* Anchor B: optional die-ready notifier on the reset force-clear path.
-     * Fires under die_lock after the canonical post-reset state is
-     * installed. Any waiter whose op is still illegal in the new state
-     * (e.g., DIE_RESETTING lingers under some profile policies) re-fails
-     * with BUSY and re-queues, which is self-correcting. */
+     * Fires after die_lock is released so ticket-lock waiters do not
+     * spin through the notifier body. The canonical post-reset state is
+     * already installed at this point. */
+    ticket_lock_unlock(&die->die_lock);
+
     if (dev->die_ready_notifier) {
         dev->die_ready_notifier(dev, target->ch, target->chip, target->die);
     }
 
-    ticket_lock_unlock(&die->die_lock);
     return HFSSS_OK;
 }
 

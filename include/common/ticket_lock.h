@@ -11,6 +11,13 @@
  * (microseconds to a few ms). Not appropriate for sleep-on-lock
  * workloads; use struct mutex for those.
  *
+ * Callers must not invoke blocking operations (sleep, condvar wait,
+ * or any function that may internally sleep) while holding this lock
+ * — including via callbacks installed from outside subsystems
+ * (e.g., the die_ready_notifier hook). The lock spin-busys until
+ * served, so a holder that sleeps forces every queued waiter to
+ * burn CPU for the full sleep duration.
+ *
  * See docs/superpowers/specs/2026-05-08-cmd-engine-ticket-lock-design.md.
  */
 #ifndef HFSSS_TICKET_LOCK_H
