@@ -301,20 +301,20 @@ static void force_die_busy(struct media_ctx *media, u32 ch, u32 chip, u32 die_id
 {
     struct nand_die *die =
         &media->nand->channels[ch].chips[chip].dies[die_id];
-    mutex_lock(&die->die_lock, 0);
+    ticket_lock_lock(&die->die_lock);
     die->cmd_state.state = DIE_PROG_ARRAY_BUSY;
     die->cmd_state.phase = CMD_PHASE_ARRAY_BUSY;
     die->cmd_state.in_flight = true;
-    mutex_unlock(&die->die_lock);
+    ticket_lock_unlock(&die->die_lock);
 }
 
 static void force_die_idle(struct media_ctx *media, u32 ch, u32 chip, u32 die_id)
 {
     struct nand_die *die =
         &media->nand->channels[ch].chips[chip].dies[die_id];
-    mutex_lock(&die->die_lock, 0);
+    ticket_lock_lock(&die->die_lock);
     nand_cmd_state_init(&die->cmd_state);
-    mutex_unlock(&die->die_lock);
+    ticket_lock_unlock(&die->die_lock);
 }
 
 static void test_gc_mt_transient_busy_preserves_mapping(void)
