@@ -199,9 +199,9 @@ static enum engine_wait_result engine_run_array_busy(struct nand_device *dev, st
              * flip to the suspended state under die_lock. Recheck abort
              * inside the lock window to avoid overwriting a concurrent
              * reset's clean state with DIE_SUSPENDED_*. */
-            mutex_lock(&die->die_lock, 0);
+            ticket_lock_lock(&die->die_lock);
             if (atomic_load(&die->cmd_state.abort_epoch) != epoch_at_submit) {
-                mutex_unlock(&die->die_lock);
+                ticket_lock_unlock(&die->die_lock);
                 return ENGINE_WAIT_ABORT;
             }
             u64 now = get_time_ns();
@@ -218,7 +218,7 @@ static enum engine_wait_result engine_run_array_busy(struct nand_device *dev, st
             die->cmd_state.last_suspend_ts_ns = now;
             die->cmd_state.suspend_count++;
             atomic_store(&die->cmd_state.suspend_request, 0);
-            mutex_unlock(&die->die_lock);
+            ticket_lock_unlock(&die->die_lock);
 
             /* Charge tSSBSY to EAT and drain the matching wall-clock so
              * the overhead is reflected in both statistics and observable
@@ -243,9 +243,9 @@ static enum engine_wait_result engine_run_array_busy(struct nand_device *dev, st
                     return ENGINE_WAIT_ABORT;
                 }
                 enum nand_die_state s;
-                mutex_lock(&die->die_lock, 0);
+                ticket_lock_lock(&die->die_lock);
                 s = die->cmd_state.state;
-                mutex_unlock(&die->die_lock);
+                ticket_lock_unlock(&die->die_lock);
                 if (s == DIE_PROG_ARRAY_BUSY || s == DIE_ERASE_ARRAY_BUSY) {
                     break;
                 }
@@ -256,18 +256,18 @@ static enum engine_wait_result engine_run_array_busy(struct nand_device *dev, st
              * measures elapsed time from the resume point, not the original
              * submit. Resume overhead was already accounted for by the
              * resume submit path. */
-            mutex_lock(&die->die_lock, 0);
+            ticket_lock_lock(&die->die_lock);
             die->cmd_state.array_started_ns = get_time_ns();
-            mutex_unlock(&die->die_lock);
+            ticket_lock_unlock(&die->die_lock);
             continue;
         }
 
         u64 now = get_time_ns();
         u64 elapsed = now - die->cmd_state.array_started_ns;
         if (elapsed >= die->cmd_state.remaining_ns) {
-            mutex_lock(&die->die_lock, 0);
+            ticket_lock_lock(&die->die_lock);
             die->cmd_state.remaining_ns = 0;
-            mutex_unlock(&die->die_lock);
+            ticket_lock_unlock(&die->die_lock);
             return ENGINE_WAIT_DONE;
         }
         sched_yield();
@@ -313,8 +313,8 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
      * still prevents a second PROG/ERASE from sneaking in because the
      * legality matrix rejects non-suspend ops in DIE_*_ARRAY_BUSY.
      */
-    mutex_lock(&channel->lock, 0);
-    mutex_lock(&die->die_lock, 0);
+    ticket_lock_lock(&channel->lock);
+    ticket_lock_lock(&die->die_lock);
 
     /* Implicit cache sequence termination: if a non-cache command is
      * submitted while a cache sequence is active, force the die back
@@ -329,8 +329,8 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     }
 
     if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
-        mutex_unlock(&die->die_lock);
-        mutex_unlock(&channel->lock);
+        ticket_lock_unlock(&die->die_lock);
+        ticket_lock_unlock(&channel->lock);
         return HFSSS_ERR_BUSY;
     }
 
@@ -356,8 +356,8 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
             }
         }
         if (conflict) {
-            mutex_unlock(&die->die_lock);
-            mutex_unlock(&channel->lock);
+            ticket_lock_unlock(&die->die_lock);
+            ticket_lock_unlock(&channel->lock);
             return HFSSS_ERR_BUSY;
         }
     }
@@ -387,7 +387,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
     int stage_rc = HFSSS_OK;
 
     if (is_read_during_suspend) {
-        mutex_unlock(&die->die_lock);
+        ticket_lock_unlock(&die->die_lock);
 
         /* Skip the EAT wait: the suspended PROG/ERASE already booked its
          * full array_ns into EAT, so eat_get_max would return a deadline
@@ -416,7 +416,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
             }
         }
 
-        mutex_unlock(&channel->lock);
+        ticket_lock_unlock(&channel->lock);
         return stage_rc;
     }
 
@@ -424,7 +424,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
                                  (op == NAND_OP_CACHE_READ || op == NAND_OP_CACHE_PROG || op == NAND_OP_CACHE_READ_END);
     nand_cmd_state_begin(&die->cmd_state, op, target, total_ns);
     u32 epoch_at_submit = atomic_load(&die->cmd_state.abort_epoch);
-    mutex_unlock(&die->die_lock);
+    ticket_lock_unlock(&die->die_lock);
 
     /* Cache continuations skip the EAT wait — the overlap means the new
      * page's stages run in parallel with the previous page's trailing
@@ -457,13 +457,13 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
      * caller-visible completion boundary is reached at the start of the
      * array mutation, matching the legacy eat-before-memcpy ordering. */
     if (wait_rc != ENGINE_WAIT_ABORT && stage_rc == HFSSS_OK) {
-        mutex_lock(&die->die_lock, 0);
+        ticket_lock_lock(&die->die_lock);
         enum nand_die_state next_array_state = nand_cmd_next_state_on_complete(die->cmd_state.state, op);
         nand_cmd_state_advance_phase(&die->cmd_state, CMD_PHASE_ARRAY_BUSY, next_array_state);
         die->cmd_state.array_budget_ns = array_ns;
         die->cmd_state.remaining_ns = array_ns;
         die->cmd_state.array_started_ns = get_time_ns();
-        mutex_unlock(&die->die_lock);
+        ticket_lock_unlock(&die->die_lock);
 
         eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask, array_ns);
 
@@ -471,9 +471,9 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
             /* Drop the channel lock so a concurrent suspend/reset submit
              * can reach the die. The die state machine guards against any
              * other submit type sneaking in during the window. */
-            mutex_unlock(&channel->lock);
+            ticket_lock_unlock(&channel->lock);
             wait_rc = engine_run_array_busy(dev, die, op, target, epoch_at_submit);
-            mutex_lock(&channel->lock, 0);
+            ticket_lock_lock(&channel->lock);
         }
 
         /*
@@ -496,7 +496,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
          * stamp DEAD and increment the epoch, only to have the commit
          * overwrite it — the race the reviewer flagged.
          */
-        mutex_lock(&die->die_lock, 0);
+        ticket_lock_lock(&die->die_lock);
         if (wait_rc == ENGINE_WAIT_DONE && atomic_load(&die->cmd_state.abort_epoch) != epoch_at_submit) {
             wait_rc = ENGINE_WAIT_ABORT;
         }
@@ -505,17 +505,17 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         } else if (ops && ops->on_array_commit) {
             stage_rc = ops->on_array_commit(cb_ctx);
         }
-        mutex_unlock(&die->die_lock);
+        ticket_lock_unlock(&die->die_lock);
     }
 
     /* Data transfer stage is only exercised by the read path today, but the
      * transition is wired so future opcodes can plug in without engine
      * changes. */
     if (stage_rc == HFSSS_OK && (op == NAND_OP_READ || op == NAND_OP_CACHE_READ || op == NAND_OP_CACHE_READ_END)) {
-        mutex_lock(&die->die_lock, 0);
+        ticket_lock_lock(&die->die_lock);
         enum nand_die_state next_xfer_state = nand_cmd_next_state_on_complete(die->cmd_state.state, op);
         nand_cmd_state_advance_phase(&die->cmd_state, CMD_PHASE_DATA_XFER, next_xfer_state);
-        mutex_unlock(&die->die_lock);
+        ticket_lock_unlock(&die->die_lock);
         eat_update_stage_mask(dev->eat, eat_op, target->ch, target->chip, target->die, target->plane_mask, xfer_ns);
         if (ops && ops->on_data_xfer_commit) {
             stage_rc = ops->on_data_xfer_commit(cb_ctx);
@@ -527,7 +527,7 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
      * reset. Skip the final cleanup entirely — just release the channel
      * lock (re-acquired above) and return the abort error code. */
     if (wait_rc == ENGINE_WAIT_ABORT) {
-        mutex_unlock(&channel->lock);
+        ticket_lock_unlock(&channel->lock);
         return HFSSS_ERR_BUSY;
     }
 
@@ -535,7 +535,9 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
      * mid-pipeline state so the next cache command can be accepted
      * by the legality matrix. The die goes to IDLE only when the
      * sequence terminates (CACHE_READ_END, or a non-cache op). */
-    mutex_lock(&die->die_lock, 0);
+    bool die_went_idle = false;
+
+    ticket_lock_lock(&die->die_lock);
     die->cmd_state.result_status = stage_rc;
 
     bool keep_active = (stage_rc == HFSSS_OK) && die->cmd_state.cache_active;
@@ -575,16 +577,22 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         if (op == NAND_OP_PROG || op == NAND_OP_ERASE || op == NAND_OP_CACHE_PROG) {
             die->cmd_state.latched_fail = (stage_rc != HFSSS_OK);
         }
-        /* Anchor A: optional die-ready notifier. Fires under die_lock,
-         * after the IDLE-state cleanup is complete and before the lock
-         * release. NULL hook is the default — zero overhead for callers
-         * that do not install a dispatcher. */
-        if (dev->die_ready_notifier) {
-            dev->die_ready_notifier(dev, target->ch, target->chip, target->die);
-        }
+        die_went_idle = true;
     }
-    mutex_unlock(&die->die_lock);
-    mutex_unlock(&channel->lock);
+    ticket_lock_unlock(&die->die_lock);
+    ticket_lock_unlock(&channel->lock);
+
+    /* Anchor A: optional die-ready notifier. Fires after both locks
+     * are released so that ticket-lock waiters do not spin through
+     * the notifier body. The IDLE-state cleanup is complete at this
+     * point; re-submitters that race in before the notifier fires
+     * will observe the die IDLE and proceed without queueing — safe
+     * because the notifier only dequeues waiters that were already
+     * queued. NULL hook is the default — zero overhead for callers
+     * that do not install a dispatcher. */
+    if (die_went_idle && dev->die_ready_notifier) {
+        dev->die_ready_notifier(dev, target->ch, target->chip, target->die);
+    }
     return stage_rc;
 }
 
@@ -649,10 +657,10 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
      * engine_submit final block is skipped on abort so it cannot overwrite
      * the clean state written here.
      */
-    mutex_lock(&die->die_lock, 0);
+    ticket_lock_lock(&die->die_lock);
 
     if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, NAND_OP_RESET)) {
-        mutex_unlock(&die->die_lock);
+        ticket_lock_unlock(&die->die_lock);
         return HFSSS_ERR_BUSY;
     }
 
@@ -662,7 +670,7 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
      * Default profiles all set this to true, preserving legacy behavior. */
     if (dev->profile && !dev->profile->reset_policy.abort_inflight_on_reset) {
         if (die->cmd_state.state != DIE_IDLE && die->cmd_state.state != DIE_RESETTING) {
-            mutex_unlock(&die->die_lock);
+            ticket_lock_unlock(&die->die_lock);
             return HFSSS_ERR_BUSY;
         }
     }
@@ -762,15 +770,15 @@ int nand_cmd_engine_submit_reset(struct nand_device *dev, const struct nand_cmd_
     atomic_store(&die->cmd_state.abort_epoch, new_epoch);
 
     /* Anchor B: optional die-ready notifier on the reset force-clear path.
-     * Fires under die_lock after the canonical post-reset state is
-     * installed. Any waiter whose op is still illegal in the new state
-     * (e.g., DIE_RESETTING lingers under some profile policies) re-fails
-     * with BUSY and re-queues, which is self-correcting. */
+     * Fires after die_lock is released so ticket-lock waiters do not
+     * spin through the notifier body. The canonical post-reset state is
+     * already installed at this point. */
+    ticket_lock_unlock(&die->die_lock);
+
     if (dev->die_ready_notifier) {
         dev->die_ready_notifier(dev, target->ch, target->chip, target->die);
     }
 
-    mutex_unlock(&die->die_lock);
     return HFSSS_OK;
 }
 
@@ -797,9 +805,9 @@ static int engine_submit_suspend(struct nand_device *dev, enum nand_cmd_opcode o
         return HFSSS_ERR_INVAL;
     }
 
-    mutex_lock(&die->die_lock, 0);
+    ticket_lock_lock(&die->die_lock);
     if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
-        mutex_unlock(&die->die_lock);
+        ticket_lock_unlock(&die->die_lock);
         return HFSSS_ERR_BUSY;
     }
     /* Snapshot the running op's target before the spin can rewrite
@@ -807,7 +815,7 @@ static int engine_submit_suspend(struct nand_device *dev, enum nand_cmd_opcode o
      * field under die_lock. */
     die->cmd_state.suspended_target = die->cmd_state.target;
     atomic_store(&die->cmd_state.suspend_request, 1);
-    mutex_unlock(&die->die_lock);
+    ticket_lock_unlock(&die->die_lock);
 
     /* Spin briefly waiting for the running worker to acknowledge the
      * suspend by flipping state. Bounded by the spin interval inside
@@ -815,9 +823,9 @@ static int engine_submit_suspend(struct nand_device *dev, enum nand_cmd_opcode o
     enum nand_die_state want = (op == NAND_OP_PROG_SUSPEND) ? DIE_SUSPENDED_PROG : DIE_SUSPENDED_ERASE;
     for (;;) {
         enum nand_die_state s;
-        mutex_lock(&die->die_lock, 0);
+        ticket_lock_lock(&die->die_lock);
         s = die->cmd_state.state;
-        mutex_unlock(&die->die_lock);
+        ticket_lock_unlock(&die->die_lock);
         if (s == want) {
             return HFSSS_OK;
         }
@@ -846,14 +854,14 @@ static int engine_submit_resume(struct nand_device *dev, enum nand_cmd_opcode op
         return HFSSS_ERR_INVAL;
     }
 
-    mutex_lock(&die->die_lock, 0);
+    ticket_lock_lock(&die->die_lock);
     if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
-        mutex_unlock(&die->die_lock);
+        ticket_lock_unlock(&die->die_lock);
         return HFSSS_ERR_BUSY;
     }
     u32 suspended_mask = die->cmd_state.suspended_target.plane_mask;
     die->cmd_state.state = (op == NAND_OP_PROG_RESUME) ? DIE_PROG_ARRAY_BUSY : DIE_ERASE_ARRAY_BUSY;
-    mutex_unlock(&die->die_lock);
+    ticket_lock_unlock(&die->die_lock);
 
     enum op_type eat_op = (op == NAND_OP_PROG_RESUME) ? OP_PROGRAM : OP_ERASE;
     u64 resume_ov = timing_get_resume_overhead_ns(dev->timing);
@@ -919,9 +927,9 @@ int nand_cmd_engine_snapshot(struct nand_device *dev, const struct nand_cmd_targ
         return HFSSS_ERR_INVAL;
     }
 
-    mutex_lock(&die->die_lock, 0);
+    ticket_lock_lock(&die->die_lock);
     nand_cmd_state_snapshot(&die->cmd_state, out);
-    mutex_unlock(&die->die_lock);
+    ticket_lock_unlock(&die->die_lock);
     return HFSSS_OK;
 }
 
@@ -941,13 +949,13 @@ static int engine_submit_status_byte(struct nand_device *dev, const struct nand_
     }
 
     struct nand_die_cmd_state snap;
-    mutex_lock(&die->die_lock, 0);
+    ticket_lock_lock(&die->die_lock);
     if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, NAND_OP_READ_STATUS)) {
-        mutex_unlock(&die->die_lock);
+        ticket_lock_unlock(&die->die_lock);
         return HFSSS_ERR_BUSY;
     }
     nand_cmd_state_snapshot(&die->cmd_state, &snap);
-    mutex_unlock(&die->die_lock);
+    ticket_lock_unlock(&die->die_lock);
 
     nand_status_byte_from_cmd_state(&snap, out_byte);
     return HFSSS_OK;
@@ -965,13 +973,13 @@ static int engine_submit_status_enhanced(struct nand_device *dev, const struct n
     }
 
     struct nand_die_cmd_state snap;
-    mutex_lock(&die->die_lock, 0);
+    ticket_lock_lock(&die->die_lock);
     if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, NAND_OP_READ_STATUS_ENHANCED)) {
-        mutex_unlock(&die->die_lock);
+        ticket_lock_unlock(&die->die_lock);
         return HFSSS_ERR_BUSY;
     }
     nand_cmd_state_snapshot(&die->cmd_state, &snap);
-    mutex_unlock(&die->die_lock);
+    ticket_lock_unlock(&die->die_lock);
 
     nand_status_enhanced_from_cmd_state(&snap, out);
     return HFSSS_OK;
@@ -1009,12 +1017,12 @@ static int engine_submit_identity(struct nand_device *dev, enum nand_cmd_opcode 
         return HFSSS_ERR_INVAL;
     }
 
-    mutex_lock(&channel->lock, 0);
-    mutex_lock(&die->die_lock, 0);
+    ticket_lock_lock(&channel->lock);
+    ticket_lock_lock(&die->die_lock);
 
     if (!nand_cmd_is_legal_for_profile_state(dev->profile, die->cmd_state.state, op)) {
-        mutex_unlock(&die->die_lock);
-        mutex_unlock(&channel->lock);
+        ticket_lock_unlock(&die->die_lock);
+        ticket_lock_unlock(&channel->lock);
         return HFSSS_ERR_BUSY;
     }
 
@@ -1026,8 +1034,8 @@ static int engine_submit_identity(struct nand_device *dev, enum nand_cmd_opcode 
         *dst = dev->param_page;
     }
 
-    mutex_unlock(&die->die_lock);
-    mutex_unlock(&channel->lock);
+    ticket_lock_unlock(&die->die_lock);
+    ticket_lock_unlock(&channel->lock);
     return HFSSS_OK;
 }
 

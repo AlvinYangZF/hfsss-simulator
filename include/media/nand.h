@@ -3,6 +3,7 @@
 
 #include "common/common.h"
 #include "common/mutex.h"
+#include "common/ticket_lock.h"
 #include "media/cmd_state.h"
 #include "media/eat.h"
 #include "media/nand_identity.h"
@@ -77,7 +78,7 @@ struct nand_die {
     u32 plane_count;
     u64 next_available_ts;
     struct nand_die_cmd_state cmd_state;
-    struct mutex die_lock;
+    struct ticket_lock die_lock;
 };
 
 /* Chip */
@@ -94,7 +95,7 @@ struct nand_channel {
     struct nand_chip chips[MAX_CHIPS_PER_CHANNEL];
     u32 chip_count;
     u64 current_time;
-    struct mutex lock;
+    struct ticket_lock lock;
 };
 
 struct nand_profile;
