@@ -36,12 +36,7 @@ static int nand_init_hierarchy(struct nand_device *dev, u32 channel_count, u32 c
                 nand_die->plane_count = planes_per_die;
                 nand_die->next_available_ts = 0;
                 nand_cmd_state_init(&nand_die->cmd_state);
-                {
-                    int die_ret = mutex_init(&nand_die->die_lock);
-                    if (die_ret != HFSSS_OK) {
-                        return die_ret;
-                    }
-                }
+                ticket_lock_init(&nand_die->die_lock);
 
                 for (plane = 0; plane < planes_per_die; plane++) {
                     struct nand_plane *nand_plane = &nand_die->planes[plane];
@@ -148,7 +143,7 @@ static void nand_cleanup_hierarchy(struct nand_device *dev)
             for (die = 0; die < nand_chip->die_count; die++) {
                 struct nand_die *nand_die = &nand_chip->dies[die];
 
-                mutex_cleanup(&nand_die->die_lock);
+                /* ticket_lock has no resources to clean up. */
 
                 for (plane = 0; plane < nand_die->plane_count; plane++) {
                     struct nand_plane *nand_plane = &nand_die->planes[plane];
