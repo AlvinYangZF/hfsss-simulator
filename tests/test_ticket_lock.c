@@ -94,7 +94,6 @@ static void test_try_lock_contended(void)
 
 struct fifo_ctx {
     struct ticket_lock *lock;
-    _Atomic int         started[FIFO_N];
     int                 order[FIFO_N];
     _Atomic int         next_slot;
 };
@@ -110,8 +109,6 @@ static void *fifo_worker(void *arg)
     struct fifo_ctx *ctx = w->ctx;
     int id = w->id;
 
-    /* Signal that we are about to issue a ticket. */
-    atomic_store(&ctx->started[id], 1);
     ticket_lock_lock(ctx->lock);
 
     int slot = atomic_fetch_add(&ctx->next_slot, 1);
@@ -141,16 +138,16 @@ static void test_fifo_order(void)
         args[i].id = i;
         pthread_create(&tids[i], NULL, fifo_worker, &args[i]);
 
-        /* Wait until worker i has set started[i], ensuring its
-         * ticket_lock_lock call (and thus ticket issue) has begun. */
-        while (atomic_load(&ctx.started[i]) == 0) {
+        /* Wait until l.ticket has advanced, confirming worker i
+         * has issued its ticket (atomic_fetch_add in lock()). */
+        u64 expected_ticket = (u64)i + 2;  /* main + workers 0..i */
+        while (atomic_load(&l.ticket) < expected_ticket) {
             sched_yield();
         }
     }
 
-    /* Give the last worker a moment to reach the spin inside
-     * ticket_lock_lock, then release. Workers now acquire in the
-     * order they issued tickets: 0, 1, …, FIFO_N-1. */
+    /* All workers have issued tickets in order 0, 1, …, N-1.
+     * Release; FIFO lock serves them in that exact order. */
     ticket_lock_unlock(&l);
 
     for (int i = 0; i < FIFO_N; i++) {

@@ -580,20 +580,19 @@ static int engine_submit(struct nand_device *dev, enum nand_cmd_opcode op, const
         die_went_idle = true;
     }
     ticket_lock_unlock(&die->die_lock);
+    ticket_lock_unlock(&channel->lock);
 
-    /* Anchor A: optional die-ready notifier. Fires after the die lock
-     * is released so that ticket-lock waiters do not spin through the
-     * notifier body. The IDLE-state cleanup is complete at this point;
-     * re-submitters that race in before the notifier fires will observe
-     * the die IDLE and proceed without queueing — safe because the
-     * notifier only dequeues waiters that were already queued. NULL
-     * hook is the default — zero overhead for callers that do not
-     * install a dispatcher. */
+    /* Anchor A: optional die-ready notifier. Fires after both locks
+     * are released so that ticket-lock waiters do not spin through
+     * the notifier body. The IDLE-state cleanup is complete at this
+     * point; re-submitters that race in before the notifier fires
+     * will observe the die IDLE and proceed without queueing — safe
+     * because the notifier only dequeues waiters that were already
+     * queued. NULL hook is the default — zero overhead for callers
+     * that do not install a dispatcher. */
     if (die_went_idle && dev->die_ready_notifier) {
         dev->die_ready_notifier(dev, target->ch, target->chip, target->die);
     }
-
-    ticket_lock_unlock(&channel->lock);
     return stage_rc;
 }
 
