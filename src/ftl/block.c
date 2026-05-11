@@ -100,6 +100,28 @@ static void block_list_add_head(struct block_desc **list, struct block_desc *blo
     *list = block;
 }
 
+static void block_list_add_tail(struct block_desc **list, struct block_desc *block)
+{
+    if (!list || !block) {
+        return;
+    }
+
+    block->next = NULL;
+
+    if (!*list) {
+        block->prev = NULL;
+        *list = block;
+        return;
+    }
+
+    struct block_desc *tail = *list;
+    while (tail->next) {
+        tail = tail->next;
+    }
+    tail->next = block;
+    block->prev = tail;
+}
+
 
 static void block_list_remove(struct block_desc **list, struct block_desc *block)
 {
@@ -159,8 +181,7 @@ int block_mgr_init(struct block_mgr *mgr, u32 channel_count, u32 chips_per_chann
 {
     u64 total_blocks;
     u32 free_shard_count;
-    u32 ch, chip, die, plane, blk;
-    u64 idx = 0;
+    u32 ch, chip, plane, blk, d, start_die;
     int ret;
 
     if (!mgr) {
@@ -239,13 +260,30 @@ int block_mgr_init(struct block_mgr *mgr, u32 channel_count, u32 chips_per_chann
         return HFSSS_ERR_NOMEM;
     }
 
-    /* Initialize all blocks */
+    /* Initialize all blocks, distributing across dies per (channel,
+     * plane) shard.  The inner loop iterates blk first, then chip,
+     * then die — so consecutive blocks in each shard's free list
+     * alternate between different dies.  Additionally, plane 0 shards
+     * start at die 0 while plane 1 shards start at die 1, keeping the
+     * two CWBs on the same channel on different dies by construction.
+     *
+     * Without this interleaving, a LIFO free list would cluster all
+     * initial allocations on the same die within each shard, forcing
+     * every CWB on a channel to contend for the same die and
+     * serialising all writes through a single NAND tProg window. */
     for (ch = 0; ch < channel_count; ch++) {
-        for (chip = 0; chip < chips_per_channel; chip++) {
-            for (die = 0; die < dies_per_chip; die++) {
-                for (plane = 0; plane < planes_per_die; plane++) {
-                    for (blk = 0; blk < blocks_per_plane; blk++) {
-                        struct block_desc *block = &mgr->blocks[idx];
+        for (plane = 0; plane < planes_per_die; plane++) {
+            start_die = plane % dies_per_chip;
+            for (blk = 0; blk < blocks_per_plane; blk++) {
+                for (chip = 0; chip < chips_per_channel; chip++) {
+                    for (d = 0; d < dies_per_chip; d++) {
+                        u32 die = (start_die + d) % dies_per_chip;
+                        u64 offset = ((u64)ch  * chips_per_channel * dies_per_chip * planes_per_die * blocks_per_plane)
+                                   + ((u64)chip * dies_per_chip * planes_per_die * blocks_per_plane)
+                                   + ((u64)die  * planes_per_die * blocks_per_plane)
+                                   + ((u64)plane * blocks_per_plane)
+                                   + ((u64)blk);
+                        struct block_desc *block = &mgr->blocks[offset];
 
                         block->channel = ch;
                         block->chip = chip;
@@ -259,14 +297,11 @@ int block_mgr_init(struct block_mgr *mgr, u32 channel_count, u32 chips_per_chann
                         block->last_write_ts = 0;
                         block->cost = 0;
 
-                        /* Add to the channel/plane-local free list. */
                         struct block_free_shard *shard =
                             block_get_free_shard_for_block(mgr, block);
-                        block_list_add_head(&shard->free_list, block);
+                        block_list_add_tail(&shard->free_list, block);
                         block_mgr_count_inc(&shard->free_blocks);
                         block_mgr_count_inc(&mgr->free_blocks);
-
-                        idx++;
                     }
                 }
             }
