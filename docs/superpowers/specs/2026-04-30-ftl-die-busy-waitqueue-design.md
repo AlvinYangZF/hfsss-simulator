@@ -379,26 +379,31 @@ Per-FTL-context shutdown drains its own waiters in the same way before destroyin
 
 ### 8.2 KPI table
 
-Every PR-gating run must land within these bounds. Numbers shown are
-post-implementation actuals on `perf/ftl-die-busy-waitqueue` (archived
-under `docs/perf-baselines/2026-04-30-perf-ftl-die-busy-waitqueue/`).
+KPIs tracked against these bounds (not all met — see Status column). Numbers shown are
+post-implementation actuals from `perf/ftl-die-busy-waitqueue`
+(`docs/perf-baselines/2026-04-30-perf-ftl-die-busy-waitqueue/`) and
+the ticket-lock follow-up `perf/cmd-engine-ticket-lock`
+(`docs/perf-baselines/2026-05-10-cmd-engine-ticket-lock/`).
 
-| Case | Metric | Baseline (master@0eb0d83) | Original target | Actual (post-impl) | Status |
+| Case | Metric | Baseline (master@0eb0d83) | Original target | After dispatcher | After ticket lock | Status |
 |---|---|---|---|---|---|
-| 012 seqwrite | write mean lat | 142.0 ms | ≤ 10 ms | 141.8 ms | **MISSED** — see Section 9.2 |
-| 012 seqwrite | write p99 lat | 152.0 ms | ≤ 20 ms | 143.6 ms | partial: ~6 % p99 trim |
-| 012 seqwrite | write IOPS | 112 | ≥ 1500 | 112 | **MISSED** |
-| 012 seqwrite | read mean lat | 9.1 ms | ≤ 12 ms | 9.4 ms | met |
-| 010 randwrite | all | (see 2.1) | ±10 % | within ±2 % | met |
-| 011 randrw | all | (see 2.1) | ±10 % | within ±2 % | met |
-| 013 trim | all | (see 2.1) | ±10 % | within ±2 % | met |
-| 014 stress | all | (see 2.1) | ±10 % | within ±2 % | met |
-| 012 seqwrite | gating | FAIL on master fix path under stress | PASS | PASS | met (correctness) |
+| 012 seqwrite | write mean lat | 142.0 ms | ≤ 10 ms | 141.8 ms | 141.9 ms | **MISSED** — see Section 9.2 |
+| 012 seqwrite | write p99 lat | 152.0 ms | ≤ 20 ms | 143.6 ms | — | partial: ~6 % p99 trim |
+| 012 seqwrite | write IOPS | 112 | ≥ 1500 | 112 | 113 | **MISSED** |
+| 012 seqwrite | read mean lat | 9.1 ms | ≤ 12 ms | 9.4 ms | 9.4 ms | met |
+| 010 randwrite | all | (see 2.1) | ±10 % | within ±2 % | within ±2 % | met |
+| 011 randrw | all | (see 2.1) | ±10 % | within ±2 % | within ±2 % | met |
+| 013 trim | all | (see 2.1) | ±10 % | within ±2 % | within ±2 % | met |
+| 014 stress | all | (see 2.1) | ±10 % | within ±2 % | within ±2 % | met |
+| 012 seqwrite | gating | FAIL on master fix path under stress | PASS | PASS | PASS | met (correctness) |
 
-The dispatcher infrastructure delivers correctness (8/8 pre-checkin
-PASS) but not the original latency target. The reason — and the next
-work item that must precede a real latency fix — is documented in
-Section 9.2.
+The dispatcher infrastructure (PR #118) delivers correctness (8/8
+pre-checkin PASS) but not the original latency target. The ticket-lock
+follow-up (PR #119, Option 1 in Section 9.2) was implemented and
+merged; it also produced zero measurable improvement (141.9 ms vs
+141.8 ms post-dispatcher). The pthread mutex unfairness theory was
+**incorrect** — the real bottleneck remains undiagnosed. See Section
+9.2 for the updated analysis and remaining options.
 
 ### 8.3 Fault-injection knobs (env-gated only)
 
@@ -439,56 +444,54 @@ Original target breakdown for `012_seqwrite_verify` write latency:
 master baseline. The dispatcher does not deliver the projected latency
 reduction.
 
-#### Why the dispatcher does not reduce the latency floor
+#### Why neither the dispatcher nor the ticket lock reduces the latency floor
 
-The dispatcher provides FIFO ordering on the **wake side**: when a die
-transitions to IDLE, the dispatcher pops one waiter from its per-die
-queue and signals that waiter's condvar. The signaled waiter then
-re-attempts `cmd_engine_submit`.
+The dispatcher (PR #118) provides FIFO ordering on the **wake side**:
+when a die transitions to IDLE, the dispatcher pops one waiter from
+its per-die queue and signals that waiter's condvar. The signaled
+waiter then re-attempts `cmd_engine_submit`.
 
-`cmd_engine_submit` acquires `channel_lock` and `die_lock` (both
-`pthread_mutex_t`). On macOS — and on Linux with `PTHREAD_MUTEX_DEFAULT`
-— `pthread_mutex_t` is **not FIFO-fair**: a thread that has just
-released a mutex can re-acquire it ahead of waiters who have been
-blocked longer. Concretely, a fresh FTL worker arriving at
-`cmd_engine_submit` can win the lock against the dispatcher-signaled
-waiter, transition the die back into a busy state, and force the
-signaled waiter to fail with `HFSSS_ERR_BUSY` and re-queue.
+**Original hypothesis (PR #118, Section 9.2):** `pthread_mutex_t` on
+`die_lock` and `channel_lock` is not FIFO-fair, so fresh FTL workers
+win the lock race against signaled waiters, forcing re-queue and
+converging to the same ~142 ms latency as the old retry-spin.
 
-Under fio-012 (bs=128k, iodepth=16, eight FTL workers feeding it from
-the SQ), this lock-race lose rate compounds across the full duration
-of the test. Per-iteration backoff in the FTL retry loop is bounded
-(SAFETY_RETRIES × SAFETY_WAIT_MS), but the *typical* latency for a
-write to actually win the die converges to roughly the same value as
-the previous `nanosleep × N` retry-spin: ~140 ms in this configuration.
+**Test (PR #119):** Replace both `die_lock` and `channel_lock` with
+a strict FIFO ticket lock (atomic ticket + serving counters,
+spin-with-yield). The full implementation, including 3 rounds of
+Codex review, merged as PR #119.
 
-#### Required follow-up to actually close the latency gap
+**Result:** Write latency did not change (141.9 ms vs 141.8 ms
+post-dispatcher, 142.0 ms baseline). The pthread mutex unfairness
+theory was **incorrect** — it is not the primary bottleneck.
 
-Pick one or compose two:
+Read latency is healthy (9.4 ms mean, 1697 IOPS), confirming the
+bottleneck is specific to the NAND write path, not the
+channel-worker or NBD layer.
 
-1. **Replace `pthread_mutex_t` for `die_lock` / `channel_lock` with
-   FIFO-fair primitives.** A small ticket-lock (~50 LOC) gives strict
-   wakeup ordering. The dispatcher's FIFO becomes effective because the
-   signaled waiter is also first in line at the underlying lock.
-2. **Die-reservation protocol between dispatcher and cmd_engine.** When
-   the dispatcher pops a waiter, it stamps `die->next_owner = waiter`.
-   `cmd_engine_submit` checks this field; any submission that does not
-   match returns BUSY immediately. The reservation is cleared once the
-   signaled waiter completes its submit. Removes the lock race from
-   the contention path entirely.
+#### Remaining follow-up options
+
+1. **Ticket lock (Option 1)** — ~~IMPLEMENTED and MERGED (PR #119).~~
+   Did not help. The bottleneck is elsewhere.
+2. **Die-reservation protocol between dispatcher and cmd_engine.**
+   When the dispatcher pops a waiter, it stamps `die->next_owner`.
+   `cmd_engine_submit` checks this field; non-matching submissions
+   return BUSY immediately. Removes the lock race from the contention
+   path entirely — but since the lock race was not the bottleneck,
+   this is unlikely to help either.
 3. **REQ-045 tier 3** — retarget host I/O through `channel_worker`'s
    CQ path. The channel_worker model already imposes serialization at
    submit time; the dispatcher then becomes the wake mechanism for the
    blocking caller, not a fairness mechanism over racing locks.
+4. **Re-diagnose the bottleneck.** The actual ~142 ms latency may come
+   from die-level parallelism limits under sequential write (all writes
+   targeting the same channel/die in order), FTL write amplification,
+   GC interference during seqwrite, or NAND tProg serialization that
+   no amount of queue-ordering can bypass.
 
-Item 1 is the smallest scoped follow-up that would directly produce
-the projected ≥10× reduction. Item 2 is more invasive but cleaner.
-Item 3 is the broadest architectural alignment.
-
-This PR does NOT attempt any of the three. Its scope is now bounded
-to: correctness (no fio-012 fail), priority-class infrastructure
-(GC vs host scheduling), and the architectural foundation that the
-follow-ups will build on.
+This PR's scope is bounded to: correctness (no fio-012 fail),
+priority-class infrastructure (GC vs host scheduling), and the
+architectural foundation that further work builds on.
 
 ## 10. Out of scope
 

@@ -14,16 +14,20 @@
  * ftl_{read,write}_page_mt_ex. The dispatcher signals on every die-ready
  * event so in low contention the loop exits after one or two iterations.
  * Under heavy contention (fio-012 bs=128k iodepth=16 type workloads)
- * pthread mutex unfairness inside cmd_engine can make a woken waiter
- * lose the lock race repeatedly to fresh arrivals, so the budget is
- * sized to outlast worst-case lock starvation while staying well below
- * the NVMe 30s command timeout. Total worst-case wait =
+ * the dispatcher may not be able to resolve all contention immediately;
+ * the budget is sized to outlast worst-case scheduling jitter while
+ * staying well below the NVMe 30s command timeout. Total worst-case wait =
  * RETRIES × WAIT_MS = 2048 × 10 ms ≈ 20 s upper bound (still inside the
  * NVMe 30 s timeout); under fio-012 stress the actual maximum retry
- * count observed is around 60-65, so the bulk of the budget is reserve
- * against pathological lock-race starvation that this code path can
- * provoke but cannot directly avoid (cmd_engine's die_lock is pthread,
- * which is not FIFO-fair on macOS).
+ * count observed is around 60-65, so the bulk of the budget is reserve.
+ *
+ * Historical note: the comment previously attributed the high retry
+ * count to cmd_engine's pthread mutex unfairness. Both die_lock and
+ * channel_lock were replaced with a FIFO-fair ticket lock (PR #119),
+ * and the latency did not change — so pthread unfairness was not the
+ * root cause. The retry budget remains as a bounded safety guard
+ * for dispatcher / scheduling contention whose root cause is still
+ * under investigation.
  */
 #define FTL_DISPATCH_SAFETY_RETRIES   2048
 #define FTL_DISPATCH_SAFETY_WAIT_MS   10
