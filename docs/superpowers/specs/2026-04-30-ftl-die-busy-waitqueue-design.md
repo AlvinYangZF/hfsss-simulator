@@ -379,7 +379,7 @@ Per-FTL-context shutdown drains its own waiters in the same way before destroyin
 
 ### 8.2 KPI table
 
-Every PR-gating run must land within these bounds. Numbers shown are
+KPIs tracked against these bounds (not all met — see Status column). Numbers shown are
 post-implementation actuals from `perf/ftl-die-busy-waitqueue`
 (`docs/perf-baselines/2026-04-30-perf-ftl-die-busy-waitqueue/`) and
 the ticket-lock follow-up `perf/cmd-engine-ticket-lock`
