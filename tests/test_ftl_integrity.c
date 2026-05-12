@@ -694,6 +694,76 @@ static void test_nospc_gc_trigger(void)
 #undef NOSPC_PGSZ
 }
 
+/*
+ * test_block_init_chip_interleave — verify block_mgr_init distributes
+ * the first allocations for different planes on the same channel across
+ * different chips, not just different dies.  Without chip interleaving,
+ * two CWBs on the same channel share a chip and serialise on chip-level
+ * EAT even when targeting different dies.
+ *
+ * Geometry: 1ch × 2chip × 2die × 2plane × 16blk.
+ */
+static void test_block_init_chip_interleave(void)
+{
+    printf("\n=== Block init chip interleave ===\n");
+
+#define INTERLEAVE_CH    1
+#define INTERLEAVE_CHIP  2
+#define INTERLEAVE_DIE   2
+#define INTERLEAVE_PLANE 2
+#define INTERLEAVE_BLKS  16
+
+    struct block_mgr mgr;
+    int ret;
+
+    memset(&mgr, 0, sizeof(mgr));
+    ret = block_mgr_init(&mgr, INTERLEAVE_CH, INTERLEAVE_CHIP,
+                         INTERLEAVE_DIE, INTERLEAVE_PLANE, INTERLEAVE_BLKS);
+    TEST_ASSERT(ret == HFSSS_OK,
+                "chip-interleave: block_mgr_init should succeed");
+    if (ret != HFSSS_OK)
+        return;
+
+    struct block_desc *b0 = block_alloc_for_channel_plane(&mgr, 0, 0);
+    TEST_ASSERT(b0 != NULL,
+                "chip-interleave: alloc for (ch=0, pl=0) should succeed");
+
+    struct block_desc *b1 = block_alloc_for_channel_plane(&mgr, 0, 1);
+    TEST_ASSERT(b1 != NULL,
+                "chip-interleave: alloc for (ch=0, pl=1) should succeed");
+
+    /* Both must be blk=0 (FIFO head of their respective shards). */
+    TEST_ASSERT(b0->block_id == 0,
+                "chip-interleave: first alloc for plane 0 must be blk=0");
+    TEST_ASSERT(b1->block_id == 0,
+                "chip-interleave: first alloc for plane 1 must be blk=0");
+
+    /* With 2 chips per channel and 2 planes per die, the chip offset
+     * (plane * chips_per_plane) % chips_per_channel gives:
+     *   plane 0 -> start_chip=0
+     *   plane 1 -> start_chip=1
+     * They must land on different chips. */
+    TEST_ASSERT(b0->chip != b1->chip,
+                "chip-interleave: plane 0 and plane 1 must be on different chips");
+
+    /* Dies must also differ — verifying die interleave still works. */
+    TEST_ASSERT(b0->die != b1->die,
+                "chip-interleave: plane 0 and plane 1 must be on different dies");
+
+    printf("  [INFO] pl=0 -> (chip=%u, die=%u, blk=%u)\n",
+           b0->chip, b0->die, b0->block_id);
+    printf("  [INFO] pl=1 -> (chip=%u, die=%u, blk=%u)\n",
+           b1->chip, b1->die, b1->block_id);
+
+    block_mgr_cleanup(&mgr);
+
+#undef INTERLEAVE_CH
+#undef INTERLEAVE_CHIP
+#undef INTERLEAVE_DIE
+#undef INTERLEAVE_PLANE
+#undef INTERLEAVE_BLKS
+}
+
 /* ------------------------------------------------------------------ */
 int main(void)
 {
@@ -706,6 +776,7 @@ int main(void)
     test_factory_bad_block_prescan();
     test_cwb_io_error_retirement();
     test_nospc_gc_trigger();
+    test_block_init_chip_interleave();
 
     printf("\n========================================\n");
     printf("Results: %d/%d passed", g_tests_passed, g_tests_run);
