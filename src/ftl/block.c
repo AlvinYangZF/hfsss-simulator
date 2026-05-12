@@ -158,7 +158,7 @@ int block_mgr_init(struct block_mgr *mgr, u32 channel_count, u32 chips_per_chann
 {
     u64 total_blocks;
     u32 free_shard_count;
-    u32 ch, chip, plane, blk, d, start_die;
+    u32 ch, plane, blk, d, c, start_die, start_chip;
     int ret;
 
     if (!mgr) {
@@ -237,26 +237,33 @@ int block_mgr_init(struct block_mgr *mgr, u32 channel_count, u32 chips_per_chann
         return HFSSS_ERR_NOMEM;
     }
 
-    /* Initialize all blocks, distributing across dies per (channel,
+    /* Initialize all blocks, distributing across chips and dies per (channel,
      * plane) shard.  The inner loop iterates blk first, then chip,
      * then die — so consecutive blocks in each shard's free list
-     * alternate between different dies.  Additionally, plane 0 shards
-     * start at die 0 while plane 1 shards start at die 1, keeping the
-     * two CWBs on the same channel on different dies by construction.
+     * alternate between different chips and dies.  Both the starting die
+     * and starting chip are offset per plane, keeping the two CWBs
+     * on the same channel on independent (chip, die) pairs.
      *
-     * Without this interleaving, a LIFO free list would cluster all
-     * initial allocations on the same die within each shard, forcing
-     * every CWB on a channel to contend for the same die and
-     * serialising all writes through a single NAND tProg window. */
+     * Die-only interleaving was insufficient: different dies on the
+     * same chip still share chip-level EAT (eat_get_max checks
+     * chip_eat before die_eat), so two CWBs on the same channel
+     * targeting the same chip still serialise through
+     * engine_wait_until_available_mask.  Offsetting the starting chip
+     * per plane eliminates that remaining serialisation. */
     for (ch = 0; ch < channel_count; ch++) {
         for (plane = 0; plane < planes_per_die; plane++) {
             struct block_free_shard *shard =
                 block_get_free_shard(mgr, ch, plane);
             struct block_desc *free_tail = NULL;
 
+            u32 chips_per_plane = chips_per_channel / planes_per_die;
             start_die = plane % dies_per_chip;
+            start_chip = chips_per_plane > 0
+                ? (plane * chips_per_plane) % chips_per_channel
+                : 0;
             for (blk = 0; blk < blocks_per_plane; blk++) {
-                for (chip = 0; chip < chips_per_channel; chip++) {
+                for (c = 0; c < chips_per_channel; c++) {
+                    u32 chip = (start_chip + c) % chips_per_channel;
                     for (d = 0; d < dies_per_chip; d++) {
                         u32 die = (start_die + d) % dies_per_chip;
                         u64 offset = ((u64)ch  * chips_per_channel * dies_per_chip * planes_per_die * blocks_per_plane)
