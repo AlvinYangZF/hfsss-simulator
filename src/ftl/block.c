@@ -100,29 +100,6 @@ static void block_list_add_head(struct block_desc **list, struct block_desc *blo
     *list = block;
 }
 
-static void block_list_add_tail(struct block_desc **list, struct block_desc *block)
-{
-    if (!list || !block) {
-        return;
-    }
-
-    block->next = NULL;
-
-    if (!*list) {
-        block->prev = NULL;
-        *list = block;
-        return;
-    }
-
-    struct block_desc *tail = *list;
-    while (tail->next) {
-        tail = tail->next;
-    }
-    tail->next = block;
-    block->prev = tail;
-}
-
-
 static void block_list_remove(struct block_desc **list, struct block_desc *block)
 {
     if (!list || !block) {
@@ -273,6 +250,10 @@ int block_mgr_init(struct block_mgr *mgr, u32 channel_count, u32 chips_per_chann
      * serialising all writes through a single NAND tProg window. */
     for (ch = 0; ch < channel_count; ch++) {
         for (plane = 0; plane < planes_per_die; plane++) {
+            struct block_free_shard *shard =
+                block_get_free_shard(mgr, ch, plane);
+            struct block_desc *free_tail = NULL;
+
             start_die = plane % dies_per_chip;
             for (blk = 0; blk < blocks_per_plane; blk++) {
                 for (chip = 0; chip < chips_per_channel; chip++) {
@@ -291,15 +272,23 @@ int block_mgr_init(struct block_mgr *mgr, u32 channel_count, u32 chips_per_chann
                         block->plane = plane;
                         block->block_id = blk;
                         block->state = FTL_BLOCK_FREE;
+                        block->next = NULL;
+                        block->prev = NULL;
                         block_page_count_store(&block->valid_page_count, 0);
                         block_page_count_store(&block->invalid_page_count, 0);
                         block->erase_count = 0;
                         block->last_write_ts = 0;
                         block->cost = 0;
 
-                        struct block_free_shard *shard =
-                            block_get_free_shard_for_block(mgr, block);
-                        block_list_add_tail(&shard->free_list, block);
+                        /* O(1) tail-append — avoids the O(n) walk in
+                         * block_list_add_tail on every insertion. */
+                        if (!shard->free_list) {
+                            shard->free_list = block;
+                        } else {
+                            free_tail->next = block;
+                            block->prev = free_tail;
+                        }
+                        free_tail = block;
                         block_mgr_count_inc(&shard->free_blocks);
                         block_mgr_count_inc(&mgr->free_blocks);
                     }
