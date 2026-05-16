@@ -6,6 +6,8 @@
 #include "media/media.h"
 #include "hal/hal.h"
 #include "ftl/ftl.h"
+#include "ftl/ecc.h"
+#include "ftl/wear_level.h"
 
 #define TEST_PASS 0
 #define TEST_FAIL 1
@@ -207,6 +209,123 @@ static void test_block_mark_bad_from_free(void)
     block_mgr_cleanup(&mgr);
 }
 
+static void test_block_state_transition_matrix(void)
+{
+    printf("\n=== Block Manager State Transition Matrix ===\n");
+
+    struct block_mgr mgr;
+    int ret = block_mgr_init(&mgr, 2, 2, 1, 2, 4);
+    TEST_ASSERT(ret == HFSSS_OK, "block-matrix: block_mgr_init succeeds");
+    if (ret != HFSSS_OK) {
+        return;
+    }
+
+    TEST_ASSERT(block_alloc(NULL) == NULL, "block-matrix: alloc NULL rejected");
+    TEST_ASSERT(block_alloc_for_channel_plane(NULL, 0, 0) == NULL,
+                "block-matrix: alloc shard NULL rejected");
+
+    struct block_desc *fallback = block_alloc_for_channel_plane(&mgr, 99, 0);
+    TEST_ASSERT(fallback != NULL,
+                "block-matrix: invalid shard falls back to global alloc");
+    block_free(&mgr, fallback);
+
+    struct block_desc *b0 = block_alloc_for_channel_plane(&mgr, 0, 0);
+    struct block_desc *b1 = block_alloc_for_channel_plane(&mgr, 0, 1);
+    struct block_desc *b2 = block_alloc_for_channel_plane(&mgr, 1, 0);
+    TEST_ASSERT(b0 && b1 && b2, "block-matrix: allocated three blocks");
+
+    TEST_ASSERT(block_get_valid_page_count(NULL) == 0,
+                "block-matrix: valid count NULL is zero");
+    TEST_ASSERT(block_get_invalid_page_count(NULL) == 0,
+                "block-matrix: invalid count NULL is zero");
+    TEST_ASSERT(block_free(NULL, b0) == HFSSS_ERR_INVAL,
+                "block-matrix: block_free NULL mgr rejected");
+    TEST_ASSERT(block_mark_closed(NULL, b0) == HFSSS_ERR_INVAL,
+                "block-matrix: mark_closed NULL mgr rejected");
+    TEST_ASSERT(block_mark_gc(NULL, b0) == HFSSS_ERR_INVAL,
+                "block-matrix: mark_gc NULL mgr rejected");
+    TEST_ASSERT(block_unmark_gc(NULL, b0) == HFSSS_ERR_INVAL,
+                "block-matrix: unmark_gc NULL mgr rejected");
+    TEST_ASSERT(block_mark_reserved(NULL, b0) == HFSSS_ERR_INVAL,
+                "block-matrix: mark_reserved NULL mgr rejected");
+    TEST_ASSERT(block_find_by_coords(NULL, 0, 0, 0, 0, 0) == NULL,
+                "block-matrix: find_by_coords NULL mgr rejected");
+
+    ret = block_mark_closed(&mgr, b0);
+    TEST_ASSERT(ret == HFSSS_OK && b0->state == FTL_BLOCK_CLOSED,
+                "block-matrix: open block closes");
+    ret = block_mark_closed(&mgr, b0);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "block-matrix: closing already closed block rejected");
+
+    b0->valid_page_count = 4;
+    b0->invalid_page_count = 1;
+    b0->erase_count = 2;
+    b0->last_write_ts = 200;
+    b1->last_write_ts = 100;
+    block_mark_closed(&mgr, b1);
+    b1->valid_page_count = 1;
+    b1->invalid_page_count = 3;
+    b1->erase_count = 0;
+
+    TEST_ASSERT(block_find_victim(NULL, GC_POLICY_GREEDY) == NULL,
+                "block-matrix: victim NULL mgr rejected");
+    TEST_ASSERT(block_find_victim(&mgr, GC_POLICY_GREEDY) == b1,
+                "block-matrix: greedy picks most invalid pages");
+    TEST_ASSERT(block_find_victim(&mgr, GC_POLICY_COST_BENEFIT) == b1,
+                "block-matrix: cost-benefit picks lowest score");
+    TEST_ASSERT(block_find_victim(&mgr, GC_POLICY_FIFO) == b1,
+                "block-matrix: FIFO picks oldest closed block");
+    TEST_ASSERT(block_find_victim(&mgr, 999) != NULL,
+                "block-matrix: unknown policy returns first closed block");
+
+    ret = block_mark_gc(&mgr, b0);
+    TEST_ASSERT(ret == HFSSS_OK && b0->state == FTL_BLOCK_GC,
+                "block-matrix: closed block moves to GC");
+    ret = block_mark_gc(&mgr, b0);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "block-matrix: marking GC block as GC rejected");
+    ret = block_unmark_gc(&mgr, b0);
+    TEST_ASSERT(ret == HFSSS_OK && b0->state == FTL_BLOCK_CLOSED,
+                "block-matrix: GC block returns to closed list");
+    ret = block_unmark_gc(&mgr, b0);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "block-matrix: unmark non-GC block rejected");
+
+    struct block_desc *found = block_find_by_coords(
+        &mgr, b2->channel, b2->chip, b2->die, b2->plane, b2->block_id);
+    TEST_ASSERT(found == b2, "block-matrix: find_by_coords locates block");
+    TEST_ASSERT(block_find_by_coords(&mgr, 99, 0, 0, 0, 0) == NULL,
+                "block-matrix: out-of-range coords return NULL");
+
+    u64 free_before = block_get_free_count(&mgr);
+    ret = block_free(&mgr, b2);
+    TEST_ASSERT(ret == HFSSS_OK && b2->state == FTL_BLOCK_FREE,
+                "block-matrix: open block returns to free list");
+    ret = block_mark_reserved(&mgr, b2);
+    TEST_ASSERT(ret == HFSSS_OK && b2->state == FTL_BLOCK_RESERVED,
+                "block-matrix: free block can be reserved");
+    TEST_ASSERT(block_get_free_count(&mgr) == free_before,
+                "block-matrix: reserve consumes one free block after prior free");
+    ret = block_mark_reserved(&mgr, b2);
+    TEST_ASSERT(ret == HFSSS_OK,
+                "block-matrix: reserving already reserved block is idempotent");
+
+    block_mark_page_invalid(&mgr, b0->channel, b0->chip, b0->die,
+                            b0->plane, b0->block_id);
+    TEST_ASSERT(block_get_invalid_page_count(b0) >= 2,
+                "block-matrix: mark_page_invalid increments invalid count");
+    block_mark_page_invalid(&mgr, 99, 0, 0, 0, 0);
+    TEST_ASSERT(block_mark_bad(&mgr, b0) == HFSSS_OK &&
+                b0->state == FTL_BLOCK_BAD,
+                "block-matrix: closed block can be marked bad");
+    TEST_ASSERT(block_free(&mgr, b0) == HFSSS_OK &&
+                b0->state == FTL_BLOCK_FREE,
+                "block-matrix: block_free handles BAD/default state");
+
+    block_mgr_cleanup(&mgr);
+}
+
 /*
  * test_gc_flush_dst_closes_block — verify that gc_flush_dst closes the
  * persistent GC destination block (ctx->dst_block becomes NULL) and moves
@@ -402,6 +521,183 @@ static void test_gc_flush_dst_closes_block(void)
 #undef GFDT_PGSZ
 }
 
+static void test_ecc_direct_paths(void)
+{
+    printf("\n=== ECC Direct Path Tests ===\n");
+
+    struct ecc_ctx ecc;
+    u8 data[4096];
+    u8 codeword[4096 + 64];
+    u8 decoded[4096];
+    int ret;
+
+    memset(data, 0x5A, sizeof(data));
+    memset(codeword, 0xFF, sizeof(codeword));
+    memset(decoded, 0, sizeof(decoded));
+
+    TEST_ASSERT(ecc_init(NULL, ECC_BCH) == HFSSS_ERR_INVAL,
+                "ecc_init rejects NULL ctx");
+
+    ret = ecc_init(&ecc, ECC_LDPC);
+    TEST_ASSERT(ret == HFSSS_OK, "ecc_init succeeds");
+    TEST_ASSERT(ecc.type == ECC_LDPC, "ecc stores selected type");
+    TEST_ASSERT(ecc.data_size == 4096, "ecc data size initialized");
+    TEST_ASSERT(ecc.parity_size == 64, "ecc parity size initialized");
+    TEST_ASSERT(ecc.correctable_bits == 40, "ecc correctable bits initialized");
+
+    TEST_ASSERT(ecc_encode(NULL, data, codeword) == HFSSS_ERR_INVAL,
+                "ecc_encode rejects NULL ctx");
+    TEST_ASSERT(ecc_encode(&ecc, NULL, codeword) == HFSSS_ERR_INVAL,
+                "ecc_encode rejects NULL data");
+    TEST_ASSERT(ecc_encode(&ecc, data, NULL) == HFSSS_ERR_INVAL,
+                "ecc_encode rejects NULL codeword");
+
+    ret = ecc_encode(&ecc, data, codeword);
+    TEST_ASSERT(ret == HFSSS_OK, "ecc_encode succeeds");
+    TEST_ASSERT(memcmp(codeword, data, sizeof(data)) == 0,
+                "ecc_encode copies data payload");
+
+    bool parity_zero = true;
+    for (u32 i = 0; i < ecc.parity_size; i++) {
+        if (codeword[ecc.data_size + i] != 0) {
+            parity_zero = false;
+            break;
+        }
+    }
+    TEST_ASSERT(parity_zero, "ecc_encode zeroes parity placeholder");
+
+    TEST_ASSERT(ecc_decode(NULL, codeword, decoded) == HFSSS_ERR_INVAL,
+                "ecc_decode rejects NULL ctx");
+    TEST_ASSERT(ecc_decode(&ecc, NULL, decoded) == HFSSS_ERR_INVAL,
+                "ecc_decode rejects NULL codeword");
+    TEST_ASSERT(ecc_decode(&ecc, codeword, NULL) == HFSSS_ERR_INVAL,
+                "ecc_decode rejects NULL data");
+
+    ret = ecc_decode(&ecc, codeword, decoded);
+    TEST_ASSERT(ret == HFSSS_OK, "ecc_decode succeeds");
+    TEST_ASSERT(memcmp(decoded, data, sizeof(data)) == 0,
+                "ecc_decode restores payload");
+
+    ecc_cleanup(NULL);
+    ecc_cleanup(&ecc);
+    TEST_ASSERT(ecc.data_size == 0 && ecc.parity_size == 0,
+                "ecc_cleanup clears context");
+}
+
+static void test_wear_level_direct_paths(void)
+{
+    printf("\n=== Wear-Level Direct Path Tests ===\n");
+
+    struct wear_level_ctx wl;
+    struct block_mgr mgr;
+    int ret;
+
+    TEST_ASSERT(wear_level_init(NULL) == HFSSS_ERR_INVAL,
+                "wear_level_init rejects NULL ctx");
+
+    ret = wear_level_init(&wl);
+    TEST_ASSERT(ret == HFSSS_OK, "wear_level_init succeeds");
+    TEST_ASSERT(wl.enabled == 1, "wear leveling enabled by default");
+    TEST_ASSERT(wl.static_enabled == 1, "static wear leveling enabled by default");
+    TEST_ASSERT(wl.static_threshold == 100, "default static threshold initialized");
+    TEST_ASSERT(wl.wear_alert_threshold == WEAR_ALERT_THRESHOLD,
+                "default alert threshold initialized");
+    TEST_ASSERT(wl.wear_critical_threshold == WEAR_CRITICAL_THRESHOLD,
+                "default critical threshold initialized");
+
+    TEST_ASSERT(wear_level_set_static_threshold(NULL, 10) == HFSSS_ERR_INVAL,
+                "static threshold rejects NULL ctx");
+    TEST_ASSERT(wear_level_set_static_threshold(&wl, 7) == HFSSS_OK,
+                "static threshold update succeeds");
+    TEST_ASSERT(wl.static_threshold == 7, "static threshold stored");
+
+    TEST_ASSERT(wear_level_set_alert_threshold(NULL, 80, 90) == HFSSS_ERR_INVAL,
+                "alert threshold rejects NULL ctx");
+    TEST_ASSERT(wear_level_set_alert_threshold(&wl, 101, 101) == HFSSS_ERR_INVAL,
+                "alert threshold rejects percentages above 100");
+    TEST_ASSERT(wear_level_set_alert_threshold(&wl, 90, 80) == HFSSS_ERR_INVAL,
+                "alert threshold rejects critical below alert");
+    TEST_ASSERT(wear_level_set_alert_threshold(&wl, 50, 75) == HFSSS_OK,
+                "alert threshold update succeeds");
+
+    TEST_ASSERT(!wear_level_should_run_static(NULL, 100000000000ULL, 20, 1),
+                "static check rejects NULL ctx");
+    wl.enabled = 0;
+    TEST_ASSERT(!wear_level_should_run_static(&wl, 100000000000ULL, 20, 1),
+                "static check respects disabled wear leveling");
+    wl.enabled = 1;
+    wl.static_enabled = 0;
+    TEST_ASSERT(!wear_level_should_run_static(&wl, 100000000000ULL, 20, 1),
+                "static check respects disabled static wear leveling");
+    wl.static_enabled = 1;
+    wl.last_static_check_ts = 50000000000ULL;
+    TEST_ASSERT(!wear_level_should_run_static(&wl, 60000000000ULL, 20, 1),
+                "static check respects interval gate");
+    TEST_ASSERT(!wear_level_should_run_static(&wl, 160000000000ULL, 8, 1),
+                "static check rejects skew at threshold");
+    TEST_ASSERT(wear_level_should_run_static(&wl, 160000000000ULL, 9, 1),
+                "static check accepts skew above threshold");
+
+    u64 before_moves = wl.static_move_count;
+    ret = wear_level_run_static(&wl, NULL, NULL, NULL);
+    TEST_ASSERT(ret == HFSSS_OK, "wear_level_run_static succeeds as placeholder");
+    TEST_ASSERT(wl.static_move_count == before_moves + 1,
+                "wear_level_run_static increments static move count");
+    TEST_ASSERT(wl.last_static_check_ts > 0,
+                "wear_level_run_static records check timestamp");
+
+    TEST_ASSERT(wear_level_update_stats(NULL, NULL) == HFSSS_ERR_INVAL,
+                "wear stats reject NULL ctx");
+    TEST_ASSERT(wear_level_update_stats(&wl, NULL) == HFSSS_ERR_INVAL,
+                "wear stats reject NULL block manager");
+
+    ret = block_mgr_init(&mgr, 1, 1, 1, 1, 4);
+    TEST_ASSERT(ret == HFSSS_OK, "wear stats block manager init");
+
+    mgr.blocks[0].erase_count = 1;
+    mgr.blocks[1].erase_count = 5;
+    mgr.blocks[2].erase_count = 9;
+    mgr.blocks[3].erase_count = 13;
+
+    ret = wear_level_update_stats(&wl, &mgr);
+    TEST_ASSERT(ret == HFSSS_OK, "wear stats update succeeds");
+    TEST_ASSERT(wear_level_get_min_erase(&wl) == 1, "wear min erase tracked");
+    TEST_ASSERT(wear_level_get_max_erase(&wl) == 13, "wear max erase tracked");
+    TEST_ASSERT(wear_level_get_avg_erase(&wl) == 7, "wear avg erase tracked");
+
+    TEST_ASSERT(wear_level_check_wear(NULL, &mgr, 100) == WEAR_ALERT_NONE,
+                "wear check rejects NULL ctx");
+    TEST_ASSERT(wear_level_check_wear(&wl, NULL, 100) == WEAR_ALERT_NONE,
+                "wear check rejects NULL block manager");
+    TEST_ASSERT(wear_level_check_wear(&wl, &mgr, 0) == WEAR_ALERT_NONE,
+                "wear check rejects zero max PE cycles");
+
+    wl.wear_monitoring_enabled = false;
+    TEST_ASSERT(wear_level_check_wear(&wl, &mgr, 10) == WEAR_ALERT_NONE,
+                "wear check respects disabled monitoring");
+    wl.wear_monitoring_enabled = true;
+
+    wear_level_set_alert_threshold(&wl, 50, 90);
+    mgr.blocks[2].erase_count = 60;
+    mgr.blocks[3].erase_count = 60;
+    TEST_ASSERT(wear_level_check_wear(&wl, &mgr, 100) == WEAR_ALERT_WARNING,
+                "wear check returns warning at alert threshold");
+    TEST_ASSERT(wear_level_get_alert_count(&wl) == 1,
+                "wear warning count increments");
+
+    mgr.blocks[3].erase_count = 95;
+    TEST_ASSERT(wear_level_check_wear(&wl, &mgr, 100) == WEAR_ALERT_CRITICAL,
+                "wear check returns critical at critical threshold");
+    TEST_ASSERT(wear_level_get_critical_alert_count(&wl) == 1,
+                "wear critical count increments");
+
+    block_mgr_cleanup(&mgr);
+    wear_level_cleanup(NULL);
+    wear_level_cleanup(&wl);
+    TEST_ASSERT(wl.enabled == 0 && wl.static_threshold == 0,
+                "wear_level_cleanup clears context");
+}
+
 /* GC Tests */
 static int test_gc(void)
 {
@@ -579,7 +875,10 @@ int main(void)
     test_gc();
     test_ftl();
     test_block_mark_bad_from_free();
+    test_block_state_transition_matrix();
     test_gc_flush_dst_closes_block();
+    test_ecc_direct_paths();
+    test_wear_level_direct_paths();
 
     printf("\n========================================\n");
     printf("Test Summary\n");

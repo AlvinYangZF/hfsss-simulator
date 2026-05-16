@@ -241,7 +241,13 @@ COVERAGE_UT_BINS = $(COVERAGE_BIN_DIR)/test_common $(COVERAGE_BIN_DIR)/test_medi
 	$(COVERAGE_BIN_DIR)/test_die_dispatcher_unit \
 	$(COVERAGE_BIN_DIR)/test_die_dispatcher_mt \
 	$(COVERAGE_BIN_DIR)/test_die_dispatcher_engine \
+	$(COVERAGE_BIN_DIR)/test_die_dispatcher_faults \
+	$(COVERAGE_BIN_DIR)/test_ticket_lock \
 	$(COVERAGE_BIN_DIR)/test_profile_matrix \
+	$(COVERAGE_BIN_DIR)/test_media_multi_plane_concurrency \
+	$(COVERAGE_BIN_DIR)/test_channel_worker \
+	$(COVERAGE_BIN_DIR)/systest_nvme_cli_compat \
+	$(COVERAGE_BIN_DIR)/systest_fio_compat \
 	$(COVERAGE_BIN_DIR)/systest_phase7_integration \
 	$(COVERAGE_BIN_DIR)/test_reset_abort_race \
 	$(COVERAGE_BIN_DIR)/test_ftl_profile \

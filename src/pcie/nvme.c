@@ -472,6 +472,11 @@ int nvme_ctrl_process_admin_cmd(struct nvme_ctrl_ctx *ctrl, struct nvme_sq_entry
         status = NVME_SC_SUCCESS;
         break;
 
+    case NVME_ADMIN_FW_DOWNLOAD:
+    case NVME_ADMIN_FW_ACTIVATE:
+        status = NVME_SC_SUCCESS;
+        break;
+
     case NVME_ADMIN_SECURITY_SEND:
     case NVME_ADMIN_SECURITY_RECV:
         /* Opal SSC lock/unlock carrier (REQ-161). Handler lives in

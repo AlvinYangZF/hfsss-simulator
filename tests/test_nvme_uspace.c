@@ -2141,6 +2141,391 @@ static int test_qos_dispatch_records_latency(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+static int test_dispatch_io_edge_matrix(void)
+{
+    printf("\n=== Dispatch I/O edge matrix ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    nvme_uspace_config_small(&cfg);
+    int ret = nvme_uspace_dev_init(&dev, &cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "io-matrix: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    struct nvme_sq_entry sq;
+    struct nvme_cq_entry cpl;
+    u8 buf[8192];
+    memset(buf, 0xA7, sizeof(buf));
+
+    memset(&sq, 0, sizeof(sq));
+    sq.opcode = NVME_NVM_READ;
+    sq.nsid = 1;
+    TEST_ASSERT(nvme_uspace_dispatch_io_cmd(NULL, &sq, &cpl,
+                                            buf, sizeof(buf)) == HFSSS_ERR_INVAL,
+                "io-matrix: NULL dev rejected");
+    TEST_ASSERT(nvme_uspace_dispatch_io_cmd(&dev, NULL, &cpl,
+                                            buf, sizeof(buf)) == HFSSS_ERR_INVAL,
+                "io-matrix: NULL cmd rejected");
+    TEST_ASSERT(nvme_uspace_dispatch_io_cmd(&dev, &sq, NULL,
+                                            buf, sizeof(buf)) == HFSSS_ERR_INVAL,
+                "io-matrix: NULL cpl rejected");
+
+    struct nvme_uspace_dev blank;
+    memset(&blank, 0, sizeof(blank));
+    TEST_ASSERT(nvme_uspace_dispatch_io_cmd(&blank, &sq, &cpl,
+                                            buf, sizeof(buf)) == HFSSS_ERR_INVAL,
+                "io-matrix: uninitialized dev rejected");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_NVM_WRITE;
+    sq.nsid = 1;
+    sq.cdw12 = 1; /* 2 LBAs */
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl, buf, 4096);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "io-matrix: short WRITE buffer returns INVALID_FIELD");
+
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl, buf, sizeof(buf));
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "io-matrix: 2-LBA WRITE succeeds");
+
+    memset(buf, 0, sizeof(buf));
+    memset(&sq, 0, sizeof(sq));
+    sq.opcode = NVME_NVM_READ;
+    sq.nsid = 1;
+    sq.cdw12 = 1;
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl, buf, 4096);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "io-matrix: short READ buffer returns INVALID_FIELD");
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl, buf, sizeof(buf));
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0 && buf[0] == 0xA7,
+                "io-matrix: 2-LBA READ succeeds");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_NVM_FLUSH;
+    sq.nsid = 1;
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "io-matrix: FLUSH succeeds without data buffer");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_NVM_WRITE_ZEROES;
+    sq.nsid = 1;
+    sq.cdw10 = 4;
+    sq.cdw12 = 0;
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "io-matrix: WRITE_ZEROES succeeds");
+    memset(buf, 0xFF, 4096);
+    TEST_ASSERT(nvme_uspace_read(&dev, 1, 4, 1, buf) == HFSSS_OK &&
+                buf[0] == 0 && buf[4095] == 0,
+                "io-matrix: WRITE_ZEROES leaves zeros");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_NVM_DATASET_MANAGEMENT;
+    sq.nsid = 1;
+    sq.cdw10 = 0;
+    sq.cdw11 = 0;
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "io-matrix: DSM without deallocate is a no-op");
+
+    sq.cdw11 = NVME_DSM_ATTR_DEALLOCATE;
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "io-matrix: DSM deallocate without ranges rejected");
+
+    struct nvme_dsm_range range = { .attributes = 0, .nlb = 1, .slba = 0 };
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl,
+                                      &range, sizeof(range));
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "io-matrix: DSM deallocate range succeeds");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = 0xFE;
+    ret = nvme_uspace_dispatch_io_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_OPCODE,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "io-matrix: invalid I/O opcode rejected");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+static int test_dispatch_admin_edge_matrix(void)
+{
+    printf("\n=== Dispatch admin edge matrix ===\n");
+
+    struct nvme_uspace_dev dev;
+    struct nvme_uspace_config cfg;
+    nvme_uspace_config_small(&cfg);
+    int ret = nvme_uspace_dev_init(&dev, &cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "admin-matrix: dev_init");
+    nvme_uspace_dev_start(&dev);
+
+    struct nvme_sq_entry sq;
+    struct nvme_cq_entry cpl;
+    u8 page[4096];
+    memset(page, 0, sizeof(page));
+
+    memset(&sq, 0, sizeof(sq));
+    sq.opcode = NVME_ADMIN_IDENTIFY;
+    sq.cdw10 = 1;
+    TEST_ASSERT(nvme_uspace_dispatch_admin_cmd(NULL, &sq, &cpl,
+                                               page, sizeof(page)) == HFSSS_ERR_INVAL,
+                "admin-matrix: NULL dev rejected");
+    TEST_ASSERT(nvme_uspace_dispatch_admin_cmd(&dev, NULL, &cpl,
+                                               page, sizeof(page)) == HFSSS_ERR_INVAL,
+                "admin-matrix: NULL cmd rejected");
+    TEST_ASSERT(nvme_uspace_dispatch_admin_cmd(&dev, &sq, NULL,
+                                               page, sizeof(page)) == HFSSS_ERR_INVAL,
+                "admin-matrix: NULL cpl rejected");
+
+    struct nvme_uspace_dev blank;
+    memset(&blank, 0, sizeof(blank));
+    TEST_ASSERT(nvme_uspace_dispatch_admin_cmd(&blank, &sq, &cpl,
+                                               page, sizeof(page)) == HFSSS_ERR_INVAL,
+                "admin-matrix: uninitialized dev rejected");
+
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: IDENTIFY without data rejected");
+
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, page, sizeof(page));
+    struct nvme_identify_ctrl *id = (struct nvme_identify_ctrl *)page;
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0 && id->nn == 1,
+                "admin-matrix: IDENTIFY controller succeeds");
+
+    memset(page, 0, sizeof(page));
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_IDENTIFY;
+    sq.nsid = 1;
+    sq.cdw10 = 0;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, page, sizeof(page));
+    struct nvme_identify_ns *ns = (struct nvme_identify_ns *)page;
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0 &&
+                ns->nsze == cfg.sssim_cfg.total_lbas,
+                "admin-matrix: IDENTIFY namespace overlays geometry");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_GET_FEATURES;
+    sq.cdw10 = 0x7F;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: unsupported GET_FEATURES rejected");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_SET_FEATURES;
+    sq.cdw10 = 0x7F;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: unsupported SET_FEATURES rejected");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_GET_LOG_PAGE;
+    sq.cdw10 = 0xEE;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: GET_LOG_PAGE without buffer rejected");
+
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, page, sizeof(page));
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: unsupported log page rejected");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_CREATE_IO_CQ;
+    sq.cdw10 = 1 | ((64 - 1) << 16);
+    sq.cdw11 = 0x02;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "admin-matrix: CREATE_IO_CQ succeeds");
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_CMD_ID_CONFLICT,
+                                                NVME_STATUS_TYPE_CMD_SPEC),
+                "admin-matrix: duplicate CREATE_IO_CQ maps conflict");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_CREATE_IO_SQ;
+    sq.cdw10 = 1 | ((64 - 1) << 16);
+    sq.cdw11 = 1;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "admin-matrix: CREATE_IO_SQ succeeds");
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_CMD_ID_CONFLICT,
+                                                NVME_STATUS_TYPE_CMD_SPEC),
+                "admin-matrix: duplicate CREATE_IO_SQ maps conflict");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_DELETE_IO_CQ;
+    sq.cdw10 = 1;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status ==
+                NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                  NVME_STATUS_TYPE_CMD_SPEC),
+                "admin-matrix: DELETE_IO_CQ with SQ attached maps busy");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_DELETE_IO_SQ;
+    sq.cdw10 = 1;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "admin-matrix: DELETE_IO_SQ succeeds");
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: missing DELETE_IO_SQ rejected");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_DELETE_IO_CQ;
+    sq.cdw10 = 1;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "admin-matrix: DELETE_IO_CQ succeeds after SQ deletion");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_FORMAT_NVM;
+    sq.nsid = 1;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "admin-matrix: FORMAT_NVM succeeds");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_SANITIZE;
+    sq.cdw10 = 0;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status ==
+                NVME_BUILD_STATUS(NVME_SC_INTERNAL_DEVICE_ERROR,
+                                  NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: invalid SANITIZE maps internal error");
+
+    u8 fw[16] = { 'C', 'O', 'V', '8', '5', '.', '0', '0',
+                  1, 2, 3, 4, 5, 6, 7, 8 };
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_FW_DOWNLOAD;
+    sq.cdw10 = 3; /* 16 bytes */
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, fw, 8);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: short FW_DOWNLOAD rejected");
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, fw, sizeof(fw));
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "admin-matrix: FW_DOWNLOAD succeeds");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_FW_ACTIVATE;
+    sq.cdw10 = 1;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0 &&
+                memcmp(dev.fw_revision, fw, 8) == 0,
+                "admin-matrix: FW_ACTIVATE commits staged revision");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_SECURITY_SEND;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: short SECURITY_SEND rejected");
+
+    u8 sec[OPAL_CMD_FRAME_LEN];
+    build_opal_frame(sec, 0xFF, 1, NULL);
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, sec, sizeof(sec));
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: unsupported SECURITY_SEND op rejected");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_SECURITY_RECV;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, sec, 5);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: short SECURITY_RECV rejected");
+    build_opal_frame(sec, 0xFF, 1, NULL);
+    memset(&cpl, 0, sizeof(cpl));
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, sec, sizeof(sec));
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_FIELD,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: unsupported SECURITY_RECV op rejected");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = NVME_ADMIN_KEEP_ALIVE;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK && cpl.status == 0,
+                "admin-matrix: KEEP_ALIVE accepted");
+
+    memset(&sq, 0, sizeof(sq));
+    memset(&cpl, 0, sizeof(cpl));
+    sq.opcode = 0xFE;
+    ret = nvme_uspace_dispatch_admin_cmd(&dev, &sq, &cpl, NULL, 0);
+    TEST_ASSERT(ret == HFSSS_OK &&
+                cpl.status == NVME_BUILD_STATUS(NVME_SC_INVALID_OPCODE,
+                                                NVME_STATUS_TYPE_GENERIC),
+                "admin-matrix: invalid admin opcode rejected");
+
+    nvme_uspace_dev_stop(&dev);
+    nvme_uspace_dev_cleanup(&dev);
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     print_separator();
@@ -2177,6 +2562,8 @@ int main(void)
     test_qos_sla_rollback();
     test_qos_sla_rollback_callback_reentrancy();
     test_qos_dispatch_records_latency();
+    test_dispatch_io_edge_matrix();
+    test_dispatch_admin_edge_matrix();
 
     print_separator();
     printf("Test Summary\n");

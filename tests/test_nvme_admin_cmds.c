@@ -280,6 +280,45 @@ static void test_admin_identify_dispatch(void)
     nvme_ctrl_cleanup(&ctrl);
 }
 
+static void test_admin_opcode_acceptance_matrix(void)
+{
+    printf("\n=== Admin Opcode Acceptance Matrix ===\n");
+
+    struct nvme_ctrl_ctx ctrl;
+    struct nvme_sq_entry cmd;
+    struct nvme_cq_entry cpl;
+    int ret = nvme_ctrl_init(&ctrl);
+    TEST_ASSERT(ret == HFSSS_OK, "opcode matrix ctrl init");
+
+    const u8 accepted[] = {
+        NVME_ADMIN_CREATE_IO_SQ,
+        NVME_ADMIN_CREATE_IO_CQ,
+        NVME_ADMIN_DELETE_IO_SQ,
+        NVME_ADMIN_DELETE_IO_CQ,
+        NVME_ADMIN_ASYNC_EVENT,
+        NVME_ADMIN_KEEP_ALIVE,
+        NVME_ADMIN_FORMAT_NVM,
+        NVME_ADMIN_FW_DOWNLOAD,
+        NVME_ADMIN_FW_ACTIVATE,
+        NVME_ADMIN_SECURITY_SEND,
+        NVME_ADMIN_SECURITY_RECV,
+        NVME_ADMIN_SANITIZE,
+    };
+    for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
+        memset(&cmd, 0, sizeof(cmd));
+        memset(&cpl, 0xA5, sizeof(cpl));
+        cmd.opcode = accepted[i];
+        cmd.command_id = (u16)(200 + i);
+        ret = nvme_ctrl_process_admin_cmd(&ctrl, &cmd, &cpl);
+        TEST_ASSERT(ret == HFSSS_OK && cpl.status == NVME_SC_SUCCESS,
+                    "accepted admin opcode returns success status");
+        TEST_ASSERT(cpl.command_id == (u16)(200 + i),
+                    "accepted admin opcode preserves command id");
+    }
+
+    nvme_ctrl_cleanup(&ctrl);
+}
+
 int main(void)
 {
     print_separator();
@@ -297,6 +336,7 @@ int main(void)
     test_admin_get_log_page();
     test_admin_unsupported_opcode();
     test_admin_identify_dispatch();
+    test_admin_opcode_acceptance_matrix();
 
     print_separator();
     printf("Test Summary\n");

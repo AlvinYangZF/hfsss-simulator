@@ -66,6 +66,27 @@ release_coverage_lock() {
     [ -d "$LOCK_DIR" ] && rm -rf "$LOCK_DIR"
 }
 
+run_with_timeout() {
+    local timeout_s="$1"
+    shift
+
+    "$@" &
+    local pid=$!
+    (sleep "$timeout_s" && kill "$pid" 2>/dev/null) &
+    local watcher=$!
+
+    if wait "$pid" 2>/dev/null; then
+        kill "$watcher" 2>/dev/null
+        wait "$watcher" 2>/dev/null || true
+        return 0
+    fi
+
+    local rc=$?
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null || true
+    return "$rc"
+}
+
 acquire_coverage_lock
 # Release the lock if we exit before the full cleanup trap is installed below.
 trap 'release_coverage_lock' EXIT INT TERM
@@ -230,7 +251,7 @@ for casefile in "${E2E_COVERAGE_CASES[@]}"; do
     export HFSSS_GUEST_NVME_CTRL="/dev/nvme0"
     export COV_SSH_KEY="$SSH_KEY"
 
-    if timeout 120 bash "$case_path" > "$case_artifact_dir/case.stdout.log" 2>&1; then
+    if run_with_timeout 120 bash "$case_path" > "$case_artifact_dir/case.stdout.log" 2>&1; then
         echo "    PASS: $casefile"
     else
         rc=$?

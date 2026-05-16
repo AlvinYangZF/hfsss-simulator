@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <unistd.h>
 #include "common/log.h"
 #include "common/fault_inject.h"
 #include "media/cmd_engine.h"
@@ -416,6 +417,156 @@ static int test_persistence(void)
 
     /* Delete test file */
     remove(test_file);
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+static int test_persistence_checkpoint_edges(void)
+{
+    printf("\n=== Persistence Checkpoint Edge Tests ===\n");
+
+    struct media_config config;
+    memset(&config, 0, sizeof(config));
+    config.channel_count = 1;
+    config.chips_per_channel = 1;
+    config.dies_per_chip = 1;
+    config.planes_per_die = 1;
+    config.blocks_per_plane = 3;
+    config.pages_per_block = 4;
+    config.page_size = 4096;
+    config.spare_size = 64;
+    config.nand_type = NAND_TYPE_TLC;
+
+    const char *full_file = "test_media_full_edge.bin";
+    const char *inc_file = "test_media_inc_edge.bin";
+    const char *bad_file = "test_media_bad_edge.bin";
+    const char *ckpt_dir = "test_media_ckpt_dir";
+    const char *ckpt_full = "test_media_ckpt_dir/checkpoint.bin";
+    const char *ckpt_inc = "test_media_ckpt_dir/checkpoint_inc.bin";
+    remove(full_file);
+    remove(inc_file);
+    remove(bad_file);
+    remove(ckpt_full);
+    remove(ckpt_inc);
+    rmdir(ckpt_dir);
+
+    struct media_ctx ctx;
+    int ret = media_init(&ctx, &config);
+    TEST_ASSERT(ret == HFSSS_OK, "persist-edge: media_init succeeds");
+    if (ret != HFSSS_OK) {
+        return TEST_FAIL;
+    }
+
+    TEST_ASSERT(media_save(NULL, full_file) == HFSSS_ERR_INVAL,
+                "persist-edge: media_save NULL ctx rejected");
+    TEST_ASSERT(media_save(&ctx, NULL) == HFSSS_ERR_INVAL,
+                "persist-edge: media_save NULL path rejected");
+    TEST_ASSERT(media_save_incremental(NULL, inc_file) == HFSSS_ERR_INVAL,
+                "persist-edge: media_save_incremental NULL ctx rejected");
+    TEST_ASSERT(media_load(NULL, full_file) == HFSSS_ERR_INVAL,
+                "persist-edge: media_load NULL ctx rejected");
+    TEST_ASSERT(media_load(&ctx, "missing_media_file.bin") == HFSSS_ERR_IO,
+                "persist-edge: media_load missing file rejected");
+    TEST_ASSERT(media_create_checkpoint(NULL, ckpt_dir) == HFSSS_ERR_INVAL,
+                "persist-edge: create checkpoint NULL ctx rejected");
+    TEST_ASSERT(media_create_incremental_checkpoint(&ctx, NULL) == HFSSS_ERR_INVAL,
+                "persist-edge: incremental checkpoint NULL dir rejected");
+    TEST_ASSERT(media_restore_checkpoint(&ctx, NULL) == HFSSS_ERR_INVAL,
+                "persist-edge: restore checkpoint NULL dir rejected");
+
+    TEST_ASSERT(media_has_dirty_data(NULL) == 0,
+                "persist-edge: dirty query NULL returns false");
+    media_mark_all_clean(NULL);
+    media_mark_all_clean(&ctx);
+    TEST_ASSERT(media_has_dirty_data(&ctx) == 0,
+                "persist-edge: clean media reports no dirty data");
+
+    u8 data0[4096];
+    u8 data1[4096];
+    u8 spare[64];
+    memset(data0, 0x11, sizeof(data0));
+    memset(data1, 0x22, sizeof(data1));
+    memset(spare, 0xA5, sizeof(spare));
+
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 0, 0, data0, spare);
+    TEST_ASSERT(ret == HFSSS_OK, "persist-edge: program page0");
+    TEST_ASSERT(media_has_dirty_data(&ctx) == 1,
+                "persist-edge: programmed page marks media dirty");
+
+    ret = media_save(&ctx, full_file);
+    TEST_ASSERT(ret == HFSSS_OK, "persist-edge: full media_save succeeds");
+    ret = media_create_checkpoint(&ctx, ckpt_dir);
+    TEST_ASSERT(ret == HFSSS_OK, "persist-edge: create checkpoint succeeds");
+    TEST_ASSERT(media_has_dirty_data(&ctx) == 0,
+                "persist-edge: checkpoint marks data clean");
+
+    ret = media_nand_program(&ctx, 0, 0, 0, 0, 0, 1, data1, spare);
+    TEST_ASSERT(ret == HFSSS_OK, "persist-edge: program page1 after full checkpoint");
+    TEST_ASSERT(media_has_dirty_data(&ctx) == 1,
+                "persist-edge: second program marks media dirty");
+
+    ret = media_save_incremental(&ctx, inc_file);
+    TEST_ASSERT(ret == HFSSS_OK, "persist-edge: direct incremental save succeeds");
+    ret = media_create_incremental_checkpoint(&ctx, ckpt_dir);
+    TEST_ASSERT(ret == HFSSS_OK, "persist-edge: create incremental checkpoint succeeds");
+    TEST_ASSERT(media_has_dirty_data(&ctx) == 0,
+                "persist-edge: incremental checkpoint marks data clean");
+
+    struct media_ctx restored;
+    memset(&restored, 0, sizeof(restored));
+    ret = media_restore_checkpoint(&restored, ckpt_dir);
+    TEST_ASSERT(ret == HFSSS_OK, "persist-edge: restore full checkpoint into fresh ctx");
+
+    u8 read_buf[4096];
+    memset(read_buf, 0, sizeof(read_buf));
+    ret = media_nand_read(&restored, 0, 0, 0, 0, 0, 0, read_buf, NULL);
+    TEST_ASSERT(ret == HFSSS_OK && memcmp(read_buf, data0, sizeof(read_buf)) == 0,
+                "persist-edge: restored checkpoint contains page0");
+    ret = media_nand_read(&restored, 0, 0, 0, 0, 0, 1, read_buf, NULL);
+    TEST_ASSERT(ret == HFSSS_ERR_NOENT,
+                "persist-edge: full checkpoint predates page1");
+
+    ret = media_load(&restored, ckpt_inc);
+    TEST_ASSERT(ret == HFSSS_ERR_IO,
+                "persist-edge: incremental load reports missing BBT tail");
+    memset(read_buf, 0, sizeof(read_buf));
+    ret = media_nand_read(&restored, 0, 0, 0, 0, 0, 1, read_buf, NULL);
+    TEST_ASSERT(ret == HFSSS_OK && memcmp(read_buf, data1, sizeof(read_buf)) == 0,
+                "persist-edge: incremental load applies page1");
+
+    struct media_ctx mismatch;
+    struct media_config mismatch_cfg = config;
+    mismatch_cfg.pages_per_block = 8;
+    memset(&mismatch, 0, sizeof(mismatch));
+    ret = media_init(&mismatch, &mismatch_cfg);
+    TEST_ASSERT(ret == HFSSS_OK, "persist-edge: mismatch media_init succeeds");
+    ret = media_load(&mismatch, full_file);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "persist-edge: media_load rejects initialized ctx with mismatched config");
+
+    FILE *bad = fopen(bad_file, "wb");
+    if (bad) {
+        u32 bad_magic = 0x12345678;
+        u32 version = 2;
+        fwrite(&bad_magic, sizeof(bad_magic), 1, bad);
+        fwrite(&version, sizeof(version), 1, bad);
+        fclose(bad);
+    }
+    struct media_ctx bad_ctx;
+    memset(&bad_ctx, 0, sizeof(bad_ctx));
+    ret = media_load(&bad_ctx, bad_file);
+    TEST_ASSERT(ret == HFSSS_ERR_INVAL,
+                "persist-edge: media_load rejects bad magic");
+
+    media_cleanup(&mismatch);
+    media_cleanup(&restored);
+    media_cleanup(&ctx);
+    remove(full_file);
+    remove(inc_file);
+    remove(bad_file);
+    remove(ckpt_full);
+    remove(ckpt_inc);
+    rmdir(ckpt_dir);
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
@@ -1919,6 +2070,7 @@ int main(void)
     test_nand_hierarchy();
     test_media();
     test_persistence();
+    test_persistence_checkpoint_edges();
     test_cmd_state_machine();
     test_cmd_phase2_commands();
     test_cmd_phase3_suspend_resume();
