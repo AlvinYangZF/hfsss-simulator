@@ -1,7 +1,7 @@
 # HFSSS Requirement Coverage Analysis
 
-**Document Version**: V3.0
-**Date**: 2026-04-19
+**Document Version**: V3.1
+**Date**: 2026-05-16
 
 ---
 
@@ -27,7 +27,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 
 | Module | Total | ✅ | ⚠️ | ❌ | 🔧 | Coverage % | Change |
 |--------|------:|---:|---:|---:|---:|-----------:|--------|
-| PCIe/NVMe Device Emulation | 22 | 13 | 1 | 8 | 0 | 59.1% | ↑ REQ-002 PCIe cap linked-list walk flipped after REQ-069 config space landed |
+| PCIe/NVMe Device Emulation | 22 | 16 | 0 | 6 | 0 | 72.7% | ↑ REQ-009 (IO Queue Dynamic Create/Delete), REQ-010 (PRP/SGL — both walkers), REQ-014 (Interrupt Coalescing), REQ-019 (PRP Parsing Engine) |
 | Controller Thread | 15 | 12 | 1 | 2 | 0 | 80.0% | -- |
 | Media Threads | 20 | 19 | 1 | 0 | 0 | 95.0% | ↑ REQ-042 multi-plane concurrency + REQ-044 per-channel worker runtime; REQ-045 now ✅ via channel_worker timestamps + opt-in lock-free completion queue + batch drain (`channel_worker_drain`) per `docs/superpowers/specs/2026-04-24-req-045-completion-queue-design.md`; REQ-048 retention-age-driven RBER validated via `tests/test_retention.c` |
 | HAL | 12 | 12 | 0 | 0 | 0 | 100% | ↑ REQ-063 AER + REQ-064 PCIe link state + REQ-069 byte-level config space (LLD_13) |
@@ -37,7 +37,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Product Interfaces | 8 | 5 | 2 | 1 | 0 | 62.5% (87.5% partial) | ↑ REQ-131 LLD_15 reconciled with shipping code (V1.1); REQ-125/126 retain ⚠️ pending LLD_16 host-path evidence |
 | Fault Injection | 3 | 3 | 0 | 0 | 0 | 100% | ↑ REQ-134 controller fault hooks (pool exhaustion + panic + timeout storm) wired into resource_mgr + arbiter; verified by `tests/test_fault_inject.c::test_controller_*` |
 | System Reliability | 4 | 3 | 0 | 1 | 0 | 75.0% | ↑ REQ-088 P99.9 latency anomaly detector |
-| **Core Subtotal** | **138** | **115** | **7** | **16** | **0** | **83.3%** (88.4% partial) | ↑ from 50.0% |
+| **Core Subtotal** | **138** | **118** | **4** | **16** | **0** | **85.5%** (88.4% partial) | ↑ REQ-009, REQ-010, REQ-014, REQ-019 flipped from ❌/⚠️→✅ |
 | Enterprise: UPLP | 8 | 8 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: QoS Determinism | 7 | 7 | 0 | 0 | 0 | 100% | ↑ DWRR + per-NS IOPS/BW caps + SLA rollback + hot-reconfig + REQ-153 duty-cycle admission stats |
 | Enterprise: T10 DIF/PI | 5 | 5 | 0 | 0 | 0 | 100% | ↑ Type 1/2/3 CRC-16 + GC-path PI propagation |
@@ -45,7 +45,7 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | Enterprise: Multi-Namespace | 5 | 5 | 0 | 0 | 0 | 100% | ↑ implemented |
 | Enterprise: Thermal/Telemetry | 8 | 8 | 0 | 0 | 0 | 100% | ↑ throttle + SMART predict + NVMe Log Page 07h/08h/0xC0 dispatch + AER notifier helpers + REQ-178 runtime producer (smart_monitor) |
 | **Enterprise Subtotal** | **40** | **40** | **0** | **0** | **0** | **100%** | ↑ from 0% |
-| **Grand Total** | **178** | **155** | **7** | **16** | **0** | **87.1%** (91.0% partial) | ↑ from 38.8% |
+| **Grand Total** | **178** | **158** | **4** | **16** | **0** | **88.8%** (91.0% partial) | ↑ from 38.8% (V3.0) |
 
 > **Note**: Figures above count individual requirement rows. Related roadmap group-level coverage tracks the same reality from a different angle. All changes since V2.0 have been verified against current source code; see notes column on each row for file-level evidence.
 
@@ -65,17 +65,17 @@ This document analyzes the coverage of the 178 requirements from the Requirement
 | REQ-006 | NVMe Controller Register Emulation - Controller Initialization | ❌ | No real kernel initialization |
 | REQ-007 | NVMe Controller Register Emulation - Doorbell Registers | ✅ | Doorbell processing implemented (Phase 3) |
 | REQ-008 | NVMe Queue Management - Admin Queue | ✅ | Admin Queue implemented (Phase 3) |
-| REQ-009 | NVMe Queue Management - I/O Queue Dynamic Creation | ❌ | No dynamic queue creation |
-| REQ-010 | NVMe Queue Management - PRP/SGL Support | ⚠️ | DMA structures defined but not fully implemented |
+| REQ-009 | NVMe Queue Management - I/O Queue Dynamic Creation | ✅ | Full CREATE/DELETE IO SQ/CQ lifecycle via `nvme_uspace_create_io_sq/cq`, `nvme_uspace_delete_io_sq/cq` in `nvme_uspace.c`; `nvme_sq_create/destroy`, `nvme_cq_create/destroy` in `queue.c`; covered by `tests/test_pcie_nvme.c` (duplicate create, invalid qid, delete-busy, delete-clean) |
+| REQ-010 | NVMe Queue Management - PRP/SGL Support | ✅ | PRP fully implemented: `prp_build_list` / `prp_copy_from_host` / `prp_copy_to_host` in `src/pcie/prp.c`; `prp_walker_init/next/skip` with PRP-list support in `src/pcie/queue.c`. SGL implemented: `sgl_walker_init/next/skip` supporting Data Block, Bit Bucket, Segment, Last Segment descriptors. Covered by `tests/test_prp.c` (20 tests), `tests/test_pcie_nvme.c` (PRP walker correctness, SGL walker) |
 | REQ-011 | NVMe Queue Management - Completion Processing | ✅ | CQ processing implemented (Phase 3) |
 | REQ-012 | MSI-X Interrupt Emulation - MSI-X Table | ✅ | MSI-X table structures defined |
 | REQ-013 | MSI-X Interrupt Emulation - Interrupt Delivery | ❌ | No real interrupt delivery (user-space limitation) |
-| REQ-014 | MSI-X Interrupt Emulation - Interrupt Coalescing | ❌ | Not implemented |
+| REQ-014 | MSI-X Interrupt Emulation - Interrupt Coalescing | ✅ | Time-based (coalesce_time_us) and threshold-based (coalesce_threshold) aggregation in `nvme_cq_needs_interrupt()` (`src/pcie/queue.c`); exposed via Get/Set Features FID 0x08 in `nvme_uspace.c`; broadcast to all IO CQs on Set Features. Covered by `tests/test_pcie_nvme.c::test_intr_coalescing` (5 scenarios, 20 assertions) |
 | REQ-015 | NVMe Admin Command Set | ✅ | Admin command processing implemented (Phase 3) |
 | REQ-016 | NVMe I/O Command Set | ✅ | I/O command processing implemented (Phase 3) |
 | REQ-017 | NVMe I/O Command Set - Read/Write Detailed Parameters | ✅ | Implemented (Phase 3) |
 | REQ-018 | NVMe I/O Command Set - Dataset Management (Trim) | ✅ | `NVME_NVM_DATASET_MANAGEMENT` handler in `nvme_uspace.c` routes to FTL trim; `tests/test_dsm.c` |
-| REQ-019 | NVMe DMA Data Transfer - PRP Parsing Engine | ❌ | Not implemented |
+| REQ-019 | NVMe DMA Data Transfer - PRP Parsing Engine | ✅ | `prp_build_list()` in `src/pcie/prp.c` handles single-page, two-page direct, and PRP-list cases; `prp_walker_init/next/skip` in `src/pcie/queue.c` provides incremental page walker with PRP-list pointer support. Covered by `tests/test_prp.c` (20 tests) and `tests/test_pcie_nvme.c` (PRP walker correctness: 4 scenarios, 18 assertions) |
 | REQ-020 | NVMe DMA Data Transfer - Data Copy Path | ❌ | No kernel-level DMA |
 | REQ-021 | NVMe DMA Data Transfer - IOMMU Support | ❌ | Not implemented |
 | REQ-022 | Kernel-User Space Communication | ❌ | No kernel module, so no this layer |

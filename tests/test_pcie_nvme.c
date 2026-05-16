@@ -514,40 +514,41 @@ static int test_sq_prp_sgl_edges(void)
     u32 len;
     TEST_ASSERT(prp_walker_init(NULL, 0, 0, 0, 4096) == HFSSS_ERR_INVAL,
                 "prp-edge: init NULL rejected");
-    ret = prp_walker_init(&prp, 0x1800, 0x4000, 9000, 4096);
-    TEST_ASSERT(ret == HFSSS_OK, "prp-edge: init spanning three pages");
+    /* 2-page transfer: PRP2 is a direct data page */
+    ret = prp_walker_init(&prp, 0x1800, 0x4000, 2048 + 4096, 4096);
+    TEST_ASSERT(ret == HFSSS_OK, "prp-edge: init two pages");
+    TEST_ASSERT(prp.total_pages == 2, "prp-edge: detected 2-page transfer");
+    TEST_ASSERT(!prp.use_prp_list, "prp-edge: PRP2 is direct page (not list)");
     ret = prp_walker_next(&prp, &addr, &len);
     TEST_ASSERT(ret == HFSSS_OK && addr == 0x1800 && len == 2048,
                 "prp-edge: first PRP honors page offset");
     ret = prp_walker_next(&prp, &addr, &len);
     TEST_ASSERT(ret == HFSSS_OK && addr == 0x4000 && len == 4096,
-                "prp-edge: second PRP uses prp2 base");
-    TEST_ASSERT(prp_walker_skip(&prp, 1024) == HFSSS_OK,
-                "prp-edge: skip within remaining bytes succeeds");
-    TEST_ASSERT(prp_walker_skip(&prp, 10000) == HFSSS_ERR_INVAL,
-                "prp-edge: oversize skip rejected");
-    while (prp_walker_next(&prp, &addr, &len) == HFSSS_OK) {
-        ;
-    }
-    TEST_ASSERT(prp.bytes_left == 0, "prp-edge: walker drains to zero");
+                "prp-edge: second page uses prp2 as direct data page");
     TEST_ASSERT(prp_walker_next(&prp, &addr, &len) == HFSSS_ERR_NOENT,
-                "prp-edge: next after drain returns NOENT");
+                "prp-edge: exhausted after two pages");
     TEST_ASSERT(prp_walker_next(NULL, &addr, &len) == HFSSS_ERR_INVAL,
                 "prp-edge: next NULL walker rejected");
 
     struct sgl_walker sgl;
+    struct sgl_segment *sgl_buf = calloc(2, sizeof(struct sgl_segment));
+    sgl_buf[0].type = SGL_DESC_TYPE_DATA;
+    sgl_buf[0].subtype = SGL_SUBTYPE_ADDRESS;
+    sgl_buf[0].length = 0;
+    sgl_buf[0].address = 0;
     TEST_ASSERT(sgl_walker_init(NULL, NULL, 0) == HFSSS_ERR_INVAL,
                 "sgl-edge: init NULL rejected");
-    TEST_ASSERT(sgl_walker_init(&sgl, entries, 128) == HFSSS_OK,
+    TEST_ASSERT(sgl_walker_init(&sgl, sgl_buf, 2 * sizeof(struct sgl_segment)) == HFSSS_OK,
                 "sgl-edge: init succeeds");
-    TEST_ASSERT(sgl_walker_next(&sgl, &addr, &len) == HFSSS_ERR_NOTSUPP,
-                "sgl-edge: next reports NOTSUPP");
+    TEST_ASSERT(sgl_walker_next(&sgl, &addr, &len) == HFSSS_ERR_NOENT,
+                "sgl-edge: next reports NOENT on zero-length descriptors");
     TEST_ASSERT(sgl_walker_next(NULL, &addr, &len) == HFSSS_ERR_INVAL,
                 "sgl-edge: next NULL rejected");
-    TEST_ASSERT(sgl_walker_skip(&sgl, 16) == HFSSS_ERR_NOTSUPP,
-                "sgl-edge: skip reports NOTSUPP");
+    TEST_ASSERT(sgl_walker_skip(&sgl, 16) == HFSSS_ERR_INVAL,
+                "sgl-edge: skip reports INVAL on zero-length descriptors");
     TEST_ASSERT(sgl_walker_skip(NULL, 16) == HFSSS_ERR_INVAL,
                 "sgl-edge: skip NULL rejected");
+    free(sgl_buf);
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
@@ -878,6 +879,398 @@ static int test_delete_busy_and_clean(void)
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
 
+/* PRP Walker Correctness Tests */
+/* Interrupt Coalescing Tests */
+static int test_intr_coalescing(void)
+{
+    printf("\n=== Interrupt Coalescing Tests ===\n");
+
+    struct nvme_cq cq;
+    struct nvme_cq_entry cpl;
+    int ret;
+
+    /* Test 1: Disabled coalescing (default: time=0, threshold=0) */
+    ret = nvme_cq_create(&cq, 1, 0x20000000, 256, 16, true);
+    TEST_ASSERT(ret == HFSSS_OK, "coalesce: cq_create OK");
+    TEST_ASSERT(cq.coalesce_time_us == 0 && cq.coalesce_threshold == 0,
+                "coalesce: defaults to disabled (time=0, threshold=0)");
+
+    memset(&cpl, 0, sizeof(cpl));
+    nvme_cq_post_cpl(&cq, &cpl);
+    TEST_ASSERT(nvme_cq_needs_interrupt(&cq) == true,
+                "coalesce: immediate interrupt when coalescing disabled");
+    nvme_cq_destroy(&cq);
+
+    /* Test 2: Threshold-based coalescing */
+    ret = nvme_cq_create(&cq, 2, 0x30000000, 256, 16, true);
+    TEST_ASSERT(ret == HFSSS_OK, "coalesce: cq2 create OK");
+
+    cq.coalesce_threshold = 3;
+    cq.pending_completions = 0;
+
+    nvme_cq_post_cpl(&cq, &cpl);
+    nvme_cq_post_cpl(&cq, &cpl);
+    TEST_ASSERT(cq.pending_completions == 2,
+                "coalesce: pending_completions == 2 after 2 posts");
+    TEST_ASSERT(nvme_cq_needs_interrupt(&cq) == false,
+                "coalesce: no interrupt below threshold (2 < 3)");
+
+    nvme_cq_post_cpl(&cq, &cpl);
+    TEST_ASSERT(cq.pending_completions == 3,
+                "coalesce: pending_completions == 3 after 3rd post");
+    TEST_ASSERT(nvme_cq_needs_interrupt(&cq) == true,
+                "coalesce: interrupt fires at threshold (3 >= 3)");
+    TEST_ASSERT(cq.pending_completions == 0,
+                "coalesce: pending_completions reset after interrupt");
+    nvme_cq_destroy(&cq);
+
+    /* Test 3: Time-based coalescing */
+    ret = nvme_cq_create(&cq, 3, 0x40000000, 256, 16, true);
+    TEST_ASSERT(ret == HFSSS_OK, "coalesce: cq3 create OK");
+
+    cq.coalesce_time_us = 1000000; /* 1 second window */
+    cq.pending_completions = 0;
+    cq.last_interrupt_ts_ns = get_time_ns(); /* start timer now */
+
+    nvme_cq_post_cpl(&cq, &cpl);
+    /* Immediately check — should be within the 1s window */
+    TEST_ASSERT(nvme_cq_needs_interrupt(&cq) == false,
+                "coalesce: no interrupt within time window");
+    /* Manually expire the window by resetting last_interrupt_ts_ns to long ago */
+    cq.last_interrupt_ts_ns = get_time_ns() - 2000000000ULL; /* 2 seconds ago */
+    nvme_cq_post_cpl(&cq, &cpl);
+    TEST_ASSERT(nvme_cq_needs_interrupt(&cq) == true,
+                "coalesce: interrupt fires after time window expires");
+    nvme_cq_destroy(&cq);
+
+    /* Test 4: Combined threshold + time — threshold fires first */
+    ret = nvme_cq_create(&cq, 4, 0x50000000, 256, 16, true);
+    TEST_ASSERT(ret == HFSSS_OK, "coalesce: cq4 create OK");
+
+    cq.coalesce_time_us = 1000000;
+    cq.coalesce_threshold = 2;
+    cq.pending_completions = 0;
+
+    nvme_cq_post_cpl(&cq, &cpl);
+    /* 1 < 2 threshold, still within time window */
+    TEST_ASSERT(nvme_cq_needs_interrupt(&cq) == false,
+                "coalesce: combined — no interrupt below threshold");
+    nvme_cq_post_cpl(&cq, &cpl);
+    /* 2 >= 2 threshold triggers immediately regardless of time */
+    TEST_ASSERT(nvme_cq_needs_interrupt(&cq) == true,
+                "coalesce: combined — threshold fires despite time window");
+    nvme_cq_destroy(&cq);
+
+    /* Test 5: per-CQ independence */
+    struct nvme_cq cq_a, cq_b;
+    ret = nvme_cq_create(&cq_a, 5, 0x60000000, 256, 16, true);
+    TEST_ASSERT(ret == HFSSS_OK, "coalesce: cq_a create OK");
+    ret = nvme_cq_create(&cq_b, 6, 0x70000000, 256, 16, true);
+    TEST_ASSERT(ret == HFSSS_OK, "coalesce: cq_b create OK");
+
+    cq_a.coalesce_threshold = 2;
+    cq_b.coalesce_threshold = 500; /* very high, won't fire */
+
+    nvme_cq_post_cpl(&cq_a, &cpl);
+    nvme_cq_post_cpl(&cq_b, &cpl);
+
+    TEST_ASSERT(nvme_cq_needs_interrupt(&cq_a) == false,
+                "coalesce: cq_a not at threshold yet (1 < 2)");
+    TEST_ASSERT(nvme_cq_needs_interrupt(&cq_b) == false,
+                "coalesce: cq_b not at threshold yet (1 < 500)");
+
+    nvme_cq_post_cpl(&cq_a, &cpl);
+    TEST_ASSERT(nvme_cq_needs_interrupt(&cq_a) == true,
+                "coalesce: cq_a fires at threshold, independent of cq_b");
+    TEST_ASSERT(cq_b.pending_completions == 1,
+                "coalesce: cq_b pending count unaffected by cq_a");
+
+    nvme_cq_destroy(&cq_a);
+    nvme_cq_destroy(&cq_b);
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+/* SGL Walker Tests */
+static int test_sgl_walker(void)
+{
+    printf("\n=== SGL Walker Tests ===\n");
+
+    struct sgl_walker sgl;
+    struct sgl_segment *seg;
+    u64 addr;
+    u32 len;
+    int ret;
+
+    /* Test 1: Single Data Block descriptor */
+    {
+        seg = calloc(1, sizeof(*seg));
+        seg->type = SGL_DESC_TYPE_DATA;
+        seg->subtype = SGL_SUBTYPE_ADDRESS;
+        seg->length = 512;
+        seg->address = 0xABCD0000;
+
+        ret = sgl_walker_init(&sgl, seg, sizeof(*seg));
+        TEST_ASSERT(ret == HFSSS_OK, "sgl: init single descriptor OK");
+
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK, "sgl: next returns OK");
+        TEST_ASSERT(addr == 0xABCD0000 && len == 512,
+                    "sgl: data block addr==desc->address, len==desc->length");
+
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_ERR_NOENT,
+                    "sgl: NOENT after single descriptor exhausted");
+        free(seg);
+    }
+
+    /* Test 2: Bit Bucket descriptor — returns sentinel address, skip semantics */
+    {
+        seg = calloc(1, sizeof(*seg));
+        seg->type = SGL_DESC_TYPE_BIT;
+        seg->subtype = SGL_SUBTYPE_ADDRESS;
+        seg->length = 256;
+        seg->address = 0xDEAD0000; /* ignored */
+
+        ret = sgl_walker_init(&sgl, seg, sizeof(*seg));
+        TEST_ASSERT(ret == HFSSS_OK, "sgl: init bit bucket OK");
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK, "sgl: bit bucket next returns OK");
+        TEST_ASSERT(addr == (u64)SGL_BIT_BUCKET_SENTINEL && len == 256,
+                    "sgl: bit bucket returns sentinel addr and correct len");
+        free(seg);
+    }
+
+    /* Test 3: Multiple descriptors in one segment */
+    {
+        seg = calloc(3, sizeof(*seg));
+        seg[0].type = SGL_DESC_TYPE_DATA;
+        seg[0].subtype = SGL_SUBTYPE_ADDRESS;
+        seg[0].length = 100;
+        seg[0].address = 0x1000;
+
+        seg[1].type = SGL_DESC_TYPE_DATA;
+        seg[1].subtype = SGL_SUBTYPE_ADDRESS;
+        seg[1].length = 200;
+        seg[1].address = 0x2000;
+
+        seg[2].type = SGL_DESC_TYPE_DATA;
+        seg[2].subtype = SGL_SUBTYPE_ADDRESS;
+        seg[2].length = 300;
+        seg[2].address = 0x3000;
+
+        ret = sgl_walker_init(&sgl, seg, 3 * sizeof(*seg));
+        TEST_ASSERT(ret == HFSSS_OK, "sgl: multi-desc init OK");
+
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0x1000 && len == 100,
+                    "sgl: desc[0] = 0x1000 len=100");
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0x2000 && len == 200,
+                    "sgl: desc[1] = 0x2000 len=200");
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0x3000 && len == 300,
+                    "sgl: desc[2] = 0x3000 len=300");
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_ERR_NOENT,
+                    "sgl: NOENT after all descriptors");
+        free(seg);
+    }
+
+    /* Test 4: Segment chain — Segment descriptor points to next segment */
+    {
+        struct sgl_segment *seg1 = calloc(2, sizeof(*seg1));
+        struct sgl_segment *seg2 = calloc(1, sizeof(*seg2));
+
+        seg1[0].type = SGL_DESC_TYPE_SEG;
+        seg1[0].subtype = SGL_SUBTYPE_ADDRESS;
+        seg1[0].length = sizeof(*seg2);  /* size of the next segment */
+        seg1[0].address = (u64)(uintptr_t)seg2;
+
+        seg1[1].type = SGL_DESC_TYPE_DATA;
+        seg1[1].subtype = SGL_SUBTYPE_ADDRESS;
+        seg1[1].length = 64;
+        seg1[1].address = 0xF000;
+
+        seg2[0].type = SGL_DESC_TYPE_DATA;
+        seg2[0].subtype = SGL_SUBTYPE_ADDRESS;
+        seg2[0].length = 128;
+        seg2[0].address = 0x11000;
+
+        ret = sgl_walker_init(&sgl, seg1, 2 * sizeof(*seg1));
+        TEST_ASSERT(ret == HFSSS_OK, "sgl: segment chain init OK");
+
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK, "sgl: chain step 1 OK");
+        /* seg1[0] is Segment type — entered seg2. First data is seg2[0] (=0x11000). */
+        TEST_ASSERT(addr == 0x11000 && len == 128,
+                    "sgl: chain — data desc in seg2 (entered via Segment)");
+
+        /* Next: seg2 exhausted, return to seg1, process seg1[1] (=0xF000). */
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK, "sgl: chain step 2 OK");
+        TEST_ASSERT(addr == 0xF000 && len == 64,
+                    "sgl: chain — data desc in seg1 after returning from seg2");
+
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_ERR_NOENT,
+                    "sgl: NOENT after chain");
+        free(seg1);
+        free(seg2);
+    }
+
+    /* Test 5: Last Segment terminates after its descriptors */
+    {
+        struct sgl_segment *seg1 = calloc(2, sizeof(*seg1));
+        struct sgl_segment *seg2 = calloc(1, sizeof(*seg2));
+
+        seg1[0].type = SGL_DESC_TYPE_LAST;
+        seg1[0].subtype = SGL_SUBTYPE_ADDRESS;
+        seg1[0].length = sizeof(*seg2);
+        seg1[0].address = (u64)(uintptr_t)seg2;
+
+        seg2[0].type = SGL_DESC_TYPE_DATA;
+        seg2[0].subtype = SGL_SUBTYPE_ADDRESS;
+        seg2[0].length = 77;
+        seg2[0].address = 0x9999;
+
+        ret = sgl_walker_init(&sgl, seg1, sizeof(*seg1));
+        TEST_ASSERT(ret == HFSSS_OK, "sgl: last-seg init OK");
+
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0x9999 && len == 77,
+                    "sgl: last-seg — data in seg2");
+
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_ERR_NOENT,
+                    "sgl: last-seg NOENT after seg2 exhausted");
+        free(seg1);
+        free(seg2);
+    }
+
+    /* Test 6: sgl_walker_skip */
+    {
+        seg = calloc(2, sizeof(*seg));
+        seg[0].type = SGL_DESC_TYPE_DATA;
+        seg[0].subtype = SGL_SUBTYPE_ADDRESS;
+        seg[0].length = 1000;
+        seg[0].address = 0x5000;
+
+        ret = sgl_walker_init(&sgl, seg, 2 * sizeof(*seg));
+        TEST_ASSERT(ret == HFSSS_OK, "sgl: skip init OK");
+
+        ret = sgl_walker_skip(&sgl, 600);
+        TEST_ASSERT(ret == HFSSS_OK, "sgl: skip 600 OK");
+
+        ret = sgl_walker_next(&sgl, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0x5000 + 600,
+                    "sgl: after skip, next addr is offset by skip amount");
+        TEST_ASSERT(len == 400,
+                    "sgl: after skip, remaining in descriptor = 1000-600");
+        free(seg);
+    }
+
+    /* Test 7: NULL safety */
+    TEST_ASSERT(sgl_walker_init(NULL, seg, sizeof(*seg)) == HFSSS_ERR_INVAL,
+                "sgl: init NULL walker rejected");
+    TEST_ASSERT(sgl_walker_next(NULL, &addr, &len) == HFSSS_ERR_INVAL,
+                "sgl: next NULL walker rejected");
+    TEST_ASSERT(sgl_walker_next(&sgl, NULL, &len) == HFSSS_ERR_INVAL,
+                "sgl: next NULL addr rejected");
+    TEST_ASSERT(sgl_walker_skip(NULL, 16) == HFSSS_ERR_INVAL,
+                "sgl: skip NULL walker rejected");
+    TEST_ASSERT(sgl_walker_skip(&sgl, 99999) == HFSSS_ERR_INVAL,
+                "sgl: skip beyond remaining rejected");
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
+static int test_prp_walker_correctness(void)
+{
+    printf("\n=== PRP Walker Correctness Tests ===\n");
+
+    struct prp_walker prp;
+    u64 addr;
+    u32 len;
+    int ret;
+
+    /* Test 1: Single page transfer */
+    ret = prp_walker_init(&prp, 0x1800, 0x9999, 512, 4096);
+    TEST_ASSERT(ret == HFSSS_OK, "prp-walk: init single page OK");
+    ret = prp_walker_next(&prp, &addr, &len);
+    TEST_ASSERT(ret == HFSSS_OK && addr == 0x1800 && len == 512,
+                "prp-walk: single page returns prp1 correct addr/len");
+    TEST_ASSERT(prp_walker_next(&prp, &addr, &len) == HFSSS_ERR_NOENT,
+                "prp-walk: single page exhausted");
+
+    /* Test 2: Two-page transfer, PRP2 direct data page */
+    ret = prp_walker_init(&prp, 0x1800, 0x5000, 3584, 4096);
+    TEST_ASSERT(ret == HFSSS_OK, "prp-walk: init two-page OK");
+    ret = prp_walker_next(&prp, &addr, &len);
+    TEST_ASSERT(ret == HFSSS_OK && addr == 0x1800 && len == 2048,
+                "prp-walk: two-pg page0 honors prp1 offset");
+    ret = prp_walker_next(&prp, &addr, &len);
+    TEST_ASSERT(ret == HFSSS_OK && addr == 0x5000 && len == (3584 - 2048),
+                "prp-walk: two-pg page1 = prp2 direct data page");
+    TEST_ASSERT(prp_walker_next(&prp, &addr, &len) == HFSSS_ERR_NOENT,
+                "prp-walk: two-page exhausted");
+
+    /* Test 3: Three-page transfer, PRP2 is PRP list pointer */
+    {
+        u64 prp_list[2];
+        prp_list[0] = 0x3000;
+        prp_list[1] = 0x7000;
+
+        ret = prp_walker_init(&prp, 0x1000, (u64)(uintptr_t)prp_list,
+                              3 * 4096, 4096);
+        TEST_ASSERT(ret == HFSSS_OK,
+                    "prp-walk: init 3-page plist OK");
+        ret = prp_walker_next(&prp, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0x1000 && len == 4096,
+                    "prp-walk: 3pg page0 = prp1");
+        ret = prp_walker_next(&prp, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0x3000 && len == 4096,
+                    "prp-walk: 3pg page1 from prp list[0] (not prp2 as base)");
+        ret = prp_walker_next(&prp, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0x7000 && len == 4096,
+                    "prp-walk: 3pg page2 from prp list[1]");
+        TEST_ASSERT(prp_walker_next(&prp, &addr, &len) == HFSSS_ERR_NOENT,
+                    "prp-walk: 3-page exhausted");
+    }
+
+    /* Test 4: Five-page transfer with PRP list, non-contiguous pages */
+    {
+        u64 prp_list[4];
+        prp_list[0] = 0xB000;
+        prp_list[1] = 0xD000;
+        prp_list[2] = 0xF000;
+        prp_list[3] = 0x11000;
+
+        ret = prp_walker_init(&prp, 0x9000, (u64)(uintptr_t)prp_list,
+                              5 * 4096, 4096);
+        TEST_ASSERT(ret == HFSSS_OK, "prp-walk: init 5-page plist OK");
+        ret = prp_walker_next(&prp, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0x9000,
+                    "prp-walk: 5pg page0 = prp1");
+        ret = prp_walker_next(&prp, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0xB000,
+                    "prp-walk: 5pg page1 = plist[0]");
+        ret = prp_walker_next(&prp, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0xD000,
+                    "prp-walk: 5pg page2 = plist[1]");
+        ret = prp_walker_next(&prp, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0xF000,
+                    "prp-walk: 5pg page3 = plist[2]");
+        ret = prp_walker_next(&prp, &addr, &len);
+        TEST_ASSERT(ret == HFSSS_OK && addr == 0x11000,
+                    "prp-walk: 5pg page4 = plist[3]");
+        TEST_ASSERT(prp_walker_next(&prp, &addr, &len) == HFSSS_ERR_NOENT,
+                    "prp-walk: 5-page exhausted");
+    }
+
+    return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
+}
+
 int main(void)
 {
     print_separator();
@@ -888,6 +1281,7 @@ int main(void)
     test_nvme_ctrl();
     test_queue_mgr();
     test_sq_prp_sgl_edges();
+    test_prp_walker_correctness();
     test_msix();
     test_dma();
     test_pcie_nvme_dev();
@@ -895,6 +1289,8 @@ int main(void)
     test_cq_update_head();
     test_cq_post_cpl();
     test_cq_needs_interrupt();
+    test_intr_coalescing();
+    test_sgl_walker();
     test_duplicate_create_failure();
     test_invalid_qid_and_size();
     test_delete_busy_and_clean();

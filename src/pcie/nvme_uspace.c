@@ -1281,24 +1281,44 @@ int nvme_uspace_get_features(struct nvme_uspace_dev *dev, u8 fid, u32 *value)
     case 0x07: /* Number of Queues: 64 IO queues each direction */
         *value = 0x003F003F;
         return HFSSS_OK;
+    case 0x08: /* Interrupt Coalescing: default disabled */
+        *value = 0;
+        return HFSSS_OK;
     default:
         return HFSSS_ERR_NOTSUPP;
     }
 }
 
-/* Set Features: persist a feature value; only FIDs 0x02 and 0x04 accepted. */
+/* Set Features: persist a feature value. */
 int nvme_uspace_set_features(struct nvme_uspace_dev *dev, u8 fid, u32 value)
 {
     if (!dev || !dev->initialized) {
         return HFSSS_ERR_INVAL;
     }
 
-    if (fid != 0x02 && fid != 0x04) {
+    switch (fid) {
+    case 0x02: /* Power Management */
+    case 0x04: /* Temperature Threshold */
+        dev->features[fid] = value;
+        return HFSSS_OK;
+    case 0x08: { /* Interrupt Coalescing */
+        u8 aggr_time = value & 0xFF;       /* 100 µs units */
+        u8 aggr_thr   = (value >> 8) & 0xFF; /* completion count */
+
+        dev->features[0x08] = value;
+
+        /* Broadcast to all IO CQs */
+        for (u32 i = 0; i < dev->qmgr.num_io_cqs; i++) {
+            dev->qmgr.io_cqs[i].coalesce_time_us = (u32)aggr_time * 100;
+            dev->qmgr.io_cqs[i].coalesce_threshold = aggr_thr;
+            dev->qmgr.io_cqs[i].pending_completions = 0;
+        }
+
+        return HFSSS_OK;
+    }
+    default:
         return HFSSS_ERR_NOTSUPP;
     }
-
-    dev->features[fid] = value;
-    return HFSSS_OK;
 }
 
 /* -------------------------------------------------------------------------

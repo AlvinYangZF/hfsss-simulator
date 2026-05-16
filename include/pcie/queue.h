@@ -22,6 +22,9 @@
 #define SGL_DESC_TYPE_SEG    0x02
 #define SGL_DESC_TYPE_LAST   0x03
 
+/* SGL Sentinel */
+#define SGL_BIT_BUCKET_SENTINEL  0xFFFFFFFF00000000ULL
+
 /* SGL Subtypes */
 #define SGL_SUBTYPE_ADDRESS  0x00
 #define SGL_SUBTYPE_OFFSET   0x01
@@ -36,6 +39,9 @@ struct prp_walker {
     u32 page_size;
     u32 current_page;
     u32 bytes_left;
+    u32 total_pages;        /* Total pages needed for this transfer */
+    bool use_prp_list;      /* PRP2 points to a PRP list (pages > 2) */
+    u64 *prp_list_ptr;      /* Cached pointer to read-only PRP list in DRAM */
 };
 
 /* SGL Segment */
@@ -50,11 +56,14 @@ struct sgl_segment {
 
 /* SGL Walker State */
 struct sgl_walker {
-    void *sgl_base;
-    u32 sgl_len;
-    u32 current_seg;
-    u32 seg_offset;
-    u32 bytes_left;
+    void *sgl_base;          /* Current segment base address */
+    u32 sgl_len;             /* Current segment length in bytes */
+    u32 desc_idx;            /* Current descriptor index within segment */
+    u32 consumed_in_desc;    /* Bytes consumed in current data descriptor */
+    /* Segment chain return state */
+    void *return_base;       /* Previous segment base (0 = none) */
+    u32 return_len;          /* Previous segment length */
+    u32 return_idx;          /* Next descriptor index in previous segment */
 };
 
 /* NVMe Submission Queue */
@@ -95,6 +104,12 @@ struct nvme_cq {
     /* Associated SQs */
     u16 associated_sqs[MAX_QUEUE_PAIRS];
     u32 num_associated_sqs;
+
+    /* Interrupt coalescing (NVMe FID 0x08) */
+    u32 coalesce_time_us;       /* Aggregation time window, 0 = disabled */
+    u32 coalesce_threshold;     /* Completion count threshold, 0 = disabled */
+    u32 pending_completions;    /* Completions since last interrupt */
+    u64 last_interrupt_ts_ns;   /* Timestamp of last fired interrupt */
 
     /* Statistics */
     u64 cpl_count;
