@@ -182,6 +182,94 @@ static void test_cross_shard(void)
     taa_cleanup(&ctx);
 }
 
+static void test_direct_rebuild_and_invalid_paths(void)
+{
+    printf("\n=== TAA Direct Set/Clear/Rebuild and Invalid Paths ===\n");
+
+    struct taa_ctx ctx;
+    int ret = taa_init(&ctx, 17, 33, 4);
+    TEST_ASSERT(ret == HFSSS_OK, "direct: taa_init uneven shards succeeds");
+    TEST_ASSERT(ctx.shards[3].lba_count == 2, "direct: last shard clamps lba_count");
+
+    union ppn ppn_a, ppn_b, out;
+    ppn_a.raw = 0xABC;
+    ppn_b.raw = 0xDEF;
+    u64 lba = 0;
+    bool updated = true;
+
+    TEST_ASSERT(taa_lookup(NULL, 0, &out) == HFSSS_ERR_INVAL,
+                "direct: lookup NULL ctx rejected");
+    TEST_ASSERT(taa_lookup(&ctx, 0, NULL) == HFSSS_ERR_INVAL,
+                "direct: lookup NULL out rejected");
+    TEST_ASSERT(taa_lookup(&ctx, 99, &out) == HFSSS_ERR_INVAL,
+                "direct: lookup out-of-range rejected");
+    TEST_ASSERT(taa_insert(NULL, 0, ppn_a) == HFSSS_ERR_INVAL,
+                "direct: insert NULL ctx rejected");
+    TEST_ASSERT(taa_insert(&ctx, 99, ppn_a) == HFSSS_ERR_INVAL,
+                "direct: insert out-of-range rejected");
+    TEST_ASSERT(taa_remove(NULL, 0) == HFSSS_ERR_INVAL,
+                "direct: remove NULL ctx rejected");
+    TEST_ASSERT(taa_remove(&ctx, 99) == HFSSS_ERR_INVAL,
+                "direct: remove out-of-range rejected");
+    TEST_ASSERT(taa_update(NULL, 0, ppn_a, NULL) == HFSSS_ERR_INVAL,
+                "direct: update NULL ctx rejected");
+    TEST_ASSERT(taa_update(&ctx, 99, ppn_a, NULL) == HFSSS_ERR_INVAL,
+                "direct: update out-of-range rejected");
+    TEST_ASSERT(taa_update_if_equal(NULL, 0, ppn_a, ppn_b, &updated) == HFSSS_ERR_INVAL &&
+                updated == false,
+                "direct: CAS NULL ctx rejected and clears updated flag");
+    TEST_ASSERT(taa_reverse_lookup(NULL, ppn_a, &lba) == HFSSS_ERR_INVAL,
+                "direct: reverse lookup NULL ctx rejected");
+    TEST_ASSERT(taa_reverse_lookup(&ctx, ppn_a, NULL) == HFSSS_ERR_INVAL,
+                "direct: reverse lookup NULL out rejected");
+    TEST_ASSERT(taa_direct_set(NULL, 0, ppn_a) == HFSSS_ERR_INVAL,
+                "direct: direct_set NULL ctx rejected");
+    TEST_ASSERT(taa_direct_set(&ctx, 99, ppn_a) == HFSSS_ERR_INVAL,
+                "direct: direct_set out-of-range rejected");
+    TEST_ASSERT(taa_direct_clear(NULL, 0) == HFSSS_ERR_INVAL,
+                "direct: direct_clear NULL ctx rejected");
+    TEST_ASSERT(taa_direct_clear(&ctx, 99) == HFSSS_ERR_INVAL,
+                "direct: direct_clear out-of-range rejected");
+    TEST_ASSERT(taa_rebuild_p2l(NULL) == HFSSS_ERR_INVAL,
+                "direct: rebuild NULL ctx rejected");
+    TEST_ASSERT(taa_get_valid_count(NULL) == 0,
+                "direct: valid count NULL is zero");
+    taa_get_stats(NULL, NULL, NULL);
+
+    ret = taa_direct_set(&ctx, 3, ppn_a);
+    TEST_ASSERT(ret == HFSSS_OK, "direct: direct_set LBA 3");
+    ret = taa_lookup(&ctx, 3, &out);
+    TEST_ASSERT(ret == HFSSS_OK && out.raw == ppn_a.raw,
+                "direct: lookup sees direct_set mapping");
+    TEST_ASSERT(taa_reverse_lookup(&ctx, ppn_a, &lba) == HFSSS_ERR_NOENT,
+                "direct: reverse lookup misses before p2l rebuild");
+    ret = taa_rebuild_p2l(&ctx);
+    TEST_ASSERT(ret == HFSSS_OK, "direct: rebuild_p2l succeeds");
+    ret = taa_reverse_lookup(&ctx, ppn_a, &lba);
+    TEST_ASSERT(ret == HFSSS_OK && lba == 3,
+                "direct: reverse lookup works after rebuild");
+    TEST_ASSERT(taa_get_valid_count(&ctx) == 1,
+                "direct: valid count rebuilt to one");
+
+    ret = taa_update(&ctx, 3, ppn_b, &out);
+    TEST_ASSERT(ret == HFSSS_OK && out.raw == ppn_a.raw,
+                "direct: update returns old PPN");
+    ret = taa_reverse_lookup(&ctx, ppn_b, &lba);
+    TEST_ASSERT(ret == HFSSS_OK && lba == 3,
+                "direct: new reverse mapping installed by update");
+
+    ret = taa_direct_clear(&ctx, 3);
+    TEST_ASSERT(ret == HFSSS_OK, "direct: direct_clear succeeds");
+    ret = taa_lookup(&ctx, 3, &out);
+    TEST_ASSERT(ret == HFSSS_ERR_NOENT,
+                "direct: lookup misses after direct_clear");
+    ret = taa_rebuild_p2l(&ctx);
+    TEST_ASSERT(ret == HFSSS_OK && taa_get_valid_count(&ctx) == 0,
+                "direct: rebuild after clear yields zero valid entries");
+
+    taa_cleanup(&ctx);
+}
+
 /* Concurrent access test — 4 threads each own a shard */
 struct thread_arg {
     struct taa_ctx *ctx;
@@ -262,6 +350,7 @@ int main(void)
     test_update();
     test_update_if_equal();
     test_cross_shard();
+    test_direct_rebuild_and_invalid_paths();
     test_concurrent();
 
     printf("\n========================================\n");

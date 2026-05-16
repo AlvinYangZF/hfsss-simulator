@@ -331,6 +331,13 @@ static void test_bit_flip_apply(void)
     /* Applying twice should restore original. */
     fault_apply_bit_flip(buf, sizeof(buf), mask);
     TEST_ASSERT(w[0] == 0 && w[1] == 0, "double XOR restores original");
+
+    uint8_t tail[10] = {0};
+    fault_apply_bit_flip(tail, sizeof(tail), 0x0102030405060708ULL);
+    TEST_ASSERT(tail[0] == 0x08 && tail[7] == 0x01,
+                "bit flip applies whole mask word");
+    TEST_ASSERT(tail[8] == 0x08 && tail[9] == 0x07,
+                "bit flip applies trailing bytes");
 }
 
 /* 16. set_bit_flip updates existing entry */
@@ -568,6 +575,47 @@ static void test_json_roundtrip(void)
     fault_registry_cleanup(&reg);
 }
 
+static void test_from_json_type_matrix(void)
+{
+    printf("[24] JSON type matrix\n");
+
+    struct {
+        const char *name;
+        enum fault_type type;
+    } cases[] = {
+        { "BAD_BLOCK", FAULT_BAD_BLOCK },
+        { "READ_ERROR", FAULT_READ_ERROR },
+        { "PROGRAM_ERROR", FAULT_PROGRAM_ERROR },
+        { "ERASE_ERROR", FAULT_ERASE_ERROR },
+        { "BIT_FLIP", FAULT_BIT_FLIP },
+        { "READ_DISTURB", FAULT_READ_DISTURB },
+        { "RETENTION", FAULT_RETENTION },
+        { "POWER", FAULT_POWER },
+        { "PANIC", FAULT_PANIC },
+        { "POOL_EXHAUST", FAULT_POOL_EXHAUST },
+        { "TIMEOUT", FAULT_TIMEOUT },
+        { "UNKNOWN_NAME", FAULT_NONE },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char json[256];
+        snprintf(json, sizeof(json),
+                 "{\"id\":7,\"type\":\"%s\","
+                 "\"addr\":{\"channel\":1,\"chip\":2,\"die\":3,"
+                 "\"plane\":4,\"block\":5,\"page\":6},"
+                 "\"persist\":1,\"hit_count\":9,\"active\":true}",
+                 cases[i].name);
+
+        struct fault_entry out;
+        int rc = fault_entry_from_json(json, &out);
+        TEST_ASSERT(rc == HFSSS_OK, "from_json type matrix parses");
+        TEST_ASSERT(out.type == cases[i].type, "from_json maps type string");
+        TEST_ASSERT(out.id == 7 && out.hit_count == 9 &&
+                    out.addr.channel == 1 && out.addr.page == 6,
+                    "from_json preserves scalar fields");
+    }
+}
+
 /* -------------------------------------------------------------------------
  * REQ-134: controller fault injection
  * ---------------------------------------------------------------------- */
@@ -781,6 +829,7 @@ int main(void)
     test_null_safety();
     test_power_marker();
     test_json_roundtrip();
+    test_from_json_type_matrix();
 
     /* REQ-134 controller fault-injection wiring. */
     test_controller_pool_exhaust_resource_alloc();

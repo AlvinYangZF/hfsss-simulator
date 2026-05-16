@@ -396,6 +396,12 @@ static int test_memory(void)
     struct mem_region region;
     int ret;
 
+    TEST_ASSERT(mem_region_alloc(NULL, 4096, 0) == HFSSS_ERR_INVAL,
+                "mem_region_alloc should reject NULL region");
+    struct mem_region invalid_region;
+    TEST_ASSERT(mem_region_alloc(&invalid_region, 0, 0) == HFSSS_ERR_INVAL,
+                "mem_region_alloc should reject zero size");
+
     /* Test basic allocation */
     ret = mem_region_alloc(&region, 1024 * 1024, MEM_ALLOC_ZERO | MEM_ALLOC_POPULATE);
     TEST_ASSERT(ret == HFSSS_OK, "mem_region_alloc should succeed");
@@ -429,14 +435,43 @@ static int test_memory(void)
     void *ptr3 = mem_region_bump_alloc(&region, 1024);
     TEST_ASSERT(ptr3 == ptr1, "alloc after reset should reuse memory");
 
+    TEST_ASSERT(mem_region_bump_alloc(NULL, 8) == NULL,
+                "bump alloc should reject NULL region");
+    TEST_ASSERT(mem_region_bump_alloc(&region, 0) == NULL,
+                "bump alloc should reject zero size");
+    TEST_ASSERT(mem_region_bump_alloc(&region, region.size + 1) == NULL,
+                "bump alloc should reject requests beyond region size");
+
     /* Free the region */
     mem_region_free(&region);
     TEST_ASSERT(region.addr == NULL, "region.addr should be NULL after free");
 
+    struct mem_region empty_region = {0};
+    TEST_ASSERT(mem_region_bump_alloc(&empty_region, 8) == NULL,
+                "bump alloc should reject unallocated region");
+    mem_region_bump_reset(NULL);
+    mem_region_free(NULL);
+    mem_region_free(&empty_region);
+    TEST_ASSERT(1, "memory NULL cleanup paths should execute");
+
+    struct mem_region locked_region;
+    ret = mem_region_alloc(&locked_region, 4096, MEM_ALLOC_ZERO | MEM_ALLOC_LOCK);
+    TEST_ASSERT(ret == HFSSS_OK, "locked zero region allocation should succeed");
+    if (ret == HFSSS_OK) {
+        unsigned char *bytes = (unsigned char *)locked_region.addr;
+        TEST_ASSERT(bytes[0] == 0 && bytes[locked_region.size - 1] == 0,
+                    "locked zero region should be zero-filled");
+        mem_region_free(&locked_region);
+        TEST_ASSERT(locked_region.addr == NULL,
+                    "locked region should be cleared after free");
+    }
+
     /* Test huge page availability check */
     bool hugetlb_available = mem_hugetlb_available();
     /* Just check that the function returns a value without crashing */
-    TEST_ASSERT(1, "mem_hugetlb_available should execute");
+    TEST_ASSERT(hugetlb_available || !hugetlb_available,
+                "mem_hugetlb_available should execute");
+    TEST_ASSERT(mem_hugetlb_page_size() >= 0, "mem_hugetlb_page_size should execute");
 
     return tests_failed > 0 ? TEST_FAIL : TEST_PASS;
 }
