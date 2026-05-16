@@ -191,6 +191,7 @@ int nvme_cq_post_cpl(struct nvme_cq *cq, struct nvme_cq_entry *cpl)
     cq->cpl_count++;
     if (cq->interrupt_enabled) {
         cq->interrupt_count++;
+        cq->pending_completions++;
     }
 
     return HFSSS_OK;
@@ -201,7 +202,31 @@ bool nvme_cq_needs_interrupt(struct nvme_cq *cq)
     if (!cq || !cq->enabled) {
         return false;
     }
-    return cq->interrupt_enabled && cq->cq_head != cq->cq_tail;
+
+    if (!cq->interrupt_enabled || cq->cq_head == cq->cq_tail) {
+        return false;
+    }
+
+    /* Coalescing: threshold check */
+    if (cq->coalesce_threshold > 0 &&
+        cq->pending_completions < cq->coalesce_threshold) {
+        return false;
+    }
+
+    /* Coalescing: time check */
+    if (cq->coalesce_time_us > 0) {
+        u64 now = get_time_ns();
+        u64 elapsed = now - cq->last_interrupt_ts_ns;
+        if (elapsed < (u64)cq->coalesce_time_us * 1000ULL) {
+            return false;
+        }
+    }
+
+    /* Fire interrupt: reset counters */
+    cq->pending_completions = 0;
+    cq->last_interrupt_ts_ns = get_time_ns();
+
+    return true;
 }
 
 int prp_walker_init(struct prp_walker *walker, u64 prp1, u64 prp2, u32 length, u32 page_size)
@@ -220,6 +245,37 @@ int prp_walker_init(struct prp_walker *walker, u64 prp1, u64 prp2, u32 length, u
     walker->offset = 0;
     walker->current_page = 0;
 
+    /* Determine if PRP2 is a data page or a PRP list pointer
+     * per NVMe spec:
+     *   - Transfer fits in PRP1 remainder: 1 page total, PRP2 unused
+     *   - Transfer fits in PRP1 + 1 page: 2 pages total, PRP2 = data page
+     *   - Transfer requires 3+ pages: PRP2 = PRP list pointer
+     */
+    if (length == 0) {
+        walker->total_pages = 0;
+        walker->use_prp_list = false;
+        return HFSSS_OK;
+    }
+
+    u32 page_offset = prp1 % page_size;
+    u32 remain_in_first = page_size - page_offset;
+
+    if (length <= remain_in_first) {
+        walker->total_pages = 1;
+        walker->use_prp_list = false;
+    } else {
+        u32 remaining = length - remain_in_first;
+        u32 extra_pages = (remaining + page_size - 1) / page_size;
+        walker->total_pages = 1 + extra_pages;
+        walker->use_prp_list = (walker->total_pages > 2);
+    }
+
+    if (walker->use_prp_list) {
+        /* PRP2 points to a PRP list array in DRAM.
+         * In user-space simulation, all memory is virtual and directly accessible. */
+        walker->prp_list_ptr = (u64 *)(uintptr_t)prp2;
+    }
+
     return HFSSS_OK;
 }
 
@@ -234,25 +290,35 @@ int prp_walker_next(struct prp_walker *walker, u64 *addr, u32 *len)
     }
 
     u32 page_offset = walker->prp1 % walker->page_size;
-    u32 bytes_in_page = walker->page_size - page_offset;
+    u32 bytes_in_first = walker->page_size - page_offset;
 
     if (walker->current_page == 0) {
-        /* First page: PRP1 */
+        /* First page: always PRP1 */
         *addr = walker->prp1;
-        *len = MIN(walker->bytes_left, bytes_in_page);
-        walker->offset += *len;
-        walker->bytes_left -= *len;
-        walker->current_page++;
-        return HFSSS_OK;
-    } else {
-        /* Subsequent pages: PRP2 or PRP list */
-        *addr = walker->prp2 + (walker->current_page - 1) * walker->page_size;
-        *len = MIN(walker->bytes_left, walker->page_size);
+        *len = MIN(walker->bytes_left, bytes_in_first);
         walker->offset += *len;
         walker->bytes_left -= *len;
         walker->current_page++;
         return HFSSS_OK;
     }
+
+    /* Subsequent pages */
+    u32 page_idx = walker->current_page - 1; /* 0-based index after first page */
+
+    if (walker->use_prp_list) {
+        /* PRP list mode: read page address from list */
+        *addr = walker->prp_list_ptr[page_idx];
+    } else {
+        /* Direct PRP2 mode: PRP2 is the second data page */
+        *addr = walker->prp2;
+    }
+
+    *len = MIN(walker->bytes_left, walker->page_size);
+    walker->offset += *len;
+    walker->bytes_left -= *len;
+    walker->current_page++;
+
+    return HFSSS_OK;
 }
 
 int prp_walker_skip(struct prp_walker *walker, u32 len)
@@ -270,6 +336,36 @@ int prp_walker_skip(struct prp_walker *walker, u32 len)
     return HFSSS_OK;
 }
 
+/* Get descriptor at index within current segment */
+static inline struct sgl_segment *sgl_get_desc(struct sgl_walker *walker, u32 idx)
+{
+    return (struct sgl_segment *)((u8 *)walker->sgl_base + idx * sizeof(struct sgl_segment));
+}
+
+/* Switch to a new SGL segment, saving return state */
+static void sgl_enter_segment(struct sgl_walker *walker, struct sgl_segment *desc)
+{
+    walker->return_base = walker->sgl_base;
+    walker->return_len  = walker->sgl_len;
+    walker->return_idx  = walker->desc_idx + 1; /* next desc after this Segment desc */
+    walker->sgl_base = (void *)(uintptr_t)desc->address;
+    walker->sgl_len  = desc->length;
+    walker->desc_idx = 0;
+}
+
+/* Restore previous segment state after sub-segment is exhausted */
+static bool sgl_return_from_segment(struct sgl_walker *walker)
+{
+    if (!walker->return_base) {
+        return false;
+    }
+    walker->sgl_base = walker->return_base;
+    walker->sgl_len  = walker->return_len;
+    walker->desc_idx = walker->return_idx;
+    walker->return_base = NULL;
+    return true;
+}
+
 int sgl_walker_init(struct sgl_walker *walker, void *sgl_base, u32 sgl_len)
 {
     if (!walker) {
@@ -280,20 +376,57 @@ int sgl_walker_init(struct sgl_walker *walker, void *sgl_base, u32 sgl_len)
 
     walker->sgl_base = sgl_base;
     walker->sgl_len = sgl_len;
-    walker->current_seg = 0;
-    walker->seg_offset = 0;
-    walker->bytes_left = 0;
 
     return HFSSS_OK;
 }
 
 int sgl_walker_next(struct sgl_walker *walker, u64 *addr, u32 *len)
 {
-    /* Simple SGL implementation for user-space */
     if (!walker || !addr || !len) {
         return HFSSS_ERR_INVAL;
     }
-    return HFSSS_ERR_NOTSUPP;
+
+    while (1) {
+        /* Check if current segment is exhausted */
+        if (walker->desc_idx * sizeof(struct sgl_segment) >= walker->sgl_len) {
+            if (!sgl_return_from_segment(walker)) {
+                return HFSSS_ERR_NOENT;
+            }
+            continue;
+        }
+
+        struct sgl_segment *desc = sgl_get_desc(walker, walker->desc_idx);
+
+        switch (desc->type) {
+        case SGL_DESC_TYPE_DATA: {
+            u32 remaining = desc->length - walker->consumed_in_desc;
+            if (remaining == 0) {
+                walker->desc_idx++;
+                walker->consumed_in_desc = 0;
+                continue;
+            }
+            *addr = desc->address + walker->consumed_in_desc;
+            *len  = remaining;
+            walker->consumed_in_desc = desc->length;
+            walker->desc_idx++;
+            walker->consumed_in_desc = 0;
+            return HFSSS_OK;
+        }
+        case SGL_DESC_TYPE_BIT:
+            *addr = SGL_BIT_BUCKET_SENTINEL;
+            *len  = desc->length;
+            walker->desc_idx++;
+            return HFSSS_OK;
+
+        case SGL_DESC_TYPE_SEG:
+        case SGL_DESC_TYPE_LAST:
+            sgl_enter_segment(walker, desc);
+            continue;
+
+        default:
+            return HFSSS_ERR_NOTSUPP;
+        }
+    }
 }
 
 int sgl_walker_skip(struct sgl_walker *walker, u32 len)
@@ -301,7 +434,52 @@ int sgl_walker_skip(struct sgl_walker *walker, u32 len)
     if (!walker) {
         return HFSSS_ERR_INVAL;
     }
-    return HFSSS_ERR_NOTSUPP;
+
+    u32 remaining = len;
+
+    while (remaining > 0) {
+        /* Check if current segment is exhausted */
+        if (walker->desc_idx * sizeof(struct sgl_segment) >= walker->sgl_len) {
+            if (!sgl_return_from_segment(walker)) {
+                return HFSSS_ERR_INVAL;
+            }
+            continue;
+        }
+
+        struct sgl_segment *desc = sgl_get_desc(walker, walker->desc_idx);
+
+        switch (desc->type) {
+        case SGL_DESC_TYPE_DATA: {
+            u32 desc_remaining = desc->length - walker->consumed_in_desc;
+            u32 skip_bytes = MIN(remaining, desc_remaining);
+            walker->consumed_in_desc += skip_bytes;
+            remaining -= skip_bytes;
+            if (walker->consumed_in_desc >= desc->length) {
+                walker->desc_idx++;
+                walker->consumed_in_desc = 0;
+            }
+            break;
+        }
+        case SGL_DESC_TYPE_BIT:
+            if (remaining >= desc->length) {
+                remaining -= desc->length;
+                walker->desc_idx++;
+            } else {
+                remaining = 0;
+            }
+            break;
+
+        case SGL_DESC_TYPE_SEG:
+        case SGL_DESC_TYPE_LAST:
+            sgl_enter_segment(walker, desc);
+            break;
+
+        default:
+            return HFSSS_ERR_NOTSUPP;
+        }
+    }
+
+    return HFSSS_OK;
 }
 
 int nvme_create_io_sq(struct nvme_queue_mgr *mgr, u16 qid, u64 base_addr, u16 qsize, u16 cqid, u8 prio)
